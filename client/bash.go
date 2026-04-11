@@ -1,0 +1,180 @@
+package client
+
+import (
+	"fmt"
+	"net/url"
+)
+
+// BashExec sends a synchronous or asynchronous bash command.
+func (c *Client) BashExec(agentID, sessionID, command string, opts ...BashExecOption) (*BashExecResult, error) {
+	req := bashExecRequest{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		Command:   command,
+	}
+	for _, o := range opts {
+		o(&req)
+	}
+
+	var result BashExecResult
+	if err := c.post("/v1/bash/exec", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// BashOutput reads incremental output from a running command.
+func (c *Client) BashOutput(agentID, sessionID, commandID string, offset, stderrOffset int, opts ...BashOutputOption) (*BashOutputResult, error) {
+	req := bashOutputRequest{
+		AgentID:      agentID,
+		SessionID:    sessionID,
+		CommandID:    nullableString(commandID),
+		Offset:       offset,
+		StderrOffset: stderrOffset,
+	}
+	for _, o := range opts {
+		o(&req)
+	}
+
+	var result BashOutputResult
+	if err := c.post("/v1/bash/output", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// BashWrite writes input to a running process's stdin.
+func (c *Client) BashWrite(agentID, sessionID, commandID, input string) error {
+	req := bashWriteRequest{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		CommandID: nullableString(commandID),
+		Input:     input,
+	}
+	return c.post("/v1/bash/write", req, nil)
+}
+
+// BashKill kills the running process in a session.
+func (c *Client) BashKill(agentID, sessionID, signal string) error {
+	req := bashKillRequest{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		Signal:    signal,
+	}
+	return c.post("/v1/bash/kill", req, nil)
+}
+
+// BashCreateSession creates a new persistent bash session.
+func (c *Client) BashCreateSession(agentID, sessionID string) (*BashSessionInfo, error) {
+	req := bashSessionCreateRequest{
+		AgentID:   agentID,
+		SessionID: sessionID,
+	}
+	var result BashSessionInfo
+	if err := c.post("/v1/bash/sessions/create", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// BashListSessions lists all bash sessions for a given sandbox session.
+func (c *Client) BashListSessions(sessionID string) ([]BashSessionInfo, error) {
+	path := "/v1/bash/sessions?session_id=" + url.QueryEscape(sessionID)
+	var result []BashSessionInfo
+	if err := c.get(path, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// BashCloseSession closes a bash session.
+func (c *Client) BashCloseSession(agentID, sessionID, bashSessionID string) error {
+	req := bashSessionCloseRequest{
+		AgentID:   agentID,
+		SessionID: sessionID,
+	}
+	path := fmt.Sprintf("/v1/bash/sessions/%s/close", bashSessionID)
+	return c.post(path, req, nil)
+}
+
+// --- Internal request types (with JSON tags for serialization) ---
+
+type bashExecRequest struct {
+	AgentID         string            `json:"agent_id"`
+	SessionID       string            `json:"session_id"`
+	Command         string            `json:"command"`
+	ExecDir         *string           `json:"exec_dir,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	AsyncMode       bool              `json:"async_mode"`
+	Timeout         *float64          `json:"timeout,omitempty"`
+	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
+	MaxOutputLength int               `json:"max_output_length"`
+}
+
+type bashOutputRequest struct {
+	AgentID      string  `json:"agent_id"`
+	SessionID    string  `json:"session_id"`
+	CommandID    *string `json:"command_id,omitempty"`
+	Offset       int     `json:"offset"`
+	StderrOffset int     `json:"stderr_offset"`
+	Wait         bool    `json:"wait"`
+	WaitTimeout  float64 `json:"wait_timeout"`
+}
+
+type bashWriteRequest struct {
+	AgentID   string  `json:"agent_id"`
+	SessionID string  `json:"session_id"`
+	CommandID *string `json:"command_id,omitempty"`
+	Input     string  `json:"input"`
+}
+
+type bashKillRequest struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	Signal    string `json:"signal"`
+}
+
+type bashSessionCreateRequest struct {
+	AgentID   string  `json:"agent_id"`
+	SessionID string  `json:"session_id"`
+	BashSID  *string `json:"bash_session_id,omitempty"`
+	ExecDir  *string `json:"exec_dir,omitempty"`
+}
+
+type bashSessionCloseRequest struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+}
+
+// --- Functional options ---
+
+// BashExecOption is a functional option for BashExec.
+type BashExecOption func(*bashExecRequest)
+
+// WithExecDir sets the working directory for the command.
+func WithExecDir(dir string) BashExecOption {
+	return func(r *bashExecRequest) { r.ExecDir = &dir }
+}
+
+// WithEnv sets environment variables for the command.
+func WithEnv(env map[string]string) BashExecOption {
+	return func(r *bashExecRequest) { r.Env = env }
+}
+
+// WithAsyncMode enables async execution.
+func WithAsyncMode(async bool) BashExecOption {
+	return func(r *bashExecRequest) { r.AsyncMode = async }
+}
+
+// WithTimeout sets the command timeout in seconds.
+func WithTimeout(seconds float64) BashExecOption {
+	return func(r *bashExecRequest) { r.Timeout = &seconds }
+}
+
+// BashOutputOption is a functional option for BashOutput.
+type BashOutputOption func(*bashOutputRequest)
+
+// WithWait enables waiting for output with a timeout.
+func WithWait(timeout float64) BashOutputOption {
+	return func(r *bashOutputRequest) { r.Wait = true; r.WaitTimeout = timeout }
+}

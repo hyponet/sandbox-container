@@ -1,0 +1,426 @@
+package model
+
+import "time"
+
+// =============================================
+// Common response wrapper
+// =============================================
+
+type APIResponse struct {
+	Success bool        `json:"success"`
+	Message *string     `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+	Hint    *string     `json:"hint,omitempty"`
+}
+
+func OkResponse(data interface{}) APIResponse {
+	return APIResponse{Success: true, Data: data}
+}
+
+func OkMsg(msg string) APIResponse {
+	return APIResponse{Success: true, Message: &msg}
+}
+
+func ErrResponse(msg string) APIResponse {
+	return APIResponse{Success: false, Message: &msg}
+}
+
+// =============================================
+// Sandbox APIs
+// =============================================
+
+type SandboxResponse struct {
+	HomeDir   string        `json:"home_dir"`
+	Workspace *string       `json:"workspace,omitempty"`
+	Version   string        `json:"version"`
+	Detail    SandboxDetail `json:"detail"`
+}
+
+type SandboxDetail struct {
+	System  SystemEnv    `json:"system"`
+	Runtime RuntimeEnv   `json:"runtime"`
+	Utils   []ToolCategory `json:"utils"`
+}
+
+type SystemEnv struct {
+	OS            string   `json:"os"`
+	OSVersion     string   `json:"os_version"`
+	Arch          string   `json:"arch"`
+	User          string   `json:"user"`
+	HomeDir       string   `json:"home_dir"`
+	Workspace     *string  `json:"workspace,omitempty"`
+	Timezone      string   `json:"timezone"`
+	OccupiedPorts []string `json:"occupied_ports"`
+}
+
+type RuntimeEnv struct {
+	Python []ToolSpec `json:"python"`
+	NodeJS []ToolSpec `json:"nodejs"`
+}
+
+type ToolSpec struct {
+	Ver   string   `json:"ver,omitempty"`
+	Bin   string   `json:"bin,omitempty"`
+	Alias []string `json:"alias,omitempty"`
+}
+
+type ToolCategory struct {
+	Category string         `json:"category"`
+	Tools    []AvailableTool `json:"tools"`
+}
+
+type AvailableTool struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+// =============================================
+// Bash APIs
+// =============================================
+
+type BashExecRequest struct {
+	AgentID         string            `json:"agent_id" binding:"required"`
+	SessionID       string            `json:"session_id" binding:"required"`
+	Command         string            `json:"command" binding:"required"`
+	ExecDir         *string           `json:"exec_dir,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	AsyncMode       bool              `json:"async_mode"`
+	Timeout         *float64          `json:"timeout,omitempty"`
+	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
+	MaxOutputLength int               `json:"max_output_length"`
+}
+
+type BashExecResult struct {
+	SessionID    string         `json:"session_id"`
+	CommandID    string         `json:"command_id"`
+	Command      string         `json:"command"`
+	Status       CommandStatus  `json:"status"`
+	Stdout       *string        `json:"stdout,omitempty"`
+	Stderr       *string        `json:"stderr,omitempty"`
+	ExitCode     *int           `json:"exit_code,omitempty"`
+	Offset       int            `json:"offset"`
+	StderrOffset int            `json:"stderr_offset"`
+}
+
+type BashOutputRequest struct {
+	AgentID      string  `json:"agent_id" binding:"required"`
+	SessionID    string  `json:"session_id" binding:"required"`
+	CommandID    *string `json:"command_id,omitempty"`
+	Offset       int     `json:"offset"`
+	StderrOffset int     `json:"stderr_offset"`
+	Wait         bool    `json:"wait"`
+	WaitTimeout  float64 `json:"wait_timeout"`
+}
+
+type BashOutputResult struct {
+	SessionID    string          `json:"session_id"`
+	Stdout       string          `json:"stdout"`
+	Stderr       string          `json:"stderr"`
+	Offset       int             `json:"offset"`
+	StderrOffset int             `json:"stderr_offset"`
+	Command      *BashCommandInfo `json:"command,omitempty"`
+}
+
+type BashWriteRequest struct {
+	AgentID   string  `json:"agent_id" binding:"required"`
+	SessionID string  `json:"session_id" binding:"required"`
+	CommandID *string `json:"command_id,omitempty"`
+	Input     string  `json:"input" binding:"required"`
+}
+
+type BashKillRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	Signal    string `json:"signal"`
+}
+
+type BashSessionCreateRequest struct {
+	AgentID    string  `json:"agent_id" binding:"required"`
+	SessionID  string  `json:"session_id" binding:"required"`
+	BashSID   *string `json:"bash_session_id,omitempty"`
+	ExecDir   *string `json:"exec_dir,omitempty"`
+}
+
+type BashSessionCloseRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+}
+
+type BashSessionInfo struct {
+	SessionID      string        `json:"session_id"`
+	Status         SessionStatus `json:"status"`
+	WorkingDir     string        `json:"working_dir"`
+	CreatedAt      time.Time     `json:"created_at"`
+	LastUsedAt     time.Time     `json:"last_used_at"`
+	CurrentCommand *string       `json:"current_command,omitempty"`
+	CommandCount   int           `json:"command_count"`
+}
+
+type BashCommandInfo struct {
+	CommandID string        `json:"command_id"`
+	Command   string        `json:"command"`
+	Status    CommandStatus `json:"status"`
+	ExitCode  *int          `json:"exit_code,omitempty"`
+}
+
+type CommandStatus string
+
+const (
+	StatusPending   CommandStatus = "pending"
+	StatusRunning   CommandStatus = "running"
+	StatusCompleted CommandStatus = "completed"
+	StatusTimedOut  CommandStatus = "timed_out"
+	StatusKilled    CommandStatus = "killed"
+)
+
+type SessionStatus string
+
+const (
+	SessionReady  SessionStatus = "ready"
+	SessionClosed SessionStatus = "closed"
+)
+
+// =============================================
+// File APIs
+// =============================================
+
+type FileReadRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	File      string `json:"file" binding:"required"`
+	StartLine *int   `json:"start_line,omitempty"`
+	EndLine   *int   `json:"end_line,omitempty"`
+}
+
+type FileReadResult struct {
+	Content string `json:"content"`
+	File    string `json:"file"`
+}
+
+type FileWriteRequest struct {
+	AgentID         string `json:"agent_id" binding:"required"`
+	SessionID       string `json:"session_id" binding:"required"`
+	File            string `json:"file" binding:"required"`
+	Content         string `json:"content" binding:"required"`
+	Encoding        string `json:"encoding,omitempty"`
+	Append          bool   `json:"append"`
+	LeadingNewline  bool   `json:"leading_newline"`
+	TrailingNewline bool   `json:"trailing_newline"`
+}
+
+type FileWriteResult struct {
+	File        string `json:"file"`
+	BytesWritten *int  `json:"bytes_written,omitempty"`
+}
+
+type FileReplaceRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	File      string `json:"file" binding:"required"`
+	OldStr    string `json:"old_str" binding:"required"`
+	NewStr    string `json:"new_str" binding:"required"`
+}
+
+type FileReplaceResult struct {
+	File          string `json:"file"`
+	ReplacedCount int    `json:"replaced_count"`
+}
+
+type FileSearchRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	File      string `json:"file" binding:"required"`
+	Regex     string `json:"regex" binding:"required"`
+}
+
+type FileSearchResult struct {
+	File        string   `json:"file"`
+	Matches     []string `json:"matches"`
+	LineNumbers []int    `json:"line_numbers"`
+}
+
+type FileFindRequest struct {
+	AgentID   string `json:"agent_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	Path      string `json:"path" binding:"required"`
+	Glob      string `json:"glob" binding:"required"`
+}
+
+type FileFindResult struct {
+	Path  string   `json:"path"`
+	Files []string `json:"files"`
+}
+
+type FileGrepRequest struct {
+	AgentID          string   `json:"agent_id" binding:"required"`
+	SessionID        string   `json:"session_id" binding:"required"`
+	Path             string   `json:"path" binding:"required"`
+	Pattern          string   `json:"pattern" binding:"required"`
+	Include          []string `json:"include,omitempty"`
+	Exclude          []string `json:"exclude,omitempty"`
+	CaseInsensitive  bool     `json:"case_insensitive"`
+	FixedStrings     bool     `json:"fixed_strings"`
+	ContextBefore    int      `json:"context_before"`
+	ContextAfter     int      `json:"context_after"`
+	MaxResults       int      `json:"max_results"`
+	Recursive        *bool    `json:"recursive,omitempty"`
+}
+
+type FileGrepResult struct {
+	Path          string       `json:"path"`
+	Pattern       string       `json:"pattern"`
+	Matches       []GrepMatch  `json:"matches"`
+	MatchCount    int          `json:"match_count"`
+	FilesSearched *int         `json:"files_searched,omitempty"`
+	FilesMatched  *int         `json:"files_matched,omitempty"`
+	Truncated     bool         `json:"truncated"`
+}
+
+type GrepMatch struct {
+	File          string   `json:"file"`
+	LineNumber    int      `json:"line_number"`
+	LineContent   string   `json:"line_content"`
+	ContextBefore []string `json:"context_before,omitempty"`
+	ContextAfter  []string `json:"context_after,omitempty"`
+}
+
+type FileGlobRequest struct {
+	AgentID          string   `json:"agent_id" binding:"required"`
+	SessionID        string   `json:"session_id" binding:"required"`
+	Path             string   `json:"path" binding:"required"`
+	Pattern          string   `json:"pattern" binding:"required"`
+	Exclude          []string `json:"exclude,omitempty"`
+	IncludeHidden    bool     `json:"include_hidden"`
+	FilesOnly        *bool    `json:"files_only,omitempty"`
+	IncludeMetadata  *bool    `json:"include_metadata,omitempty"`
+	MaxResults       int      `json:"max_results"`
+}
+
+type FileGlobResult struct {
+	Path        string         `json:"path"`
+	Pattern     string         `json:"pattern"`
+	Files       []GlobFileInfo `json:"files"`
+	TotalCount  int            `json:"total_count"`
+	Truncated   bool           `json:"truncated"`
+}
+
+type GlobFileInfo struct {
+	Path         string  `json:"path"`
+	Name         string  `json:"name"`
+	IsDirectory  bool    `json:"is_directory"`
+	Size         *int64  `json:"size,omitempty"`
+	ModifiedTime *string `json:"modified_time,omitempty"`
+}
+
+type FileListRequest struct {
+	AgentID            string   `json:"agent_id" binding:"required"`
+	SessionID          string   `json:"session_id" binding:"required"`
+	Path               string   `json:"path" binding:"required"`
+	Recursive          bool     `json:"recursive"`
+	ShowHidden         *bool    `json:"show_hidden,omitempty"`
+	FileTypes          []string `json:"file_types,omitempty"`
+	MaxDepth           *int     `json:"max_depth,omitempty"`
+	IncludeSize        *bool    `json:"include_size,omitempty"`
+	IncludePermissions *bool    `json:"include_permissions,omitempty"`
+}
+
+type FileListResult struct {
+	Path           string    `json:"path"`
+	Files          []FileInfo `json:"files"`
+	TotalCount     int       `json:"total_count"`
+	DirectoryCount int       `json:"directory_count"`
+	FileCount      int       `json:"file_count"`
+}
+
+type FileInfo struct {
+	Name         string  `json:"name"`
+	Path         string  `json:"path"`
+	IsDirectory  bool    `json:"is_directory"`
+	Size         *int64  `json:"size,omitempty"`
+	ModifiedTime *string `json:"modified_time,omitempty"`
+	Permissions  *string `json:"permissions,omitempty"`
+	Extension    *string `json:"extension,omitempty"`
+}
+
+type FileUploadRequest struct {
+	AgentID   string `form:"agent_id" binding:"required"`
+	SessionID string `form:"session_id" binding:"required"`
+	Path      string `form:"path" binding:"required"`
+}
+
+type FileUploadResult struct {
+	FilePath string `json:"file_path"`
+	FileSize int64  `json:"file_size"`
+	Success  bool   `json:"success"`
+}
+
+// =============================================
+// Code APIs
+// =============================================
+
+type CodeExecuteRequest struct {
+	AgentID   string  `json:"agent_id" binding:"required"`
+	SessionID string  `json:"session_id" binding:"required"`
+	Language  string  `json:"language" binding:"required"`
+	Code      string  `json:"code" binding:"required"`
+	Timeout   *int    `json:"timeout,omitempty"`
+	Cwd       *string `json:"cwd,omitempty"`
+}
+
+type CodeExecuteResponse struct {
+	Language  string        `json:"language"`
+	Status    string        `json:"status"`
+	Outputs   []interface{} `json:"outputs"`
+	Code      string        `json:"code"`
+	Stdout    *string       `json:"stdout,omitempty"`
+	Stderr    *string       `json:"stderr,omitempty"`
+	ExitCode  *int          `json:"exit_code,omitempty"`
+	Traceback []string      `json:"traceback,omitempty"`
+}
+
+type CodeInfoResponse struct {
+	Languages []CodeLanguageInfo `json:"languages"`
+}
+
+type CodeLanguageInfo struct {
+	Language       string                 `json:"language"`
+	Description    string                 `json:"description"`
+	RuntimeVersion *string                `json:"runtime_version,omitempty"`
+	DefaultTimeout int                    `json:"default_timeout"`
+	MaxTimeout     int                    `json:"max_timeout"`
+	Details        map[string]interface{} `json:"details,omitempty"`
+}
+
+// =============================================
+// Skills APIs
+// =============================================
+
+type SkillListRequest struct {
+	AgentID    string   `json:"agent_id" binding:"required"`
+	SkillURLs  []string `json:"skill_urls" binding:"required"`
+}
+
+type SkillMeta struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Path        string `json:"path"`
+}
+
+type SkillListResult struct {
+	Skills []SkillMeta `json:"skills"`
+}
+
+type SkillLoadRequest struct {
+	AgentID    string   `json:"agent_id" binding:"required"`
+	SkillNames []string `json:"skill_names" binding:"required"`
+}
+
+type SkillContent struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+type SkillLoadResult struct {
+	Skills []SkillContent `json:"skills"`
+}

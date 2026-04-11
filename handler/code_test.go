@@ -1,0 +1,122 @@
+package handler
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"sandbox-container/session"
+
+	"github.com/gin-gonic/gin"
+)
+
+func setupCodeRouter() (*gin.Engine, *session.Manager) {
+	gin.SetMode(gin.TestMode)
+	dir := filepath.Join(os.TempDir(), "sandbox-code-test-"+time.Now().Format("20060102150405"))
+	os.MkdirAll(dir, 0755)
+	mgr := session.NewManager(dir, 24*time.Hour)
+
+	r := gin.New()
+	codeH := NewCodeHandler(mgr)
+	r.POST("/v1/code/execute", codeH.Execute)
+	r.GET("/v1/code/info", codeH.Info)
+
+	return r, mgr
+}
+
+func TestCodeExecutePython(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code1", "language": "python", "code": "print(2+2)"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "4\n" {
+		t.Errorf("expected '4\\n', got %q", stdout)
+	}
+}
+
+func TestCodeExecuteJavaScript(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code2", "language": "javascript", "code": "console.log(2+2)"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "4\n" {
+		t.Errorf("expected '4\\n', got %q", stdout)
+	}
+}
+
+func TestCodeExecuteNoSessionID(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"language": "python", "code": "print(1)"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestCodeExecuteUnsupportedLang(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code3", "language": "rust", "code": "fn main() {}"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unsupported language, got %d", w.Code)
+	}
+}
+
+func TestCodeInfo(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/code/info", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("info failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	langs := data["languages"].([]interface{})
+	if len(langs) < 2 {
+		t.Errorf("expected at least 2 languages, got %d", len(langs))
+	}
+}

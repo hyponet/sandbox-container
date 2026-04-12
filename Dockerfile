@@ -127,7 +127,7 @@ RUN curl -LO https://github.com/BurntSushi/ripgrep/releases/download/13.0.0/ripg
 # ---------------------------------------------------------------------------
 # 6. Install Python packages (comprehensive set for AI agent use cases)
 # ---------------------------------------------------------------------------
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir \
     # --- Data Science & Numerical ---
     numpy \
     pandas \

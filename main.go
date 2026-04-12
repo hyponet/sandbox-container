@@ -4,9 +4,9 @@ import (
 	"log"
 	"time"
 
-	"sandbox-container/handler"
-	"sandbox-container/middleware"
-	"sandbox-container/session"
+	"github.com/hyponet/sandbox-container/handler"
+	"github.com/hyponet/sandbox-container/middleware"
+	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )

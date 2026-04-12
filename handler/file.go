@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"sandbox-container/model"
-	"sandbox-container/session"
+	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )
@@ -716,18 +716,16 @@ func (h *FileHandler) List(c *gin.Context) {
 				continue
 			}
 
-			// Skip the skills symlink itself
-			if name == "skills" && isSkillsSearch == false {
-				// For session root listing, include the skills symlink
-			}
-
-			info, err := entry.Info()
+			// Follow symlinks: use os.Stat to resolve link targets
+		 fullPath := filepath.Join(realPath, name)
+			info, err := os.Stat(fullPath)
 			if err != nil {
 				continue
 			}
+			isDir := info.IsDir()
 
 			// Check file type filter
-			if len(req.FileTypes) > 0 && !entry.IsDir() {
+			if len(req.FileTypes) > 0 && !isDir {
 				ext := strings.ToLower(filepath.Ext(name))
 				matched := false
 				for _, ft := range req.FileTypes {
@@ -750,7 +748,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			fi := model.FileInfo{
 				Name:        name,
 				Path:        displayPath,
-				IsDirectory: entry.IsDir(),
+				IsDirectory: isDir,
 			}
 			if includeSize {
 				size := info.Size()
@@ -762,7 +760,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			}
 			modTime := info.ModTime().Format(time.RFC3339)
 			fi.ModifiedTime = &modTime
-			if !entry.IsDir() {
+			if !isDir {
 				ext := filepath.Ext(name)
 				if ext != "" {
 					fi.Extension = &ext
@@ -770,7 +768,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			}
 
 			files = append(files, fi)
-			if entry.IsDir() {
+			if isDir {
 				dirCount++
 			} else {
 				fileCount++

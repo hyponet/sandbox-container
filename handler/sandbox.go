@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"runtime"
 
-	"sandbox-container/model"
+	"github.com/hyponet/sandbox-container/model"
 
 	"github.com/gin-gonic/gin"
 )

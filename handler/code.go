@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"sandbox-container/model"
-	"sandbox-container/session"
+	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )

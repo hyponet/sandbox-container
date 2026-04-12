@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"sandbox-container/session"
+	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )

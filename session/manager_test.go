@@ -180,3 +180,47 @@ func TestIsSkillsPath(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentRoot(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManager(dir, time.Hour)
+
+	expected := filepath.Join(dir, "a1")
+	if got := mgr.AgentRoot("a1"); got != expected {
+		t.Errorf("AgentRoot(a1) = %s, want %s", got, expected)
+	}
+}
+
+func TestExists(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManager(dir, time.Hour)
+
+	// Session doesn't exist initially
+	if mgr.Exists("a1", "sess1") {
+		t.Error("expected session to not exist initially")
+	}
+
+	// Touch creates the session directory
+	mgr.Touch("a1", "sess1")
+	if !mgr.Exists("a1", "sess1") {
+		t.Error("expected session to exist after Touch")
+	}
+}
+
+func TestIsResolvedSkillsPath(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManager(dir, time.Hour)
+
+	skillsDir := filepath.Join(dir, "a1", "skills")
+	sessionDir := filepath.Join(dir, "a1", "sessions", "s1")
+
+	if !mgr.IsResolvedSkillsPath("a1", skillsDir) {
+		t.Error("expected skills root to be a skills path")
+	}
+	if !mgr.IsResolvedSkillsPath("a1", filepath.Join(skillsDir, "foo", "bar.txt")) {
+		t.Error("expected nested skills path to be a skills path")
+	}
+	if mgr.IsResolvedSkillsPath("a1", sessionDir) {
+		t.Error("expected session path to not be a skills path")
+	}
+}

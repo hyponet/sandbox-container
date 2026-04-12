@@ -206,10 +206,7 @@ RUN pip3 install --no-cache-dir \
 # ---------------------------------------------------------------------------
 # 7. Install Node.js global packages
 # ---------------------------------------------------------------------------
-RUN npm install -g --no-save \
-    # No global node packages required by default;
-    # agents can install per-session via npm install
-    && npm cache clean --force
+RUN npm cache clean --force
 
 # ---------------------------------------------------------------------------
 # 8. Create non-root user (gem) for sandbox operations
@@ -246,6 +243,10 @@ USER gem
 WORKDIR /home/gem
 
 EXPOSE 9090
+
+# API key(s) for authentication (comma-separated).
+# If not set, the server runs in open mode (no auth).
+ENV SANDBOX_API_KEY=""
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

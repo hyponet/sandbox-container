@@ -15,6 +15,7 @@ const maxResponseBody = 64 * 1024 * 1024 // 64MB
 // Client is an HTTP client for the sandbox-container API.
 type Client struct {
 	baseURL    string
+	apiKey     string
 	httpClient *http.Client
 }
 
@@ -26,6 +27,12 @@ func NewClient(baseURL string) *Client {
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+// WithAPIKey sets the API key for authentication.
+func (c *Client) WithAPIKey(key string) *Client {
+	c.apiKey = key
+	return c
 }
 
 // SetHTTPClient sets a custom http.Client.
@@ -50,6 +57,9 @@ func (c *Client) doJSON(method, path string, body interface{}, result interface{
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(req)

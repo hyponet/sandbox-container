@@ -17,8 +17,9 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.AuditLogger())
+	auth := middleware.AuthRequired()
 
-	// Sandbox APIs (no session required)
+	// Sandbox APIs (no session required, no auth for healthcheck)
 	sandboxH := handler.NewSandboxHandler()
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
@@ -26,7 +27,7 @@ func main() {
 
 	// Bash APIs
 	bashH := handler.NewBashHandler(mgr)
-	bash := r.Group("/v1/bash")
+	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", bashH.Exec)
 		bash.POST("/output", bashH.Output)
@@ -39,7 +40,7 @@ func main() {
 
 	// File APIs
 	fileH := handler.NewFileHandler(mgr)
-	f := r.Group("/v1/file")
+	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
 		f.POST("/write", fileH.Write)
@@ -55,12 +56,12 @@ func main() {
 
 	// Code APIs
 	codeH := handler.NewCodeHandler(mgr)
-	r.POST("/v1/code/execute", codeH.Execute)
-	r.GET("/v1/code/info", codeH.Info)
+	r.POST("/v1/code/execute", auth, codeH.Execute)
+	r.GET("/v1/code/info", auth, codeH.Info)
 
 	// Skills APIs
 	skillH := handler.NewSkillHandler(mgr)
-	skills := r.Group("/v1/skills")
+	skills := r.Group("/v1/skills", auth)
 	{
 		skills.POST("/list", skillH.List)
 		skills.POST("/load", skillH.Load)

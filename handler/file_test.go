@@ -193,7 +193,16 @@ func TestFileList(t *testing.T) {
 	data := resp["data"].(map[string]interface{})
 	files := data["files"].([]interface{})
 	if len(files) < 3 {
-		t.Errorf("expected at least 3 items, got %d", len(files))
+		t.Errorf("expected at least 3 items (a.txt, b.txt, sub/), got %d", len(files))
+	}
+	// Verify structure: should contain a.txt, b.txt, and sub directory
+	names := make(map[string]bool)
+	for _, f := range files {
+		fi := f.(map[string]interface{})
+		names[fi["name"].(string)] = true
+	}
+	if !names["a.txt"] || !names["b.txt"] || !names["sub"] {
+		t.Errorf("expected a.txt, b.txt, sub in listing, got %v", names)
 	}
 }
 
@@ -310,6 +319,23 @@ func TestFileUpload(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("upload failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the uploaded content by reading it back
+	readBody := `{"agent_id": "a1", "session_id": "test10", "file": "/uploaded.txt"}`
+	readReq := httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(readBody))
+	readReq.Header.Set("Content-Type", "application/json")
+	readW := httptest.NewRecorder()
+	r.ServeHTTP(readW, readReq)
+
+	if readW.Code != http.StatusOK {
+		t.Fatalf("read after upload failed: %d %s", readW.Code, readW.Body.String())
+	}
+	var readResp map[string]interface{}
+	json.Unmarshal(readW.Body.Bytes(), &readResp)
+	readData := readResp["data"].(map[string]interface{})
+	if readData["content"] != "uploaded content" {
+		t.Errorf("expected uploaded content 'uploaded content', got %v", readData["content"])
 	}
 }
 
@@ -507,5 +533,91 @@ func TestAgentIsolation(t *testing.T) {
 	data := resp["data"].(map[string]interface{})
 	if data["content"] != "agent1 secret" {
 		t.Errorf("agent isolation broken: expected 'agent1 secret', got %v", data["content"])
+	}
+}
+
+func TestFileReadNotFound(t *testing.T) {
+	r, _ := setupRouter()
+
+	body := `{"agent_id": "a1", "session_id": "test20", "file": "/nonexistent.txt"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent file, got %d", w.Code)
+	}
+}
+
+func TestFileSearchInvalidRegex(t *testing.T) {
+	r, _ := setupRouter()
+
+	body := `{"agent_id": "a1", "session_id": "test21", "file": "/test.txt", "regex": "[invalid"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/search", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid regex, got %d", w.Code)
+	}
+}
+
+func TestFileReplaceNoMatch(t *testing.T) {
+	r, _ := setupRouter()
+
+	// Write a file
+	body := `{"agent_id": "a1", "session_id": "test22", "file": "/nomatch.txt", "content": "hello world"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Replace with non-matching old_str
+	body = `{"agent_id": "a1", "session_id": "test22", "file": "/nomatch.txt", "old_str": "xyz", "new_str": "abc"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("replace no match: expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	if int(data["replaced_count"].(float64)) != 0 {
+		t.Errorf("expected 0 replacements, got %v", data["replaced_count"])
+	}
+}
+
+func TestPathTraversalReadBlocked(t *testing.T) {
+	r, _ := setupRouter()
+
+	body := `{"agent_id": "a1", "session_id": "test23", "file": "/../../../etc/passwd"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("path traversal read should be blocked, got %d", w.Code)
+	}
+}
+
+func TestFileWriteMissingRequired(t *testing.T) {
+	r, _ := setupRouter()
+
+	// Missing file field
+	body := `{"agent_id": "a1", "session_id": "test24", "content": "data"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing file field, got %d", w.Code)
 	}
 }

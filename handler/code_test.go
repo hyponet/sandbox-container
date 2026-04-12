@@ -120,3 +120,72 @@ func TestCodeInfo(t *testing.T) {
 		t.Errorf("expected at least 2 languages, got %d", len(langs))
 	}
 }
+
+func TestCodeExecuteJSAlias(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code4", "language": "js", "code": "console.log(42)"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("js alias execute failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "42\n" {
+		t.Errorf("expected '42\\n', got %q", stdout)
+	}
+}
+
+func TestCodeExecuteError(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code5", "language": "python", "code": "raise ValueError('test error')"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("error execute should return 200 with error info, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+
+	stderr, _ := data["stderr"].(string)
+	if stderr == "" {
+		t.Error("expected non-empty stderr for failed code")
+	}
+
+	exitCode := int(data["exit_code"].(float64))
+	if exitCode == 0 {
+		t.Error("expected non-zero exit code for failed code")
+	}
+
+	traceback, _ := data["traceback"].([]interface{})
+	if len(traceback) == 0 {
+		t.Error("expected traceback for failed code")
+	}
+}
+
+func TestCodeExecuteMissingLanguage(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code6", "code": "print(1)"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing language, got %d", w.Code)
+	}
+}

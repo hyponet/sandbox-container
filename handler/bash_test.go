@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -197,5 +198,136 @@ func TestBashAccessSkillsDir(t *testing.T) {
 	stdout := data["stdout"].(string)
 	if !bytes.Contains([]byte(stdout), []byte("hello.sh")) {
 		t.Errorf("expected to find hello.sh in skills listing, got %q", stdout)
+	}
+}
+
+func TestBashOutput(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	// Start an async command
+	body := `{"agent_id": "a1", "session_id": "bash9", "command": "echo output_data", "async_mode": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var execResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &execResp)
+	execData := execResp["data"].(map[string]interface{})
+	commandID := execData["command_id"].(string)
+
+	// Wait briefly for command to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Get output
+	outputBody := fmt.Sprintf(`{"agent_id": "a1", "session_id": "bash9", "command_id": "%s"}`, commandID)
+	req = httptest.NewRequest(http.MethodPost, "/v1/bash/output", bytes.NewBufferString(outputBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("output failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var outputResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &outputResp)
+	data := outputResp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if !bytes.Contains([]byte(stdout), []byte("output_data")) {
+		t.Errorf("expected 'output_data' in stdout, got %q", stdout)
+	}
+}
+
+func TestBashOutputSessionNotFound(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	body := `{"agent_id": "a1", "session_id": "nonexistent", "command_id": "x"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/output", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent session, got %d", w.Code)
+	}
+}
+
+func TestBashKill(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	// Start a long-running async command
+	body := `{"agent_id": "a1", "session_id": "bash10", "command": "sleep 30", "async_mode": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("exec failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Kill it
+	killBody := `{"agent_id": "a1", "session_id": "bash10", "signal": "SIGKILL"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/bash/kill", bytes.NewBufferString(killBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("kill failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var killResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &killResp)
+	data := killResp["data"].(map[string]interface{})
+	status := data["status"].(string)
+	if status != "killed" {
+		t.Errorf("expected status 'killed', got %s", status)
+	}
+}
+
+func TestBashKillNonexistentSession(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	body := `{"agent_id": "a1", "session_id": "nope", "signal": "SIGKILL"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/kill", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for killing nonexistent session, got %d", w.Code)
+	}
+}
+
+func TestBashListSessions(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	// Create a session
+	createBody := `{"agent_id": "a1", "session_id": "bash11"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/sessions/create", bytes.NewBufferString(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// List sessions
+	req = httptest.NewRequest(http.MethodGet, "/v1/bash/sessions?session_id=bash11", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("list sessions failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].([]interface{})
+	if len(data) < 1 {
+		t.Errorf("expected at least 1 session, got %d", len(data))
 	}
 }

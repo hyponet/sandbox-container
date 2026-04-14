@@ -4,11 +4,14 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
@@ -17,12 +20,49 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-type SkillHandler struct {
-	mgr *session.Manager
+const (
+	maxZipSize        = 100 * 1024 * 1024 // 100MB download limit
+	maxExtractedSize  = 500 * 1024 * 1024 // 500MB total extracted size
+	skillHTTPTimeout  = 60 * time.Second
+	sourceFile        = ".source"
+	ssrfProtectionEnv = "SANDBOX_SSRF_PROTECTION"
+)
+
+var defaultHTTPClient = &http.Client{
+	Timeout: skillHTTPTimeout,
 }
 
+// SkillHandler handles skill list/load API endpoints.
+type SkillHandler struct {
+	mgr            *session.Manager
+	mu             sync.Mutex
+	httpClient     *http.Client
+	ssrfProtection bool
+}
+
+// NewSkillHandler creates a new SkillHandler with SSRF protection from env.
 func NewSkillHandler(mgr *session.Manager) *SkillHandler {
-	return &SkillHandler{mgr: mgr}
+	return &SkillHandler{
+		mgr:            mgr,
+		ssrfProtection: isSSRFProtectionEnabled(),
+	}
+}
+
+// SetSSRFProtection enables or disables SSRF protection.
+func (h *SkillHandler) SetSSRFProtection(enabled bool) {
+	h.ssrfProtection = enabled
+}
+
+func (h *SkillHandler) client() *http.Client {
+	if h.httpClient != nil {
+		return h.httpClient
+	}
+	return defaultHTTPClient
+}
+
+func isSSRFProtectionEnabled() bool {
+	v := strings.ToLower(os.Getenv(ssrfProtectionEnv))
+	return v != "false" && v != "0" && v != "off"
 }
 
 // skillFrontmatter represents the YAML frontmatter in a SKILLS.MD file.
@@ -40,12 +80,10 @@ func extractSlugFromURL(rawURL string, index int) string {
 		return fmt.Sprintf("skill-%d", index)
 	}
 
-	// Try slug query parameter
 	if slug := u.Query().Get("slug"); slug != "" {
 		return sanitizeName(slug)
 	}
 
-	// Use last path segment without extension
 	base := filepath.Base(u.Path)
 	ext := filepath.Ext(base)
 	if ext != "" {
@@ -61,7 +99,6 @@ func extractSlugFromURL(rawURL string, index int) string {
 func sanitizeName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.ReplaceAll(name, " ", "-")
-	// Keep only alphanumeric, dash, underscore, dot
 	var b strings.Builder
 	for _, r := range name {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
@@ -75,7 +112,60 @@ func sanitizeName(name string) string {
 	return result
 }
 
+// validateSkillURL checks if a URL is safe to fetch (SSRF protection).
+// Blocks private, loopback, link-local, and unspecified IPs.
+// Skips all checks when SSRF protection is disabled.
+func (h *SkillHandler) validateSkillURL(rawURL string) error {
+	if !h.ssrfProtection {
+		return nil
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q (only http/https allowed)", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty host in URL")
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve host %s: %w", host, err)
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("URL resolves to private/reserved IP %s", ip)
+		}
+	}
+
+	return nil
+}
+
+// parseSkillMeta reads skill metadata from the SKILLS.MD or SKILL.md file.
+func parseSkillMeta(skillDir, slug string) model.SkillMeta {
+	meta := model.SkillMeta{
+		Name: slug,
+		Path: "/skills/" + slug,
+	}
+	skillsMD := filepath.Join(skillDir, "SKILLS.MD")
+	if _, err := os.Stat(skillsMD); err != nil {
+		skillsMD = filepath.Join(skillDir, "SKILL.md")
+	}
+	if content, err := os.ReadFile(skillsMD); err == nil {
+		parseFrontmatter(content, &meta)
+	}
+	return meta
+}
+
 // List downloads skill ZIPs, extracts them, parses metadata, and returns the list.
+// Skills already cached (same URL) are skipped. Skills not in the current request are removed.
 func (h *SkillHandler) List(c *gin.Context) {
 	var req model.SkillListRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -84,66 +174,92 @@ func (h *SkillHandler) List(c *gin.Context) {
 	}
 
 	skillsDir := h.mgr.SkillsRoot(req.AgentID)
-	os.MkdirAll(skillsDir, 0755)
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create skills directory: "+err.Error()))
+		return
+	}
 
+	// Serialize to prevent TOCTOU races on skill directories
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	activeSlugs := make(map[string]bool)
 	var skills []model.SkillMeta
 
 	for i, rawURL := range req.SkillURLs {
 		slug := extractSlugFromURL(rawURL, i)
+		activeSlugs[slug] = true
 		skillDir := filepath.Join(skillsDir, slug)
 
-		// Download ZIP
-		resp, err := http.Get(rawURL)
+		// Check cache: skip download if skill exists with same source URL
+		if cachedSource, err := os.ReadFile(filepath.Join(skillDir, sourceFile)); err == nil && string(cachedSource) == rawURL {
+			skills = append(skills, parseSkillMeta(skillDir, slug))
+			continue
+		}
+
+		// SSRF protection
+		if err := h.validateSkillURL(rawURL); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse("blocked URL for skill "+slug+": "+err.Error()))
+			return
+		}
+
+		// Download ZIP with timeout
+		resp, err := h.client().Get(rawURL)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill "+slug+": "+err.Error()))
 			return
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill "+slug+": HTTP "+resp.Status))
 			return
 		}
 
-		// Save to temp file
+		// Save to temp file with size limit
 		tmpFile, err := os.CreateTemp("", "skill-*.zip")
 		if err != nil {
+			resp.Body.Close()
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
 			return
 		}
 		tmpPath := tmpFile.Name()
-		defer os.Remove(tmpPath)
 
-		if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-			tmpFile.Close()
+		written, err := io.Copy(tmpFile, io.LimitReader(resp.Body, maxZipSize+1))
+		resp.Body.Close()
+		tmpFile.Close()
+
+		if err != nil {
+			os.Remove(tmpPath)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to save skill zip: "+err.Error()))
 			return
 		}
-		tmpFile.Close()
+		if written > maxZipSize {
+			os.Remove(tmpPath)
+			c.JSON(http.StatusBadRequest, model.ErrResponse("skill zip exceeds size limit (100MB): "+slug))
+			return
+		}
 
 		// Remove existing skill directory and extract
 		os.RemoveAll(skillDir)
 		if err := extractZip(tmpPath, skillDir); err != nil {
+			os.Remove(tmpPath)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to extract skill "+slug+": "+err.Error()))
 			return
 		}
+		os.Remove(tmpPath)
 
-		// Parse metadata from SKILLS.MD or SKILL.md
-		meta := model.SkillMeta{
-			Name: slug,
-			Path: "/skills/" + slug,
+		// Write source file for cache validation
+		if err := os.WriteFile(filepath.Join(skillDir, sourceFile), []byte(rawURL), 0644); err != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write cache metadata: "+err.Error()))
+			return
 		}
 
-		skillsMD := filepath.Join(skillDir, "SKILLS.MD")
-		if _, err := os.Stat(skillsMD); err != nil {
-			skillsMD = filepath.Join(skillDir, "SKILL.md")
-		}
-		if content, err := os.ReadFile(skillsMD); err == nil {
-			parseFrontmatter(content, &meta)
-		}
-
-		skills = append(skills, meta)
+		skills = append(skills, parseSkillMeta(skillDir, slug))
 	}
+
+	// Cleanup: remove skill directories not in current request
+	cleanupStaleSkills(skillsDir, activeSlugs)
 
 	if skills == nil {
 		skills = []model.SkillMeta{}
@@ -152,6 +268,22 @@ func (h *SkillHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, model.OkResponse(model.SkillListResult{
 		Skills: skills,
 	}))
+}
+
+// cleanupStaleSkills removes skill directories that are not in the active set.
+func cleanupStaleSkills(skillsDir string, activeSlugs map[string]bool) {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !activeSlugs[entry.Name()] {
+			os.RemoveAll(filepath.Join(skillsDir, entry.Name()))
+		}
+	}
 }
 
 // Load returns the SKILLS.MD content for the requested skill names.
@@ -168,7 +300,6 @@ func (h *SkillHandler) Load(c *gin.Context) {
 	for _, name := range req.SkillNames {
 		skillDir := filepath.Join(skillsDir, name)
 
-		// Try SKILLS.MD first, then SKILL.md
 		skillsMD := filepath.Join(skillDir, "SKILLS.MD")
 		if _, err := os.Stat(skillsMD); err != nil {
 			skillsMD = filepath.Join(skillDir, "SKILL.md")
@@ -194,7 +325,7 @@ func (h *SkillHandler) Load(c *gin.Context) {
 	}))
 }
 
-// extractZip extracts a ZIP archive to the target directory.
+// extractZip extracts a ZIP archive to the target directory with size limits.
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -203,6 +334,8 @@ func extractZip(zipPath, destDir string) error {
 	defer r.Close()
 
 	os.MkdirAll(destDir, 0755)
+
+	var totalSize int64
 
 	for _, f := range r.File {
 		// Security: skip paths with ".."
@@ -215,6 +348,12 @@ func extractZip(zipPath, destDir string) error {
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(fpath, 0755)
 			continue
+		}
+
+		// Track total extracted size to mitigate zip bombs
+		totalSize += int64(f.UncompressedSize64)
+		if totalSize > maxExtractedSize {
+			return fmt.Errorf("total extracted size exceeds limit (%dMB)", maxExtractedSize/1024/1024)
 		}
 
 		// Ensure parent directory
@@ -246,12 +385,10 @@ func extractZip(zipPath, destDir string) error {
 func parseFrontmatter(content []byte, meta *model.SkillMeta) {
 	text := string(content)
 
-	// Check for frontmatter delimiters
 	if !strings.HasPrefix(text, "---") {
 		return
 	}
 
-	// Find closing ---
 	end := strings.Index(text[3:], "---")
 	if end < 0 {
 		return

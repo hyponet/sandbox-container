@@ -70,6 +70,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 
 	// Skills
 	skillH := handler.NewSkillHandler(mgr)
+	skillH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
 	skills := r.Group("/v1/skills")
 	{
 		skills.POST("/list", skillH.List)

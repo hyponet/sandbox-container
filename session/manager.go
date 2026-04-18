@@ -13,18 +13,20 @@ import (
 )
 
 const (
-	DefaultAgentRoot  = "/data/agents"
-	DefaultTTL        = 24 * time.Hour
-	CleanupInterval   = 10 * time.Minute
+	DefaultAgentRoot    = "/data/agents"
+	DefaultGlobalSkills = "/data/skills"
+	DefaultTTL          = 24 * time.Hour
+	CleanupInterval     = 10 * time.Minute
 )
 
 // Manager manages session directories with TTL-based cleanup.
 type Manager struct {
-	root        string
-	ttl         time.Duration
-	mu          sync.RWMutex
-	accessTime  map[string]time.Time // "agentID/sessionID" -> last access time
-	auditWriter *audit.Writer
+	root             string
+	globalSkillsRoot string
+	ttl              time.Duration
+	mu               sync.RWMutex
+	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
+	auditWriter      *audit.Writer
 }
 
 // SessionEntry represents a session with its last access time.
@@ -42,11 +44,14 @@ func NewManager(root string, ttl time.Duration) *Manager {
 		ttl = DefaultTTL
 	}
 	m := &Manager{
-		root:       root,
-		ttl:        ttl,
-		accessTime: make(map[string]time.Time),
+		root:             root,
+		globalSkillsRoot: DefaultGlobalSkills,
+		ttl:              ttl,
+		accessTime:       make(map[string]time.Time),
 	}
 	os.MkdirAll(root, 0755)
+	// Only create globalSkillsRoot on first use or when explicitly set via SetGlobalSkillsRoot.
+	// Avoids creating /data/skills on the host filesystem during tests.
 	go m.cleanupLoop()
 	return m
 }
@@ -68,6 +73,22 @@ func (m *Manager) SessionRoot(agentID, sessionID string) string {
 // SkillsRoot returns the skills directory for a given agent.
 func (m *Manager) SkillsRoot(agentID string) string {
 	return filepath.Join(m.root, agentID, "skills")
+}
+
+// GlobalSkillsRoot returns the global skills directory.
+func (m *Manager) GlobalSkillsRoot() string {
+	return m.globalSkillsRoot
+}
+
+// GlobalSkillPath returns the path for a specific global skill.
+func (m *Manager) GlobalSkillPath(skillID string) string {
+	return filepath.Join(m.globalSkillsRoot, skillID)
+}
+
+// SetGlobalSkillsRoot sets the global skills root directory (for testing).
+func (m *Manager) SetGlobalSkillsRoot(path string) {
+	m.globalSkillsRoot = path
+	os.MkdirAll(path, 0755)
 }
 
 // IsSkillsPath checks if a request path targets the skills directory.

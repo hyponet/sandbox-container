@@ -255,15 +255,53 @@ type CodeLanguageInfo struct {
 // Skill types
 // =============================================
 
-type SkillMeta struct {
+type SkillMetaJSON struct {
 	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Path        string `json:"path"`
+	Description string `json:"description"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
 }
 
-type SkillListResult struct {
-	Skills []SkillMeta `json:"skills"`
+type SkillCreateResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+type SkillImportResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+type SkillFileEntry struct {
+	Path        string `json:"path"`
+	IsDirectory bool   `json:"is_directory"`
+	Size        int64  `json:"size"`
+}
+
+type SkillTreeResult struct {
+	Name  string           `json:"name"`
+	Files []SkillFileEntry `json:"files"`
+}
+
+type SkillFileReadResult struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type SkillFileWriteResult struct {
+	Path         string `json:"path"`
+	BytesWritten int    `json:"bytes_written"`
+}
+
+type SkillFileUpdateResult struct {
+	Path          string `json:"path"`
+	ReplacedCount int    `json:"replaced_count"`
+}
+
+type SkillFileMkdirResult struct {
+	Path string `json:"path"`
+}
+
+type SkillGlobalListResult struct {
+	Skills []SkillMetaJSON `json:"skills"`
 }
 
 type SkillContent struct {

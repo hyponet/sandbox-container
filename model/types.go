@@ -395,25 +395,110 @@ type CodeLanguageInfo struct {
 // Skills APIs
 // =============================================
 
-type SkillListRequest struct {
-	AgentID    string   `json:"agent_id" binding:"required"`
-	SkillURLs  []string `json:"skill_urls" binding:"required"`
-}
-
-type SkillMeta struct {
+// SkillMetaJSON represents the _meta.json file stored in each global skill directory.
+type SkillMetaJSON struct {
 	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Type        string `json:"type,omitempty"`
+	Description string `json:"description"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+// SkillCreateRequest creates a new empty skill in the global store.
+type SkillCreateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+type SkillCreateResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+// SkillImportRequest imports a skill from a ZIP URL into the global store.
+type SkillImportRequest struct {
+	Name   string `json:"name" binding:"required"`
+	ZipURL string `json:"zip_url" binding:"required"`
+}
+
+type SkillImportResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+// SkillTreeRequest returns the directory tree of a global skill.
+type SkillTreeRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+type SkillFileEntry struct {
 	Path        string `json:"path"`
+	IsDirectory bool   `json:"is_directory"`
+	Size        int64  `json:"size"`
 }
 
-type SkillListResult struct {
-	Skills []SkillMeta `json:"skills"`
+type SkillTreeResult struct {
+	Name  string           `json:"name"`
+	Files []SkillFileEntry `json:"files"`
 }
 
+// SkillFileReadRequest reads a file within a global skill.
+type SkillFileReadRequest struct {
+	Name string `json:"name" binding:"required"`
+	Path string `json:"path" binding:"required"`
+}
+
+type SkillFileReadResult struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// SkillFileWriteRequest writes a file within a global skill.
+type SkillFileWriteRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+	Content string `json:"content"`
+}
+
+type SkillFileWriteResult struct {
+	Path         string `json:"path"`
+	BytesWritten int    `json:"bytes_written"`
+}
+
+// SkillFileUpdateRequest replaces string content in a file within a global skill.
+type SkillFileUpdateRequest struct {
+	Name   string `json:"name" binding:"required"`
+	Path   string `json:"path" binding:"required"`
+	OldStr string `json:"old_str" binding:"required"`
+	NewStr string `json:"new_str" binding:"required"`
+}
+
+type SkillFileUpdateResult struct {
+	Path          string `json:"path"`
+	ReplacedCount int    `json:"replaced_count"`
+}
+
+// SkillFileMkdirRequest creates a directory within a global skill.
+type SkillFileMkdirRequest struct {
+	Name string `json:"name" binding:"required"`
+	Path string `json:"path" binding:"required"`
+}
+
+type SkillFileMkdirResult struct {
+	Path string `json:"path"`
+}
+
+// SkillGlobalListResult lists all skills in the global store.
+type SkillGlobalListResult struct {
+	Skills []SkillMetaJSON `json:"skills"`
+}
+
+// SkillDeleteRequest deletes a global skill.
+type SkillDeleteRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+// SkillLoadRequest loads skills into an agent's local cache and returns their content.
 type SkillLoadRequest struct {
-	AgentID    string   `json:"agent_id" binding:"required"`
-	SkillNames []string `json:"skill_names" binding:"required"`
+	AgentID  string   `json:"agent_id" binding:"required"`
+	SkillIDs []string `json:"skill_ids" binding:"required"`
 }
 
 type SkillContent struct {

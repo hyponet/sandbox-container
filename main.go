@@ -4,6 +4,8 @@ import (
 	"log"
 	"time"
 
+	"os"
+
 	"github.com/hyponet/sandbox-container/audit"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
@@ -65,10 +67,21 @@ func main() {
 	r.GET("/v1/code/info", auth, codeH.Info)
 
 	// Skills APIs
+	os.MkdirAll(session.DefaultGlobalSkills, 0755)
 	skillH := handler.NewSkillHandler(mgr)
 	skills := r.Group("/v1/skills", auth)
 	{
-		skills.POST("/list", skillH.List)
+		// Global skill management
+		skills.POST("/create", skillH.Create)
+		skills.POST("/import", skillH.Import)
+		skills.POST("/list", skillH.ListGlobal)
+		skills.POST("/delete", skillH.Delete)
+		skills.POST("/tree", skillH.Tree)
+		skills.POST("/file/read", skillH.FileRead)
+		skills.POST("/file/write", skillH.FileWrite)
+		skills.POST("/file/update", skillH.FileUpdate)
+		skills.POST("/file/mkdir", skillH.FileMkdir)
+		// Agent skill loading
 		skills.POST("/load", skillH.Load)
 	}
 

@@ -25,7 +25,10 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 
 	dir := filepath.Join(os.TempDir(), "client-test-"+fmt.Sprintf("%d", time.Now().UnixNano()))
 	os.MkdirAll(dir, 0755)
+	globalSkillsDir := filepath.Join(dir, "global-skills")
+	os.MkdirAll(globalSkillsDir, 0755)
 	mgr := session.NewManager(dir, 24*time.Hour)
+	mgr.SetGlobalSkillsRoot(globalSkillsDir)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -73,7 +76,15 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	skillH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
 	skills := r.Group("/v1/skills")
 	{
-		skills.POST("/list", skillH.List)
+		skills.POST("/create", skillH.Create)
+		skills.POST("/import", skillH.Import)
+		skills.POST("/list", skillH.ListGlobal)
+		skills.POST("/delete", skillH.Delete)
+		skills.POST("/tree", skillH.Tree)
+		skills.POST("/file/read", skillH.FileRead)
+		skills.POST("/file/write", skillH.FileWrite)
+		skills.POST("/file/update", skillH.FileUpdate)
+		skills.POST("/file/mkdir", skillH.FileMkdir)
 		skills.POST("/load", skillH.Load)
 	}
 
@@ -471,14 +482,16 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// First create a skill via skill list
-	zipURL := createTestZIPServer(t, map[string]string{
-		"SKILLS.MD": "---\nname: test\n---\ncontent",
-	})
-
-	_, err := cli.SkillList("a1", []string{zipURL + "?slug=test"})
+	// Create a skill in global store
+	_, err := cli.SkillCreate("test", "test skill")
 	if err != nil {
-		t.Fatalf("SkillList failed: %v", err)
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	// Load it into agent's local cache
+	_, err = cli.SkillLoad("a1", []string{"test"})
+	if err != nil {
+		t.Fatalf("SkillLoad failed: %v", err)
 	}
 
 	// Write to skills path should fail
@@ -491,7 +504,7 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Read from skills path should work
-	_, err = cli.FileRead("a1", "s15", "/skills/test/SKILLS.MD")
+	_, err = cli.FileRead("a1", "s15", "/skills/test/SKILLS.md")
 	if err != nil {
 		t.Errorf("expected read from skills to succeed, got %v", err)
 	}
@@ -554,54 +567,117 @@ func TestCodeExecuteUnsupportedLang(t *testing.T) {
 // Skill tests
 // =============================================
 
-func TestSkillList(t *testing.T) {
+func TestSkillCreateAndList(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	zipURL := createTestZIPServer(t, map[string]string{
-		"SKILLS.MD": "---\nname: test-skill\ndescription: A test skill\ntype: prompt\n---\nThis is the skill content.",
-		"script.sh": "echo hello",
-	})
+	// Create two skills
+	_, err := cli.SkillCreate("skill-a", "First skill")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+	_, err = cli.SkillCreate("skill-b", "Second skill")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
 
-	result, err := cli.SkillList("a1", []string{zipURL + "?slug=my-skill"})
+	// List all skills
+	result, err := cli.SkillList()
 	if err != nil {
 		t.Fatalf("SkillList failed: %v", err)
 	}
-	if len(result.Skills) != 1 {
-		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
-	}
-	if result.Skills[0].Name != "test-skill" {
-		t.Errorf("expected name 'test-skill', got %s", result.Skills[0].Name)
-	}
-	if result.Skills[0].Description != "A test skill" {
-		t.Errorf("expected description 'A test skill', got %s", result.Skills[0].Description)
+	if len(result.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(result.Skills))
 	}
 }
 
-func TestSkillLoad(t *testing.T) {
+func TestSkillImportAndLoad(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
 	zipURL := createTestZIPServer(t, map[string]string{
-		"SKILLS.MD": "---\nname: load-skill\n---\nSkill content here.",
+		"SKILLS.MD": "---\nname: imported-skill\ndescription: A test skill\n---\nThis is the skill content.",
+		"script.sh": "echo hello",
 	})
 
-	// First list to download and extract
-	_, err := cli.SkillList("a1", []string{zipURL + "?slug=load-skill"})
+	// Import from ZIP
+	_, err := cli.SkillImport("imported-skill", zipURL)
 	if err != nil {
-		t.Fatalf("SkillList failed: %v", err)
+		t.Fatalf("SkillImport failed: %v", err)
 	}
 
-	// Then load
-	result, err := cli.SkillLoad("a1", []string{"load-skill"})
+	// Load into agent
+	loadResult, err := cli.SkillLoad("a1", []string{"imported-skill"})
 	if err != nil {
 		t.Fatalf("SkillLoad failed: %v", err)
 	}
-	if len(result.Skills) != 1 {
-		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	if len(loadResult.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(loadResult.Skills))
 	}
-	if result.Skills[0].Name != "load-skill" {
-		t.Errorf("expected name 'load-skill', got %s", result.Skills[0].Name)
+	if loadResult.Skills[0].Name != "imported-skill" {
+		t.Errorf("expected name 'imported-skill', got %s", loadResult.Skills[0].Name)
+	}
+}
+
+func TestSkillFileOperations(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create skill
+	_, err := cli.SkillCreate("file-test", "test file ops")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	// Write a file
+	writeResult, err := cli.SkillFileWrite("file-test", "test.txt", "hello world")
+	if err != nil {
+		t.Fatalf("SkillFileWrite failed: %v", err)
+	}
+	if writeResult.BytesWritten == 0 {
+		t.Error("expected non-zero bytes written")
+	}
+
+	// Read the file
+	readResult, err := cli.SkillFileRead("file-test", "test.txt")
+	if err != nil {
+		t.Fatalf("SkillFileRead failed: %v", err)
+	}
+	if readResult.Content != "hello world" {
+		t.Errorf("expected 'hello world', got %q", readResult.Content)
+	}
+
+	// Update (replace)
+	updateResult, err := cli.SkillFileUpdate("file-test", "test.txt", "hello", "goodbye")
+	if err != nil {
+		t.Fatalf("SkillFileUpdate failed: %v", err)
+	}
+	if updateResult.ReplacedCount != 1 {
+		t.Errorf("expected 1 replacement, got %d", updateResult.ReplacedCount)
+	}
+
+	// Verify content after update
+	readResult2, _ := cli.SkillFileRead("file-test", "test.txt")
+	if readResult2.Content != "goodbye world" {
+		t.Errorf("expected 'goodbye world', got %q", readResult2.Content)
+	}
+
+	// Create a directory
+	mkdirResult, err := cli.SkillFileMkdir("file-test", "subdir")
+	if err != nil {
+		t.Fatalf("SkillFileMkdir failed: %v", err)
+	}
+	if mkdirResult.Path != "subdir" {
+		t.Errorf("expected path 'subdir', got %q", mkdirResult.Path)
+	}
+
+	// Get tree
+	treeResult, err := cli.SkillTree("file-test")
+	if err != nil {
+		t.Fatalf("SkillTree failed: %v", err)
+	}
+	if len(treeResult.Files) == 0 {
+		t.Error("expected non-empty tree")
 	}
 }
 

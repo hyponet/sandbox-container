@@ -2,6 +2,7 @@ package handler
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,25 +19,26 @@ import (
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
-	"github.com/goccy/go-yaml"
 )
 
 const (
 	maxZipSize        = 100 * 1024 * 1024 // 100MB download limit
 	maxExtractedSize  = 500 * 1024 * 1024 // 500MB total extracted size
 	skillHTTPTimeout  = 60 * time.Second
-	sourceFile        = ".source"
+	metaFile          = "_meta.json"
 	ssrfProtectionEnv = "SANDBOX_SSRF_PROTECTION"
 )
+
+var validSkillID = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
 
 var defaultHTTPClient = &http.Client{
 	Timeout: skillHTTPTimeout,
 }
 
-// SkillHandler handles skill list/load API endpoints.
+// SkillHandler handles skill management API endpoints.
 type SkillHandler struct {
 	mgr            *session.Manager
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	httpClient     *http.Client
 	ssrfProtection bool
 }
@@ -65,56 +68,99 @@ func isSSRFProtectionEnabled() bool {
 	return v != "false" && v != "0" && v != "off"
 }
 
-// skillFrontmatter represents the YAML frontmatter in a SKILLS.MD file.
-type skillFrontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Type        string `yaml:"type"`
+// ——— Helpers ———
+
+func validateSkillID(id string) error {
+	if id == "" {
+		return fmt.Errorf("skill ID is required")
+	}
+	if len(id) > 128 {
+		return fmt.Errorf("skill ID too long (max 128 chars)")
+	}
+	if !validSkillID.MatchString(id) {
+		return fmt.Errorf("skill ID contains invalid characters (only letters, digits, and hyphens allowed)")
+	}
+	return nil
 }
 
-// extractSlugFromURL extracts a skill name from a URL.
-// Priority: slug query param > last path segment (without extension) > "skill-N".
-func extractSlugFromURL(rawURL string, index int) string {
-	u, err := url.Parse(rawURL)
+func readSkillMeta(skillDir string) (*model.SkillMetaJSON, error) {
+	data, err := os.ReadFile(filepath.Join(skillDir, metaFile))
 	if err != nil {
-		return fmt.Sprintf("skill-%d", index)
+		return nil, err
 	}
-
-	if slug := u.Query().Get("slug"); slug != "" {
-		return sanitizeName(slug)
+	var meta model.SkillMetaJSON
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, err
 	}
-
-	base := filepath.Base(u.Path)
-	ext := filepath.Ext(base)
-	if ext != "" {
-		base = strings.TrimSuffix(base, ext)
-	}
-	if base != "" && base != "." && base != "/" {
-		return sanitizeName(base)
-	}
-
-	return fmt.Sprintf("skill-%d", index)
+	return &meta, nil
 }
 
-func sanitizeName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, " ", "-")
-	var b strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			b.WriteRune(r)
+func writeSkillMeta(skillDir string, meta *model.SkillMetaJSON) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(skillDir, metaFile), data, 0644)
+}
+
+func touchSkillMeta(skillDir string) error {
+	meta, err := readSkillMeta(skillDir)
+	if err != nil {
+		return err
+	}
+	meta.UpdatedAt = time.Now().UnixNano()
+	return writeSkillMeta(skillDir, meta)
+}
+
+func resolveSkillFilePath(skillDir, relPath string) (string, error) {
+	for _, component := range strings.Split(filepath.ToSlash(relPath), "/") {
+		if component == ".." {
+			return "", fmt.Errorf("path traversal not allowed: %s", relPath)
 		}
 	}
-	result := b.String()
-	if result == "" {
-		return "unnamed-skill"
+	clean := filepath.Clean(relPath)
+	full := filepath.Join(skillDir, clean)
+	full = filepath.Clean(full)
+	if !strings.HasPrefix(full+string(os.PathSeparator), skillDir+string(os.PathSeparator)) && full != skillDir {
+		return "", fmt.Errorf("path escapes skill directory: %s", relPath)
 	}
-	return result
+	return full, nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		// Skip symlinks to prevent symlink escape attacks
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		// Use Lstat to detect symlinks that Walk may have resolved
+		linfo, lerr := os.Lstat(path)
+		if lerr != nil {
+			return lerr
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
 
 // validateSkillURL checks if a URL is safe to fetch (SSRF protection).
-// Blocks private, loopback, link-local, and unspecified IPs.
-// Skips all checks when SSRF protection is disabled.
 func (h *SkillHandler) validateSkillURL(rawURL string) error {
 	if !h.ssrfProtection {
 		return nil
@@ -148,183 +194,6 @@ func (h *SkillHandler) validateSkillURL(rawURL string) error {
 	return nil
 }
 
-// parseSkillMeta reads skill metadata from the SKILLS.MD or SKILL.md file.
-func parseSkillMeta(skillDir, slug string) model.SkillMeta {
-	meta := model.SkillMeta{
-		Name: slug,
-		Path: "/skills/" + slug,
-	}
-	skillsMD := filepath.Join(skillDir, "SKILLS.MD")
-	if _, err := os.Stat(skillsMD); err != nil {
-		skillsMD = filepath.Join(skillDir, "SKILL.md")
-	}
-	if content, err := os.ReadFile(skillsMD); err == nil {
-		parseFrontmatter(content, &meta)
-	}
-	return meta
-}
-
-// List downloads skill ZIPs, extracts them, parses metadata, and returns the list.
-// Skills already cached (same URL) are skipped. Skills not in the current request are removed.
-func (h *SkillHandler) List(c *gin.Context) {
-	var req model.SkillListRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-
-	skillsDir := h.mgr.SkillsRoot(req.AgentID)
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create skills directory: "+err.Error()))
-		return
-	}
-
-	// Serialize to prevent TOCTOU races on skill directories
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	activeSlugs := make(map[string]bool)
-	var skills []model.SkillMeta
-
-	for i, rawURL := range req.SkillURLs {
-		slug := extractSlugFromURL(rawURL, i)
-		activeSlugs[slug] = true
-		skillDir := filepath.Join(skillsDir, slug)
-
-		// Check cache: skip download if skill exists with same source URL
-		if cachedSource, err := os.ReadFile(filepath.Join(skillDir, sourceFile)); err == nil && string(cachedSource) == rawURL {
-			skills = append(skills, parseSkillMeta(skillDir, slug))
-			continue
-		}
-
-		// SSRF protection
-		if err := h.validateSkillURL(rawURL); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrResponse("blocked URL for skill "+slug+": "+err.Error()))
-			return
-		}
-
-		// Download ZIP with timeout
-		resp, err := h.client().Get(rawURL)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill "+slug+": "+err.Error()))
-			return
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill "+slug+": HTTP "+resp.Status))
-			return
-		}
-
-		// Save to temp file with size limit
-		tmpFile, err := os.CreateTemp("", "skill-*.zip")
-		if err != nil {
-			resp.Body.Close()
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
-			return
-		}
-		tmpPath := tmpFile.Name()
-
-		written, err := io.Copy(tmpFile, io.LimitReader(resp.Body, maxZipSize+1))
-		resp.Body.Close()
-		tmpFile.Close()
-
-		if err != nil {
-			os.Remove(tmpPath)
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to save skill zip: "+err.Error()))
-			return
-		}
-		if written > maxZipSize {
-			os.Remove(tmpPath)
-			c.JSON(http.StatusBadRequest, model.ErrResponse("skill zip exceeds size limit (100MB): "+slug))
-			return
-		}
-
-		// Remove existing skill directory and extract
-		os.RemoveAll(skillDir)
-		if err := extractZip(tmpPath, skillDir); err != nil {
-			os.Remove(tmpPath)
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to extract skill "+slug+": "+err.Error()))
-			return
-		}
-		os.Remove(tmpPath)
-
-		// Write source file for cache validation
-		if err := os.WriteFile(filepath.Join(skillDir, sourceFile), []byte(rawURL), 0644); err != nil {
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write cache metadata: "+err.Error()))
-			return
-		}
-
-		skills = append(skills, parseSkillMeta(skillDir, slug))
-	}
-
-	// Cleanup: remove skill directories not in current request
-	cleanupStaleSkills(skillsDir, activeSlugs)
-
-	if skills == nil {
-		skills = []model.SkillMeta{}
-	}
-
-	c.JSON(http.StatusOK, model.OkResponse(model.SkillListResult{
-		Skills: skills,
-	}))
-}
-
-// cleanupStaleSkills removes skill directories that are not in the active set.
-func cleanupStaleSkills(skillsDir string, activeSlugs map[string]bool) {
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if !activeSlugs[entry.Name()] {
-			os.RemoveAll(filepath.Join(skillsDir, entry.Name()))
-		}
-	}
-}
-
-// Load returns the SKILLS.MD content for the requested skill names.
-func (h *SkillHandler) Load(c *gin.Context) {
-	var req model.SkillLoadRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-
-	skillsDir := h.mgr.SkillsRoot(req.AgentID)
-	var skills []model.SkillContent
-
-	for _, name := range req.SkillNames {
-		skillDir := filepath.Join(skillsDir, name)
-
-		skillsMD := filepath.Join(skillDir, "SKILLS.MD")
-		if _, err := os.Stat(skillsMD); err != nil {
-			skillsMD = filepath.Join(skillDir, "SKILL.md")
-		}
-
-		content, err := os.ReadFile(skillsMD)
-		if err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+name))
-			return
-		}
-		skills = append(skills, model.SkillContent{
-			Name:    name,
-			Content: string(content),
-		})
-	}
-
-	if skills == nil {
-		skills = []model.SkillContent{}
-	}
-
-	c.JSON(http.StatusOK, model.OkResponse(model.SkillLoadResult{
-		Skills: skills,
-	}))
-}
-
 // extractZip extracts a ZIP archive to the target directory with size limits.
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
@@ -337,26 +206,30 @@ func extractZip(zipPath, destDir string) error {
 
 	var totalSize int64
 
+	cleanDestDir := filepath.Clean(destDir)
+
 	for _, f := range r.File {
-		// Security: skip paths with ".."
 		if strings.Contains(f.Name, "..") {
 			continue
 		}
 
 		fpath := filepath.Join(destDir, f.Name)
+		// Validate extracted path stays within destDir
+		if !strings.HasPrefix(filepath.Clean(fpath)+string(os.PathSeparator), cleanDestDir+string(os.PathSeparator)) &&
+			filepath.Clean(fpath) != cleanDestDir {
+			continue
+		}
 
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(fpath, 0755)
 			continue
 		}
 
-		// Track total extracted size to mitigate zip bombs
 		totalSize += int64(f.UncompressedSize64)
 		if totalSize > maxExtractedSize {
 			return fmt.Errorf("total extracted size exceeds limit (%dMB)", maxExtractedSize/1024/1024)
 		}
 
-		// Ensure parent directory
 		os.MkdirAll(filepath.Dir(fpath), 0755)
 
 		outFile, err := os.OpenFile(fpath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
@@ -381,33 +254,568 @@ func extractZip(zipPath, destDir string) error {
 	return nil
 }
 
-// parseFrontmatter parses YAML frontmatter from SKILLS.MD content.
-func parseFrontmatter(content []byte, meta *model.SkillMeta) {
-	text := string(content)
+// ——— Global Skill Management APIs ———
 
-	if !strings.HasPrefix(text, "---") {
+// Create creates a new empty skill in the global store.
+func (h *SkillHandler) Create(c *gin.Context) {
+	var req model.SkillCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
 
-	end := strings.Index(text[3:], "---")
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+
+	// Check if already exists
+	if _, err := os.Stat(skillDir); err == nil {
+		c.JSON(http.StatusConflict, model.ErrResponse("skill already exists: "+req.Name))
+		return
+	}
+
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create skill directory: "+err.Error()))
+		return
+	}
+
+	now := time.Now().UnixNano()
+	meta := &model.SkillMetaJSON{
+		Name:        req.Name,
+		Description: req.Description,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	if err := writeSkillMeta(skillDir, meta); err != nil {
+		os.RemoveAll(skillDir)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
+		return
+	}
+
+	// Create default SKILLS.md (quote description to prevent YAML injection)
+	safeDesc := strings.ReplaceAll(req.Description, `"`, `\"`)
+	skillsMD := fmt.Sprintf("---\nname: %s\ndescription: \"%s\"\n---\n", req.Name, safeDesc)
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(skillsMD), 0644); err != nil {
+		os.RemoveAll(skillDir)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write SKILLS.md: "+err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillCreateResult{Skill: *meta}))
+}
+
+// Import imports a skill from a ZIP URL into the global store.
+func (h *SkillHandler) Import(c *gin.Context) {
+	var req model.SkillImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	// SSRF validation
+	if err := h.validateSkillURL(req.ZipURL); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("blocked URL: "+err.Error()))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+
+	// Preserve created_at if skill already exists
+	var existingCreatedAt int64
+	if existingMeta, err := readSkillMeta(skillDir); err == nil {
+		existingCreatedAt = existingMeta.CreatedAt
+	}
+
+	// Download ZIP
+	resp, err := h.client().Get(req.ZipURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill: "+err.Error()))
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill: HTTP "+resp.Status))
+		return
+	}
+
+	tmpFile, err := os.CreateTemp("", "skill-*.zip")
+	if err != nil {
+		resp.Body.Close()
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
+		return
+	}
+	tmpPath := tmpFile.Name()
+
+	written, err := io.Copy(tmpFile, io.LimitReader(resp.Body, maxZipSize+1))
+	resp.Body.Close()
+	tmpFile.Close()
+
+	if err != nil {
+		os.Remove(tmpPath)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to save skill zip: "+err.Error()))
+		return
+	}
+	if written > maxZipSize {
+		os.Remove(tmpPath)
+		c.JSON(http.StatusBadRequest, model.ErrResponse("skill zip exceeds size limit (100MB)"))
+		return
+	}
+
+	// Remove existing and extract
+	os.RemoveAll(skillDir)
+	if err := extractZip(tmpPath, skillDir); err != nil {
+		os.Remove(tmpPath)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to extract skill: "+err.Error()))
+		return
+	}
+	os.Remove(tmpPath)
+
+	// Write/update _meta.json
+	now := time.Now().UnixNano()
+	if existingCreatedAt == 0 {
+		existingCreatedAt = now
+	}
+	meta := &model.SkillMetaJSON{
+		Name:        req.Name,
+		Description: "",
+		CreatedAt:   existingCreatedAt,
+		UpdatedAt:   now,
+	}
+
+	// Try to extract description from SKILLS.md frontmatter if present
+	skillsMDPath := filepath.Join(skillDir, "SKILLS.md")
+	if content, err := os.ReadFile(skillsMDPath); err != nil {
+		// Create default SKILLS.md if not in ZIP
+		defaultMD := fmt.Sprintf("---\nname: %s\n---\n", req.Name)
+		if wErr := os.WriteFile(skillsMDPath, []byte(defaultMD), 0644); wErr != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write default SKILLS.md: "+wErr.Error()))
+			return
+		}
+	} else {
+		// Try to extract description from frontmatter
+		desc := extractDescriptionFromFrontmatter(string(content))
+		if desc != "" {
+			meta.Description = desc
+		}
+	}
+
+	if err := writeSkillMeta(skillDir, meta); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillImportResult{Skill: *meta}))
+}
+
+// extractDescriptionFromFrontmatter extracts the description field from YAML frontmatter.
+func extractDescriptionFromFrontmatter(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return ""
+	}
+	end := strings.Index(content[3:], "---")
 	if end < 0 {
+		return ""
+	}
+	fmText := strings.TrimSpace(content[3 : end+3])
+	for _, line := range strings.Split(fmText, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "description:") {
+			desc := strings.TrimSpace(strings.TrimPrefix(line, "description:"))
+			// Remove surrounding quotes if present
+			if len(desc) >= 2 && (desc[0] == '"' || desc[0] == '\'') && desc[0] == desc[len(desc)-1] {
+				desc = desc[1 : len(desc)-1]
+			}
+			return desc
+		}
+	}
+	return ""
+}
+
+// ListGlobal lists all skills in the global store.
+func (h *SkillHandler) ListGlobal(c *gin.Context) {
+	globalDir := h.mgr.GlobalSkillsRoot()
+	entries, err := os.ReadDir(globalDir)
+	if err != nil {
+		c.JSON(http.StatusOK, model.OkResponse(model.SkillGlobalListResult{Skills: []model.SkillMetaJSON{}}))
 		return
 	}
 
-	fmText := strings.TrimSpace(text[3 : end+3])
+	var skills []model.SkillMetaJSON
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		meta, err := readSkillMeta(filepath.Join(globalDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		skills = append(skills, *meta)
+	}
 
-	var fm skillFrontmatter
-	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
+	if skills == nil {
+		skills = []model.SkillMetaJSON{}
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillGlobalListResult{Skills: skills}))
+}
+
+// Delete removes a global skill.
+func (h *SkillHandler) Delete(c *gin.Context) {
+	var req model.SkillDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
 
-	if fm.Name != "" {
-		meta.Name = fm.Name
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
 	}
-	if fm.Description != "" {
-		meta.Description = fm.Description
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
 	}
-	if fm.Type != "" {
-		meta.Type = fm.Type
+
+	if err := os.RemoveAll(skillDir); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete skill: "+err.Error()))
+		return
 	}
+
+	c.JSON(http.StatusOK, model.OkMsg("skill deleted: "+req.Name))
+}
+
+// Tree returns the directory tree of a global skill.
+func (h *SkillHandler) Tree(c *gin.Context) {
+	var req model.SkillTreeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	var files []model.SkillFileEntry
+	filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(skillDir, path)
+		if rel == "." {
+			return nil
+		}
+		files = append(files, model.SkillFileEntry{
+			Path:        rel,
+			IsDirectory: info.IsDir(),
+			Size:        info.Size(),
+		})
+		return nil
+	})
+
+	if files == nil {
+		files = []model.SkillFileEntry{}
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillTreeResult{
+		Name:  req.Name,
+		Files: files,
+	}))
+}
+
+// FileRead reads a file within a global skill.
+func (h *SkillHandler) FileRead(c *gin.Context) {
+	var req model.SkillFileReadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	resolved, err := resolveSkillFilePath(skillDir, req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+req.Path))
+		return
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileReadResult{
+		Path:    req.Path,
+		Content: string(content),
+	}))
+}
+
+// FileWrite writes a file within a global skill.
+func (h *SkillHandler) FileWrite(c *gin.Context) {
+	var req model.SkillFileWriteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	resolved, err := resolveSkillFilePath(skillDir, req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	// Don't allow overwriting _meta.json directly (case-insensitive for macOS)
+	if strings.EqualFold(filepath.Base(resolved), metaFile) {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("cannot write to system file: "+metaFile))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Ensure parent directory inside lock to prevent TOCTOU
+	os.MkdirAll(filepath.Dir(resolved), 0755)
+
+	data := []byte(req.Content)
+	if err := os.WriteFile(resolved, data, 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
+		return
+	}
+
+	touchSkillMeta(skillDir)
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileWriteResult{
+		Path:         req.Path,
+		BytesWritten: len(data),
+	}))
+}
+
+// FileUpdate replaces string content in a file within a global skill.
+func (h *SkillHandler) FileUpdate(c *gin.Context) {
+	var req model.SkillFileUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	resolved, err := resolveSkillFilePath(skillDir, req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	if strings.EqualFold(filepath.Base(resolved), metaFile) {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("cannot update system file: "+metaFile))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+req.Path))
+		return
+	}
+
+	replacedCount := strings.Count(string(content), req.OldStr)
+
+	// Skip write and meta touch when no replacements found
+	if replacedCount > 0 {
+		newContent := strings.ReplaceAll(string(content), req.OldStr, req.NewStr)
+		if err := os.WriteFile(resolved, []byte(newContent), 0644); err != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
+			return
+		}
+		touchSkillMeta(skillDir)
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileUpdateResult{
+		Path:          req.Path,
+		ReplacedCount: replacedCount,
+	}))
+}
+
+// FileMkdir creates a directory within a global skill.
+func (h *SkillHandler) FileMkdir(c *gin.Context) {
+	var req model.SkillFileMkdirRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	resolved, err := resolveSkillFilePath(skillDir, req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if err := os.MkdirAll(resolved, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create directory: "+err.Error()))
+		return
+	}
+
+	touchSkillMeta(skillDir)
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileMkdirResult{
+		Path: req.Path,
+	}))
+}
+
+// ——— Agent Skill Loading ———
+
+// copySkillToAgent copies a skill from global store to agent cache with proper locking.
+func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	os.RemoveAll(agentDir)
+	os.MkdirAll(filepath.Dir(agentDir), 0755)
+	return copyDir(globalDir, agentDir)
+}
+
+// Load loads skills into an agent's local cache and returns their content.
+// For each skill_id: checks global store, compares version with agent cache,
+// copies from global if outdated or missing, then returns SKILLS.md content.
+func (h *SkillHandler) Load(c *gin.Context) {
+	var req model.SkillLoadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	var skills []model.SkillContent
+
+	for _, skillID := range req.SkillIDs {
+		if err := validateSkillID(skillID); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("invalid skill ID %q: %s", skillID, err.Error())))
+			return
+		}
+
+		globalDir := h.mgr.GlobalSkillPath(skillID)
+		if _, err := os.Stat(globalDir); err != nil {
+			c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+skillID))
+			return
+		}
+
+		// Read global meta
+		globalMeta, err := readSkillMeta(globalDir)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+skillID))
+			return
+		}
+
+		agentDir := filepath.Join(h.mgr.SkillsRoot(req.AgentID), skillID)
+		needCopy := true
+
+		// Check agent cache
+		if localMeta, err := readSkillMeta(agentDir); err == nil {
+			if localMeta.UpdatedAt >= globalMeta.UpdatedAt {
+				needCopy = false
+			}
+		}
+
+		if needCopy {
+			if err := h.copySkillToAgent(globalDir, agentDir); err != nil {
+				c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to copy skill: "+skillID))
+				return
+			}
+		}
+
+		// Read SKILLS.md from agent-local copy
+		skillsMD := filepath.Join(agentDir, "SKILLS.md")
+		if _, err := os.Stat(skillsMD); err != nil {
+			skillsMD = filepath.Join(agentDir, "SKILL.md")
+		}
+
+		content, err := os.ReadFile(skillsMD)
+		if err != nil {
+			c.JSON(http.StatusNotFound, model.ErrResponse("SKILLS.md not found for skill: "+skillID))
+			return
+		}
+
+		skills = append(skills, model.SkillContent{
+			Name:    skillID,
+			Content: string(content),
+		})
+	}
+
+	if skills == nil {
+		skills = []model.SkillContent{}
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillLoadResult{Skills: skills}))
 }

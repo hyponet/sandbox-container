@@ -7,7 +7,7 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Bash Execution** — Execute bash commands in isolated sessions with streaming output, async mode, timeout control, and process interaction (stdin write/kill)
 - **File Operations** — Full file management: read/write, search, glob/grep, directory listing, file upload/download, string replacement
 - **Code Execution** — Run Python and JavaScript code with timeout control and pre-installed scientific computing and web development libraries
-- **Skills Management** — Download and load skill packages from ZIP archives
+- **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
 - **Audit Logging** — Full request/response logging
 
@@ -21,6 +21,7 @@ docker build -t sandbox-container .
 docker run -d \
   -p 9090:9090 \
   -v sandbox-data:/data/agents \
+  -v sandbox-skills:/data/skills \
   -v sandbox-logs:/var/log/sandbox \
   sandbox-container
 ```
@@ -116,10 +117,53 @@ POST /v1/code/execute
 
 ### Skills Management
 
+Skills are managed globally in `/data/skills/`. Each skill is identified by a unique name (letters, digits, hyphens only).
+
 ```
-POST /v1/skills/list  # Download and list skills
-POST /v1/skills/load  # Load skill contents
+POST /v1/skills/create        # Create an empty skill
+POST /v1/skills/import        # Import skill from a ZIP URL
+POST /v1/skills/list          # List all global skills
+POST /v1/skills/delete        # Delete a global skill
+POST /v1/skills/tree          # View skill directory tree
+POST /v1/skills/file/read     # Read a file in a skill
+POST /v1/skills/file/write    # Write a file to a skill
+POST /v1/skills/file/update   # Replace string content in a skill file
+POST /v1/skills/file/mkdir    # Create a directory in a skill
+POST /v1/skills/load          # Load skills into an agent's session
 ```
+
+**Example — Create a skill:**
+
+```json
+POST /v1/skills/create
+{
+  "name": "my-skill",
+  "description": "A useful skill"
+}
+```
+
+**Example — Write a file to a skill:**
+
+```json
+POST /v1/skills/file/write
+{
+  "name": "my-skill",
+  "path": "src/helper.py",
+  "content": "def greet(): return 'hello'"
+}
+```
+
+**Example — Load skills into an agent session:**
+
+```json
+POST /v1/skills/load
+{
+  "agent_id": "agent-1",
+  "skill_ids": ["my-skill", "another-skill"]
+}
+```
+
+Skills are cached per-agent. When loaded, the system compares the version timestamp (`_meta.json`) — if the agent's cached copy is outdated, it's automatically updated from the global store.
 
 ## Go Client
 
@@ -143,8 +187,16 @@ content, _ := c.FileRead("agent-1", "session-1", "/workspace/main.go",
 c.FileWrite("agent-1", "session-1", "test.txt", "hello")
 files, _ := c.FileGlob("agent-1", "session-1", "/", "**/*.go")
 
-// Skills
-skills, _ := c.SkillList("agent-1", []string{"https://example.com/skill.zip"})
+// Skills — Global management
+c.SkillCreate("my-skill", "A useful skill")
+c.SkillImport("imported-skill", "https://example.com/skill.zip")
+skills, _ := c.SkillList()
+tree, _ := c.SkillTree("my-skill")
+c.SkillFileWrite("my-skill", "src/helper.py", "def greet(): pass")
+c.SkillFileMkdir("my-skill", "src/utils")
+c.SkillDelete("my-skill")
+
+// Skills — Load into agent session
 content, _ := c.SkillLoad("agent-1", []string{"my-skill"})
 ```
 
@@ -153,12 +205,19 @@ content, _ := c.SkillLoad("agent-1", []string{"my-skill"})
 Each `agent_id` + `session_id` pair maps to an independent directory:
 
 ```
-/data/agents/
-  <agent_id>/
-    skills/                    # Shared skills directory (read-only)
-    sessions/
-      <session_id>/            # Session working directory
-        skills -> ../../skills # Symlink to shared skills
+/data/
+  skills/                         # Global skills store
+    <skill-id>/                   # Skill ID (letters, digits, hyphens)
+      _meta.json                  # System-maintained metadata (version timestamps)
+      SKILLS.md                   # Skill documentation
+      ...                         # Skill files
+  agents/
+    <agent_id>/
+      skills/                     # Agent-level skill cache (copied from global)
+        <skill-id>/
+      sessions/
+        <session_id>/             # Session working directory
+          skills -> ../../skills  # Symlink to agent's skills cache
 ```
 
 - Default TTL: 24 hours

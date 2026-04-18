@@ -25,6 +25,7 @@ import (
 const (
 	maxZipSize        = 100 * 1024 * 1024 // 100MB download limit
 	maxExtractedSize  = 500 * 1024 * 1024 // 500MB total extracted size
+	maxUploadFiles    = 20                 // max files per upload request
 	skillHTTPTimeout  = 60 * time.Second
 	metaFile          = "_meta.json"
 	ssrfProtectionEnv = "SANDBOX_SSRF_PROTECTION"
@@ -803,9 +804,8 @@ func (h *SkillHandler) FileDelete(c *gin.Context) {
 // file 2 of 3), previously imported skills remain on disk. Callers should
 // treat partial success as possible and verify results.
 func (h *SkillHandler) ImportUpload(c *gin.Context) {
-	// Limit total request body to prevent memory exhaustion.
-	// Each file is also checked against maxZipSize individually.
-	maxUploadBody := int64(len(c.Request.Header.Get("Content-Type"))+1024) + maxZipSize*10
+	// Fixed body limit: maxUploadFiles * maxZipSize + 1MB overhead for multipart headers.
+	maxUploadBody := int64(maxUploadFiles)*maxZipSize + 1024*1024
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBody)
 
 	form, err := c.MultipartForm()
@@ -819,6 +819,10 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 
 	if len(files) == 0 {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("no files uploaded"))
+		return
+	}
+	if len(files) > maxUploadFiles {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("too many files (%d), max %d per request", len(files), maxUploadFiles)))
 		return
 	}
 	if len(names) != len(files) {
@@ -865,12 +869,17 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 		}
 		tmpPath := tmpFile.Name()
 
-		_, err = io.Copy(tmpFile, src)
+		written, err := io.Copy(tmpFile, io.LimitReader(src, maxZipSize+1))
 		src.Close()
 		tmpFile.Close()
 		if err != nil {
 			os.Remove(tmpPath)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to save uploaded file %q: %s", fh.Filename, err.Error())))
+			return
+		}
+		if written > maxZipSize {
+			os.Remove(tmpPath)
+			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("file %q exceeds size limit (100MB)", fh.Filename)))
 			return
 		}
 

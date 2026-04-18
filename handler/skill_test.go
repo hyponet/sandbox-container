@@ -806,8 +806,17 @@ func TestAgentSkillLoadNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", w.Code)
+	// Handler skips nonexistent skills and returns 200 with empty results
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skills := data["skills"].([]interface{})
+	if len(skills) != 0 {
+		t.Errorf("expected 0 skills for nonexistent, got %d", len(skills))
 	}
 }
 
@@ -1505,6 +1514,31 @@ func TestSkillImportUploadPreservesCreatedAt(t *testing.T) {
 	}
 	if updatedMeta.UpdatedAt <= originalCreatedAt {
 		t.Errorf("expected updated_at > created_at")
+	}
+}
+
+func TestSkillImportUploadTooManyFiles(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	zipBuf := createTestZipBytes(t, map[string]string{"SKILLS.md": "---\nname: x\n---\n"})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for i := 0; i < maxUploadFiles+1; i++ {
+		name := fmt.Sprintf("skill-%d", i)
+		writer.WriteField("names", name)
+		p, _ := writer.CreateFormFile("files", name+".zip")
+		p.Write(zipBuf)
+	}
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for too many files, got %d %s", w.Code, w.Body.String())
 	}
 }
 

@@ -729,12 +729,13 @@ func TestSkillAgentListNotFound(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillAgentList("a1", []string{"nonexistent"})
-	if err == nil {
-		t.Error("expected error for nonexistent skill")
+	// Handler skips nonexistent skills and returns 200 with empty results
+	result, err := cli.SkillAgentList("a1", []string{"nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404 error, got %v", err)
+	if len(result.Skills) != 0 {
+		t.Errorf("expected 0 skills for nonexistent, got %d", len(result.Skills))
 	}
 }
 
@@ -768,12 +769,13 @@ func TestSkillAgentLoadNotFound(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillAgentLoad("a1", []string{"nonexistent"})
-	if err == nil {
-		t.Error("expected error for nonexistent skill")
+	// Handler skips nonexistent skills and returns 200 with empty results
+	result, err := cli.SkillAgentLoad("a1", []string{"nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404 error, got %v", err)
+	if len(result.Skills) != 0 {
+		t.Errorf("expected 0 skills for nonexistent, got %d", len(result.Skills))
 	}
 }
 

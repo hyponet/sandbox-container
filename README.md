@@ -129,6 +129,8 @@ POST /v1/skills/file/read     # Read a file in a skill
 POST /v1/skills/file/write    # Write a file to a skill
 POST /v1/skills/file/update   # Replace string content in a skill file
 POST /v1/skills/file/mkdir    # Create a directory in a skill
+POST /v1/skills/file/delete   # Delete a file or directory in a skill
+POST /v1/skills/import/upload # Import skills from uploaded ZIP files (multipart)
 POST /v1/skills/agents/:agent_id/list  # List agent skills (frontmatter summaries)
 POST /v1/skills/agents/:agent_id/load  # Load skills into agent session (body content)
 ```
@@ -223,6 +225,10 @@ skills, _ := c.SkillList()
 tree, _ := c.SkillTree("my-skill")
 c.SkillFileWrite("my-skill", "src/helper.py", "def greet(): pass")
 c.SkillFileMkdir("my-skill", "src/utils")
+c.SkillFileDelete("my-skill", "src/helper.py")
+c.SkillImportUpload([]client.SkillUploadEntry{
+    {Name: "uploaded-skill", ZipPath: "/tmp/skill.zip"},
+})
 c.SkillDelete("my-skill")
 
 // Skills — Load into agent session

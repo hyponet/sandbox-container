@@ -167,8 +167,17 @@ func TestGetAuditLogsNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+	// Handler returns 200 with empty entries for nonexistent sessions
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	entries := data["entries"].([]interface{})
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries, got %d", len(entries))
 	}
 }
 

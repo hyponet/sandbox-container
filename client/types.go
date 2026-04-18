@@ -307,6 +307,14 @@ type SkillFileMkdirResult struct {
 	Path string `json:"path"`
 }
 
+type SkillFileDeleteResult struct {
+	Path string `json:"path"`
+}
+
+type SkillImportUploadResult struct {
+	Skills []SkillMetaJSON `json:"skills"`
+}
+
 type SkillGlobalListResult struct {
 	Skills []SkillMetaJSON `json:"skills"`
 }

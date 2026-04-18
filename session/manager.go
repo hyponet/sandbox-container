@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hyponet/sandbox-container/audit"
 )
 
 const (
@@ -17,10 +20,17 @@ const (
 
 // Manager manages session directories with TTL-based cleanup.
 type Manager struct {
-	root       string
-	ttl        time.Duration
-	mu         sync.RWMutex
-	accessTime map[string]time.Time // "agentID/sessionID" -> last access time
+	root        string
+	ttl         time.Duration
+	mu          sync.RWMutex
+	accessTime  map[string]time.Time // "agentID/sessionID" -> last access time
+	auditWriter *audit.Writer
+}
+
+// SessionEntry represents a session with its last access time.
+type SessionEntry struct {
+	SessionID  string
+	LastAccess time.Time
 }
 
 // NewManager creates a new session manager.
@@ -183,8 +193,102 @@ func (m *Manager) Touch(agentID, sessionID string) {
 
 // Exists checks if a session directory exists.
 func (m *Manager) Exists(agentID, sessionID string) bool {
+	if err := audit.ValidateID(agentID); err != nil {
+		return false
+	}
+	if err := audit.ValidateID(sessionID); err != nil {
+		return false
+	}
 	info, err := os.Stat(m.SessionRoot(agentID, sessionID))
 	return err == nil && info.IsDir()
+}
+
+// SetAuditWriter injects the audit writer for cleanup coordination.
+func (m *Manager) SetAuditWriter(w *audit.Writer) {
+	m.auditWriter = w
+}
+
+// AuditDir returns the audits directory for a given agent.
+func (m *Manager) AuditDir(agentID string) string {
+	return filepath.Join(m.root, agentID, "audits")
+}
+
+// AuditPath returns the audit log file path for a session.
+func (m *Manager) AuditPath(agentID, sessionID string) string {
+	return filepath.Join(m.root, agentID, "audits", sessionID+".jsonl")
+}
+
+// ListSessions returns all sessions for a given agent, merging in-memory and on-disk state.
+func (m *Manager) ListSessions(agentID string) ([]SessionEntry, error) {
+	if err := audit.ValidateID(agentID); err != nil {
+		return nil, fmt.Errorf("invalid agent_id: %w", err)
+	}
+
+	result := make(map[string]time.Time)
+
+	// Scan disk for sessions
+	sessionsDir := filepath.Join(m.root, agentID, "sessions")
+	if entries, err := os.ReadDir(sessionsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				result[e.Name()] = time.Time{}
+			}
+		}
+	}
+
+	// Merge in-memory access times (override disk entries)
+	prefix := agentID + "/"
+	m.mu.RLock()
+	for key, lastAccess := range m.accessTime {
+		if strings.HasPrefix(key, prefix) {
+			sessionID := strings.TrimPrefix(key, prefix)
+			result[sessionID] = lastAccess
+		}
+	}
+	m.mu.RUnlock()
+
+	var sessions []SessionEntry
+	for sid, lastAccess := range result {
+		sessions = append(sessions, SessionEntry{
+			SessionID:  sid,
+			LastAccess: lastAccess,
+		})
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].LastAccess.After(sessions[j].LastAccess)
+	})
+	return sessions, nil
+}
+
+// DeleteSession removes a session directory, its audit file, and in-memory state.
+func (m *Manager) DeleteSession(agentID, sessionID string) error {
+	if err := audit.ValidateID(agentID); err != nil {
+		return fmt.Errorf("invalid agent_id: %w", err)
+	}
+	if err := audit.ValidateID(sessionID); err != nil {
+		return fmt.Errorf("invalid session_id: %w", err)
+	}
+
+	key := m.agentKey(agentID, sessionID)
+
+	// Acquire the manager lock first, then close audit writer.
+	// This ensures consistent ordering: m.mu is always acquired before auditWriter operations.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.auditWriter != nil {
+		m.auditWriter.CloseSession(agentID, sessionID)
+	}
+
+	// Remove session directory
+	os.RemoveAll(m.SessionRoot(agentID, sessionID))
+
+	// Remove audit file
+	os.Remove(m.AuditPath(agentID, sessionID))
+
+	// Remove from access time map
+	delete(m.accessTime, key)
+	return nil
 }
 
 // cleanupLoop periodically removes expired session directories.
@@ -205,8 +309,15 @@ func (m *Manager) cleanup() {
 		if now.Sub(lastAccess) > m.ttl {
 			parts := strings.SplitN(key, "/", 2)
 			if len(parts) == 2 {
-				sessionDir := m.SessionRoot(parts[0], parts[1])
-				os.RemoveAll(sessionDir)
+				agentID, sessionID := parts[0], parts[1]
+				// Close audit writer handle (lock ordering: m.mu held first)
+				if m.auditWriter != nil {
+					m.auditWriter.CloseSession(agentID, sessionID)
+				}
+				// Remove session directory
+				os.RemoveAll(m.SessionRoot(agentID, sessionID))
+				// Remove audit file
+				os.Remove(m.AuditPath(agentID, sessionID))
 			}
 			delete(m.accessTime, key)
 		}

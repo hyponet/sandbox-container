@@ -4,39 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
-	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/hyponet/sandbox-container/audit"
+	"github.com/hyponet/sandbox-container/model"
 	"github.com/gin-gonic/gin"
 )
 
-var auditLogger *log.Logger
-
-func init() {
-	logDir := "/var/log/sandbox"
-	os.MkdirAll(logDir, 0755)
-	f, err := os.OpenFile(filepath.Join(logDir, "audit.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		// Fallback to stderr if log file can't be opened
-		auditLogger = log.New(os.Stderr, "[AUDIT] ", log.LstdFlags)
-		return
-	}
-	auditLogger = log.New(f, "", 0) // we handle our own timestamps
-}
-
-// AuditEntry represents a single audit log record.
-type AuditEntry struct {
-	Timestamp   string            `json:"timestamp"`
-	Method      string            `json:"method"`
-	Path        string            `json:"path"`
-	Headers     map[string]string `json:"headers"`
-	RequestBody interface{}       `json:"request_body,omitempty"`
-	Status      int               `json:"status"`
-	Response    interface{}       `json:"response,omitempty"`
-	Latency     string            `json:"latency"`
-	ClientIP    string            `json:"client_ip"`
+// sensitiveHeaders are redacted from audit logs.
+var sensitiveHeaders = map[string]bool{
+	"Authorization": true,
+	"Cookie":        true,
+	"Set-Cookie":    true,
+	"X-Api-Key":     true,
 }
 
 type bodyWriter struct {
@@ -49,8 +30,9 @@ func (w bodyWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// AuditLogger records full request/response for audit purposes.
-func AuditLogger() gin.HandlerFunc {
+// AuditLogger records full request/response for audit purposes,
+// routing entries to per-session JSONL files via the audit writer.
+func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Capture request body
 		var reqBody interface{}
@@ -58,11 +40,44 @@ func AuditLogger() gin.HandlerFunc {
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
 		json.Unmarshal(rawBody, &reqBody)
 
-		// Capture headers
+		// Extract agent_id and session_id from request body
+		var agentID, sessionID string
+		if m, ok := reqBody.(map[string]interface{}); ok {
+			if v, ok := m["agent_id"].(string); ok {
+				agentID = v
+			}
+			if v, ok := m["session_id"].(string); ok {
+				sessionID = v
+			}
+		}
+
+		// Fallback to query params for GET/DELETE requests
+		if agentID == "" {
+			agentID = c.Query("agent_id")
+		}
+		if sessionID == "" {
+			sessionID = c.Param("session_id")
+			if sessionID == "" {
+				sessionID = c.Query("session_id")
+			}
+		}
+
+		// Capture headers, redacting sensitive ones
 		headers := make(map[string]string)
 		for k, v := range c.Request.Header {
 			if len(v) > 0 {
-				headers[k] = v[0]
+				canonical := strings.ToLower(k)
+				redacted := false
+				for sk := range sensitiveHeaders {
+					if strings.ToLower(sk) == canonical {
+						headers[k] = "[REDACTED]"
+						redacted = true
+						break
+					}
+				}
+				if !redacted {
+					headers[k] = v[0]
+				}
 			}
 		}
 
@@ -78,8 +93,10 @@ func AuditLogger() gin.HandlerFunc {
 		var respBody interface{}
 		json.Unmarshal(bw.body.Bytes(), &respBody)
 
-		entry := AuditEntry{
+		entry := model.AuditEntry{
 			Timestamp:   start.UTC().Format(time.RFC3339Nano),
+			AgentID:     agentID,
+			SessionID:   sessionID,
 			Method:      c.Request.Method,
 			Path:        c.Request.URL.Path,
 			Headers:     headers,
@@ -90,7 +107,10 @@ func AuditLogger() gin.HandlerFunc {
 			ClientIP:    c.ClientIP(),
 		}
 
-		data, _ := json.Marshal(entry)
-		auditLogger.Println(string(data))
+		if agentID != "" && sessionID != "" {
+			w.WriteEntry(agentID, sessionID, entry)
+		} else {
+			w.WriteFallback(entry)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/hyponet/sandbox-container/audit"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
@@ -12,11 +13,15 @@ import (
 )
 
 func main() {
+	auditW := audit.NewWriter("/data/agents", 5*time.Minute)
+	defer auditW.Close()
+
 	mgr := session.NewManager("/data/agents", 24*time.Hour)
+	mgr.SetAuditWriter(auditW)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(middleware.AuditLogger())
+	r.Use(middleware.AuditLogger(auditW))
 	auth := middleware.AuthRequired()
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
@@ -65,6 +70,15 @@ func main() {
 	{
 		skills.POST("/list", skillH.List)
 		skills.POST("/load", skillH.Load)
+	}
+
+	// Session Management APIs
+	sessionH := handler.NewSessionHandler(mgr)
+	sess := r.Group("/v1/sessions", auth)
+	{
+		sess.GET("", sessionH.ListSessions)
+		sess.GET("/:session_id/audits", sessionH.GetAuditLogs)
+		sess.DELETE("/:session_id", sessionH.DeleteSession)
 	}
 
 	log.Println("Starting sandbox server on :9090")

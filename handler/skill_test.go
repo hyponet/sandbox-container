@@ -35,10 +35,15 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 	skills := r.Group("/v1/skills")
 	{
 		skills.POST("/create", skillH.Create)
+		skills.POST("/get", skillH.Get)
+		skills.POST("/update", skillH.Update)
+		skills.POST("/rename", skillH.Rename)
 		skills.POST("/import", skillH.Import)
 		skills.POST("/list", skillH.ListGlobal)
 		skills.POST("/delete", skillH.Delete)
 		skills.POST("/tree", skillH.Tree)
+		skills.POST("/copy", skillH.Copy)
+		skills.GET("/export", skillH.Export)
 		skills.POST("/file/read", skillH.FileRead)
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
@@ -51,6 +56,7 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
 		agents.POST("/:agent_id/load", skillH.AgentLoad)
+		agents.DELETE("/:agent_id/cache", skillH.AgentCacheDelete)
 	}
 
 	return r, mgr
@@ -1556,4 +1562,752 @@ func createTestZipBytes(t *testing.T, files map[string]string) []byte {
 	}
 	w.Close()
 	return buf.Bytes()
+}
+
+// =============================================
+// Tests for new skill APIs
+// =============================================
+
+func TestSkillGet(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Create skill
+	body := `{"name": "get-skill", "description": "A test skill"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Write some body content to SKILLS.md
+	writeBody := `{"name": "get-skill", "path": "SKILLS.md", "content": "---\nname: get-skill\ndescription: \"A test skill\"\n---\n## Usage\nDo stuff."}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Get skill
+	getBody := `{"name": "get-skill"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/get", bytes.NewBufferString(getBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("get failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skill := data["skill"].(map[string]interface{})
+	if skill["name"] != "get-skill" {
+		t.Errorf("expected name 'get-skill', got %v", skill["name"])
+	}
+	if skill["description"] != "A test skill" {
+		t.Errorf("expected description 'A test skill', got %v", skill["description"])
+	}
+	fm := data["frontmatter"].(string)
+	if !strings.Contains(fm, "name: get-skill") {
+		t.Errorf("expected frontmatter to contain 'name: get-skill', got %q", fm)
+	}
+	body2 := data["body"].(string)
+	if !strings.Contains(body2, "## Usage") {
+		t.Errorf("expected body to contain '## Usage', got %q", body2)
+	}
+}
+
+func TestSkillGetNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "nonexistent"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/get", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestSkillUpdate(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create skill
+	body := `{"name": "upd-skill", "description": "original"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Update description
+	updBody := `{"name": "upd-skill", "description": "updated desc"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/update", bytes.NewBufferString(updBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skill := data["skill"].(map[string]interface{})
+	if skill["description"] != "updated desc" {
+		t.Errorf("expected description 'updated desc', got %v", skill["description"])
+	}
+
+	// Verify _meta.json was updated
+	skillDir := mgr.GlobalSkillPath("upd-skill")
+	meta, _ := readSkillMeta(skillDir)
+	if meta.Description != "updated desc" {
+		t.Errorf("meta description not updated: %s", meta.Description)
+	}
+
+	// Verify SKILLS.md frontmatter was updated
+	content, _ := os.ReadFile(filepath.Join(skillDir, "SKILLS.md"))
+	if !strings.Contains(string(content), `description: "updated desc"`) {
+		t.Errorf("SKILLS.md frontmatter not updated: %s", string(content))
+	}
+}
+
+func TestSkillUpdateNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "nonexistent", "description": "x"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/update", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestSkillRename(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create skill
+	body := `{"name": "old-name", "description": "rename test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Rename
+	renBody := `{"name": "old-name", "new_name": "new-name"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/rename", bytes.NewBufferString(renBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("rename failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skill := data["skill"].(map[string]interface{})
+	if skill["name"] != "new-name" {
+		t.Errorf("expected name 'new-name', got %v", skill["name"])
+	}
+
+	// Old dir should not exist
+	if _, err := os.Stat(mgr.GlobalSkillPath("old-name")); err == nil {
+		t.Error("old skill directory should not exist")
+	}
+	// New dir should exist
+	if _, err := os.Stat(mgr.GlobalSkillPath("new-name")); err != nil {
+		t.Errorf("new skill directory should exist: %v", err)
+	}
+
+	// Verify SKILLS.md frontmatter has new name
+	content, _ := os.ReadFile(filepath.Join(mgr.GlobalSkillPath("new-name"), "SKILLS.md"))
+	if !strings.Contains(string(content), "name: new-name") {
+		t.Errorf("SKILLS.md frontmatter not updated: %s", string(content))
+	}
+}
+
+func TestSkillRenameSameName(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "same-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	renBody := `{"name": "same-skill", "new_name": "same-skill"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/rename", bytes.NewBufferString(renBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for same name rename, got %d", w.Code)
+	}
+}
+
+func TestSkillRenameTargetExists(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	for _, name := range []string{"src-skill", "dst-skill"} {
+		body := `{"name": "` + name + `", "description": "test"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	renBody := `{"name": "src-skill", "new_name": "dst-skill"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/rename", bytes.NewBufferString(renBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for existing target, got %d", w.Code)
+	}
+}
+
+func TestSkillExport(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Create skill with files
+	body := `{"name": "export-skill", "description": "export test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	writeBody := `{"name": "export-skill", "path": "script.py", "content": "print('hi')"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Export
+	req = httptest.NewRequest(http.MethodGet, "/v1/skills/export?name=export-skill", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("export failed: %d %s", w.Code, w.Body.String())
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("expected Content-Type application/zip, got %s", ct)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "export-skill.zip") {
+		t.Errorf("expected Content-Disposition with export-skill.zip, got %s", cd)
+	}
+
+	// Verify ZIP contents
+	zr, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("failed to read ZIP: %v", err)
+	}
+
+	fileNames := make(map[string]bool)
+	for _, f := range zr.File {
+		fileNames[f.Name] = true
+	}
+
+	if !fileNames["SKILLS.md"] {
+		t.Error("ZIP should contain SKILLS.md")
+	}
+	if !fileNames["script.py"] {
+		t.Error("ZIP should contain script.py")
+	}
+	if fileNames["_meta.json"] {
+		t.Error("ZIP should NOT contain _meta.json")
+	}
+}
+
+func TestSkillExportNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/skills/export?name=nonexistent", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestSkillCopy(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create skill with files
+	body := `{"name": "copy-src", "description": "copy test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	writeBody := `{"name": "copy-src", "path": "data.txt", "content": "hello"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Copy
+	copyBody := `{"name": "copy-src", "new_name": "copy-dst"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/copy", bytes.NewBufferString(copyBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("copy failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skill := data["skill"].(map[string]interface{})
+	if skill["name"] != "copy-dst" {
+		t.Errorf("expected name 'copy-dst', got %v", skill["name"])
+	}
+
+	// Verify source still exists
+	if _, err := os.Stat(mgr.GlobalSkillPath("copy-src")); err != nil {
+		t.Errorf("source should still exist: %v", err)
+	}
+
+	// Verify destination has the file
+	dstDir := mgr.GlobalSkillPath("copy-dst")
+	content, err := os.ReadFile(filepath.Join(dstDir, "data.txt"))
+	if err != nil {
+		t.Fatalf("data.txt not copied: %v", err)
+	}
+	if string(content) != "hello" {
+		t.Errorf("expected 'hello', got %q", string(content))
+	}
+
+	// Verify SKILLS.md frontmatter has new name
+	mdContent, _ := os.ReadFile(filepath.Join(dstDir, "SKILLS.md"))
+	if !strings.Contains(string(mdContent), "name: copy-dst") {
+		t.Errorf("SKILLS.md frontmatter not updated: %s", string(mdContent))
+	}
+}
+
+func TestSkillCopyTargetExists(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	for _, name := range []string{"cp-src", "cp-dst"} {
+		body := `{"name": "` + name + `", "description": "test"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	copyBody := `{"name": "cp-src", "new_name": "cp-dst"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/copy", bytes.NewBufferString(copyBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for existing target, got %d", w.Code)
+	}
+}
+
+func TestSkillCopySameName(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "cp-same", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	copyBody := `{"name": "cp-same", "new_name": "cp-same"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/copy", bytes.NewBufferString(copyBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for same name copy, got %d", w.Code)
+	}
+}
+
+func TestAgentSkillCleanup(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create two skills
+	for _, name := range []string{"keep-skill", "remove-skill"} {
+		body := `{"name": "` + name + `", "description": "test"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	// Load both into agent
+	loadBody := `{"skill_ids": ["keep-skill", "remove-skill"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/agents/cleanup-agent/load", bytes.NewBufferString(loadBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("load failed: %d", w.Code)
+	}
+
+	// Verify both cached
+	for _, name := range []string{"keep-skill", "remove-skill"} {
+		if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("cleanup-agent"), name)); err != nil {
+			t.Fatalf("skill %s not cached: %v", name, err)
+		}
+	}
+
+	// Load with cleanup=true, only requesting keep-skill
+	cleanupBody := `{"skill_ids": ["keep-skill"], "cleanup": true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/cleanup-agent/load", bytes.NewBufferString(cleanupBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cleanup load failed: %d", w.Code)
+	}
+
+	// keep-skill should still be cached
+	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("cleanup-agent"), "keep-skill")); err != nil {
+		t.Errorf("keep-skill should still be cached: %v", err)
+	}
+	// remove-skill should be gone
+	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("cleanup-agent"), "remove-skill")); err == nil {
+		t.Error("remove-skill should have been cleaned up")
+	}
+}
+
+func TestAgentSkillListCleanup(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create two skills
+	for _, name := range []string{"list-keep", "list-remove"} {
+		body := `{"name": "` + name + `", "description": "test"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	// Load both into agent
+	loadBody := `{"skill_ids": ["list-keep", "list-remove"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/agents/list-cleanup/list", bytes.NewBufferString(loadBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// List with cleanup=true, only requesting list-keep
+	cleanupBody := `{"skill_ids": ["list-keep"], "cleanup": true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/list-cleanup/list", bytes.NewBufferString(cleanupBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cleanup list failed: %d", w.Code)
+	}
+
+	// list-remove should be gone
+	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("list-cleanup"), "list-remove")); err == nil {
+		t.Error("list-remove should have been cleaned up")
+	}
+}
+
+func TestAgentCacheDelete(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create and load skills
+	for _, name := range []string{"cache-a", "cache-b"} {
+		body := `{"name": "` + name + `", "description": "test"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	loadBody := `{"skill_ids": ["cache-a", "cache-b"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/agents/del-agent/load", bytes.NewBufferString(loadBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Delete specific skill cache
+	req = httptest.NewRequest(http.MethodDelete, "/v1/skills/agents/del-agent/cache?skill_id=cache-a", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cache delete failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	deleted := data["deleted"].([]interface{})
+	if len(deleted) != 1 || deleted[0] != "cache-a" {
+		t.Errorf("expected deleted=['cache-a'], got %v", deleted)
+	}
+
+	// cache-a should be gone, cache-b should remain
+	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("del-agent"), "cache-a")); err == nil {
+		t.Error("cache-a should have been deleted")
+	}
+	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("del-agent"), "cache-b")); err != nil {
+		t.Errorf("cache-b should still exist: %v", err)
+	}
+}
+
+func TestAgentCacheDeleteAll(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create and load skills
+	body := `{"name": "cache-all", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	loadBody := `{"skill_ids": ["cache-all"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/del-all-agent/load", bytes.NewBufferString(loadBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Delete all cache
+	req = httptest.NewRequest(http.MethodDelete, "/v1/skills/agents/del-all-agent/cache", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cache delete all failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// All cache should be gone
+	entries, _ := os.ReadDir(mgr.SkillsRoot("del-all-agent"))
+	dirs := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs++
+		}
+	}
+	if dirs != 0 {
+		t.Errorf("expected 0 cached skills, got %d", dirs)
+	}
+}
+
+func TestAgentCacheDeleteNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/skills/agents/no-agent/cache?skill_id=nonexistent", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// =============================================
+// Tests for code review fixes
+// =============================================
+
+// Fix #1: YAML injection via newlines in description
+func TestSkillCreateDescriptionNewlinesSafe(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Description with newlines that could break YAML frontmatter
+	body := `{"name": "yaml-nl", "description": "line1\nfoo: bar\n---\nevil: true"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Read SKILLS.md and verify the description is JSON-quoted (handles newlines)
+	skillDir := mgr.GlobalSkillPath("yaml-nl")
+	content, err := os.ReadFile(filepath.Join(skillDir, "SKILLS.md"))
+	if err != nil {
+		t.Fatalf("failed to read SKILLS.md: %v", err)
+	}
+
+	// The frontmatter should have exactly one --- ... --- block
+	parts := strings.SplitN(string(content), "---", 3)
+	if len(parts) < 3 {
+		t.Fatalf("expected frontmatter delimiters, got:\n%s", string(content))
+	}
+	fm := parts[1]
+	// The frontmatter should NOT contain "evil: true" as a separate YAML key
+	if strings.Contains(fm, "evil:") {
+		t.Errorf("YAML injection succeeded — frontmatter contains injected key:\n%s", fm)
+	}
+	// The description should be JSON-quoted with escaped newlines
+	if !strings.Contains(fm, `\n`) {
+		t.Errorf("expected JSON-escaped newlines in description, got:\n%s", fm)
+	}
+}
+
+// Fix #1: Update also uses safe quoting
+func TestSkillUpdateDescriptionNewlinesSafe(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	body := `{"name": "upd-yaml", "description": "original"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Update with newline-containing description
+	updBody := `{"name": "upd-yaml", "description": "line1\n---\nevil: true"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/update", bytes.NewBufferString(updBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+	}
+
+	skillDir := mgr.GlobalSkillPath("upd-yaml")
+	content, err := os.ReadFile(filepath.Join(skillDir, "SKILLS.md"))
+	if err != nil {
+		t.Fatalf("failed to read SKILLS.md: %v", err)
+	}
+
+	parts := strings.SplitN(string(content), "---", 3)
+	if len(parts) < 3 {
+		t.Fatalf("expected frontmatter delimiters, got:\n%s", string(content))
+	}
+	if strings.Contains(parts[1], "evil:") {
+		t.Errorf("YAML injection via update succeeded:\n%s", parts[1])
+	}
+}
+
+// Fix #7: AgentCacheDelete validates agentID
+func TestAgentCacheDeleteInvalidAgentID(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/skills/agents/../../etc/cache", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// gin may route this differently, but if it reaches the handler, it should reject
+	// We accept either 400 (validation) or 404 (gin routing mismatch)
+	if w.Code != http.StatusBadRequest && w.Code != http.StatusNotFound {
+		t.Errorf("expected 400 or 404 for path traversal agent_id, got %d", w.Code)
+	}
+}
+
+// Fix #3: Export skips symlinks
+func TestSkillExportSkipsSymlinks(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	body := `{"name": "symlink-export", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Create a symlink inside the skill directory pointing outside
+	skillDir := mgr.GlobalSkillPath("symlink-export")
+	os.Symlink("/etc/hosts", filepath.Join(skillDir, "evil-link"))
+
+	// Export
+	req = httptest.NewRequest(http.MethodGet, "/v1/skills/export?name=symlink-export", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("export failed: %d", w.Code)
+	}
+
+	// Verify ZIP does NOT contain the symlink
+	zr, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("failed to read ZIP: %v", err)
+	}
+	for _, f := range zr.File {
+		if f.Name == "evil-link" {
+			t.Error("ZIP should NOT contain symlink 'evil-link'")
+		}
+	}
+}
+
+// Test quoteYAMLDescription helper
+func TestQuoteYAMLDescription(t *testing.T) {
+	tests := []struct {
+		input    string
+		contains string // expected substring in output
+		notIn    string // should NOT appear unescaped
+	}{
+		{`simple`, `"simple"`, ""},
+		{`has "quotes"`, `\"quotes\"`, ""},
+		{"has\nnewline", `\n`, ""},
+		{`has\backslash`, `\\`, ""},
+		{"tab\there", `\t`, ""},
+	}
+	for _, tt := range tests {
+		result := quoteYAMLDescription(tt.input)
+		if !strings.Contains(result, tt.contains) {
+			t.Errorf("quoteYAMLDescription(%q) = %s, expected to contain %q", tt.input, result, tt.contains)
+		}
+	}
+}
+
+// Test buildSkillsMDContent helper
+func TestBuildSkillsMDContent(t *testing.T) {
+	result := buildSkillsMDContent("my-skill", "A test skill", "## Body\nContent here.")
+	if !strings.HasPrefix(result, "---\n") {
+		t.Error("expected frontmatter opening")
+	}
+	if !strings.Contains(result, "name: my-skill") {
+		t.Error("expected name in frontmatter")
+	}
+	if !strings.Contains(result, `description: "A test skill"`) {
+		t.Errorf("expected quoted description, got:\n%s", result)
+	}
+	if !strings.Contains(result, "## Body\nContent here.") {
+		t.Error("expected body content preserved")
+	}
+}
+
+// Test findSkillsMDPath helper
+func TestFindSkillsMDPath(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	body := `{"name": "find-md", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	skillDir := mgr.GlobalSkillPath("find-md")
+	p, err := findSkillsMDPath(skillDir)
+	if err != nil {
+		t.Fatalf("findSkillsMDPath failed: %v", err)
+	}
+	if filepath.Base(p) != "SKILLS.md" {
+		t.Errorf("expected SKILLS.md, got %s", filepath.Base(p))
+	}
+
+	// Non-existent skill dir
+	_, err = findSkillsMDPath("/nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent dir")
+	}
 }

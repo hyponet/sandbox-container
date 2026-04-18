@@ -6,9 +6,12 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 )
+
+const maxErrorBody = 1024 * 1024 // 1MB limit for error response bodies
 
 // SkillUploadEntry pairs a skill name with a local ZIP file path for upload.
 type SkillUploadEntry struct {
@@ -229,12 +232,105 @@ func (c *Client) SkillImportUpload(entries []SkillUploadEntry) (*SkillImportUplo
 	return &result, nil
 }
 
+// SkillGet retrieves a single skill's details.
+func (c *Client) SkillGet(name string) (*SkillGetResult, error) {
+	req := struct {
+		Name string `json:"name"`
+	}{
+		Name: name,
+	}
+
+	var result SkillGetResult
+	if err := c.post("/v1/skills/get", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SkillUpdate updates a skill's metadata.
+func (c *Client) SkillUpdate(name, description string) (*SkillUpdateResult, error) {
+	req := struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}{
+		Name:        name,
+		Description: description,
+	}
+
+	var result SkillUpdateResult
+	if err := c.post("/v1/skills/update", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SkillRename renames a skill.
+func (c *Client) SkillRename(name, newName string) (*SkillRenameResult, error) {
+	req := struct {
+		Name    string `json:"name"`
+		NewName string `json:"new_name"`
+	}{
+		Name:    name,
+		NewName: newName,
+	}
+
+	var result SkillRenameResult
+	if err := c.post("/v1/skills/rename", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SkillExport downloads a skill as a ZIP stream.
+func (c *Client) SkillExport(name string) (io.ReadCloser, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/skills/export?name="+name, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return nil, &Error{StatusCode: resp.StatusCode, Message: string(raw)}
+	}
+
+	return resp.Body, nil
+}
+
+// SkillCopy copies a skill to a new name.
+func (c *Client) SkillCopy(name, newName string) (*SkillCopyResult, error) {
+	req := struct {
+		Name    string `json:"name"`
+		NewName string `json:"new_name"`
+	}{
+		Name:    name,
+		NewName: newName,
+	}
+
+	var result SkillCopyResult
+	if err := c.post("/v1/skills/copy", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // SkillAgentList syncs skills to agent cache and returns frontmatter summaries.
-func (c *Client) SkillAgentList(agentID string, skillIDs []string) (*AgentSkillListResult, error) {
+func (c *Client) SkillAgentList(agentID string, skillIDs []string, cleanup ...bool) (*AgentSkillListResult, error) {
+	doCleanup := len(cleanup) > 0 && cleanup[0]
 	req := struct {
 		SkillIDs []string `json:"skill_ids"`
+		Cleanup  bool     `json:"cleanup"`
 	}{
 		SkillIDs: skillIDs,
+		Cleanup:  doCleanup,
 	}
 
 	var result AgentSkillListResult
@@ -245,15 +341,46 @@ func (c *Client) SkillAgentList(agentID string, skillIDs []string) (*AgentSkillL
 }
 
 // SkillAgentLoad syncs skills to agent cache and returns SKILLS.md body content.
-func (c *Client) SkillAgentLoad(agentID string, skillIDs []string) (*AgentSkillLoadResult, error) {
+func (c *Client) SkillAgentLoad(agentID string, skillIDs []string, cleanup ...bool) (*AgentSkillLoadResult, error) {
+	doCleanup := len(cleanup) > 0 && cleanup[0]
 	req := struct {
 		SkillIDs []string `json:"skill_ids"`
+		Cleanup  bool     `json:"cleanup"`
 	}{
 		SkillIDs: skillIDs,
+		Cleanup:  doCleanup,
 	}
 
 	var result AgentSkillLoadResult
 	if err := c.post("/v1/skills/agents/"+agentID+"/load", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SkillAgentCacheDelete deletes cached skills for an agent.
+func (c *Client) SkillAgentCacheDelete(agentID string, skillID ...string) (*AgentSkillCacheDeleteResult, error) {
+	path := "/v1/skills/agents/" + agentID + "/cache"
+	if len(skillID) > 0 && skillID[0] != "" {
+		path += "?skill_id=" + url.QueryEscape(skillID[0])
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result AgentSkillCacheDeleteResult
+	if err := c.handleResponse(resp, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

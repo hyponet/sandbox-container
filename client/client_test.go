@@ -79,20 +79,28 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	skills := r.Group("/v1/skills")
 	{
 		skills.POST("/create", skillH.Create)
+		skills.POST("/get", skillH.Get)
+		skills.POST("/update", skillH.Update)
+		skills.POST("/rename", skillH.Rename)
 		skills.POST("/import", skillH.Import)
 		skills.POST("/list", skillH.ListGlobal)
 		skills.POST("/delete", skillH.Delete)
 		skills.POST("/tree", skillH.Tree)
+		skills.POST("/copy", skillH.Copy)
+		skills.GET("/export", skillH.Export)
 		skills.POST("/file/read", skillH.FileRead)
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
+		skills.POST("/file/delete", skillH.FileDelete)
+		skills.POST("/import/upload", skillH.ImportUpload)
 	}
 
 	agents := r.Group("/v1/skills/agents")
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
 		agents.POST("/:agent_id/load", skillH.AgentLoad)
+		agents.DELETE("/:agent_id/cache", skillH.AgentCacheDelete)
 	}
 
 	// Session Management
@@ -1009,6 +1017,248 @@ func TestFileWriteWithNewlines(t *testing.T) {
 	}
 	if result.Content != "\ncontent\n" {
 		t.Errorf("expected '\\ncontent\\n', got %q", result.Content)
+	}
+}
+
+// =============================================
+// New skill API tests
+// =============================================
+
+func TestSkillGetViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillCreate("get-test", "A get test skill")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	result, err := cli.SkillGet("get-test")
+	if err != nil {
+		t.Fatalf("SkillGet failed: %v", err)
+	}
+	if result.Skill.Name != "get-test" {
+		t.Errorf("expected name 'get-test', got %s", result.Skill.Name)
+	}
+	if result.Skill.Description != "A get test skill" {
+		t.Errorf("expected description 'A get test skill', got %s", result.Skill.Description)
+	}
+}
+
+func TestSkillGetNotFoundViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillGet("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent skill")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 error, got %v", err)
+	}
+}
+
+func TestSkillUpdateViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillCreate("upd-test", "original")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	result, err := cli.SkillUpdate("upd-test", "updated desc")
+	if err != nil {
+		t.Fatalf("SkillUpdate failed: %v", err)
+	}
+	if result.Skill.Description != "updated desc" {
+		t.Errorf("expected 'updated desc', got %s", result.Skill.Description)
+	}
+
+	// Verify via get
+	getResult, _ := cli.SkillGet("upd-test")
+	if getResult.Skill.Description != "updated desc" {
+		t.Errorf("get after update: expected 'updated desc', got %s", getResult.Skill.Description)
+	}
+}
+
+func TestSkillRenameViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillCreate("rename-old", "rename test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	result, err := cli.SkillRename("rename-old", "rename-new")
+	if err != nil {
+		t.Fatalf("SkillRename failed: %v", err)
+	}
+	if result.Skill.Name != "rename-new" {
+		t.Errorf("expected name 'rename-new', got %s", result.Skill.Name)
+	}
+
+	// Old name should not exist
+	_, err = cli.SkillGet("rename-old")
+	if err == nil {
+		t.Error("expected error for old name after rename")
+	}
+
+	// New name should exist
+	getResult, err := cli.SkillGet("rename-new")
+	if err != nil {
+		t.Fatalf("SkillGet after rename failed: %v", err)
+	}
+	if getResult.Skill.Name != "rename-new" {
+		t.Errorf("expected 'rename-new', got %s", getResult.Skill.Name)
+	}
+}
+
+func TestSkillExportViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillCreate("export-test", "export test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	_, err = cli.SkillFileWrite("export-test", "data.txt", "export data")
+	if err != nil {
+		t.Fatalf("SkillFileWrite failed: %v", err)
+	}
+
+	body, err := cli.SkillExport("export-test")
+	if err != nil {
+		t.Fatalf("SkillExport failed: %v", err)
+	}
+	defer body.Close()
+
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read export body failed: %v", err)
+	}
+
+	// Verify it's a valid ZIP
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("invalid ZIP: %v", err)
+	}
+
+	fileNames := make(map[string]bool)
+	for _, f := range zr.File {
+		fileNames[f.Name] = true
+	}
+	if !fileNames["data.txt"] {
+		t.Error("ZIP should contain data.txt")
+	}
+	if fileNames["_meta.json"] {
+		t.Error("ZIP should NOT contain _meta.json")
+	}
+}
+
+func TestSkillCopyViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillCreate("copy-src", "copy test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	_, err = cli.SkillFileWrite("copy-src", "file.txt", "copied content")
+	if err != nil {
+		t.Fatalf("SkillFileWrite failed: %v", err)
+	}
+
+	result, err := cli.SkillCopy("copy-src", "copy-dst")
+	if err != nil {
+		t.Fatalf("SkillCopy failed: %v", err)
+	}
+	if result.Skill.Name != "copy-dst" {
+		t.Errorf("expected name 'copy-dst', got %s", result.Skill.Name)
+	}
+
+	// Verify source still exists
+	_, err = cli.SkillGet("copy-src")
+	if err != nil {
+		t.Errorf("source should still exist: %v", err)
+	}
+
+	// Verify destination has the file
+	readResult, err := cli.SkillFileRead("copy-dst", "file.txt")
+	if err != nil {
+		t.Fatalf("SkillFileRead on copy failed: %v", err)
+	}
+	if readResult.Content != "copied content" {
+		t.Errorf("expected 'copied content', got %q", readResult.Content)
+	}
+}
+
+func TestSkillAgentCacheDeleteViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create and load skills
+	for _, name := range []string{"cd-a", "cd-b"} {
+		_, err := cli.SkillCreate(name, "test")
+		if err != nil {
+			t.Fatalf("SkillCreate failed: %v", err)
+		}
+	}
+
+	_, err := cli.SkillAgentLoad("cd-agent", []string{"cd-a", "cd-b"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+
+	// Delete specific cache
+	result, err := cli.SkillAgentCacheDelete("cd-agent", "cd-a")
+	if err != nil {
+		t.Fatalf("SkillAgentCacheDelete failed: %v", err)
+	}
+	if len(result.Deleted) != 1 || result.Deleted[0] != "cd-a" {
+		t.Errorf("expected deleted=['cd-a'], got %v", result.Deleted)
+	}
+
+	// Delete all remaining cache
+	result2, err := cli.SkillAgentCacheDelete("cd-agent")
+	if err != nil {
+		t.Fatalf("SkillAgentCacheDelete all failed: %v", err)
+	}
+	if len(result2.Deleted) != 1 || result2.Deleted[0] != "cd-b" {
+		t.Errorf("expected deleted=['cd-b'], got %v", result2.Deleted)
+	}
+}
+
+func TestSkillAgentLoadWithCleanupViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	for _, name := range []string{"cl-keep", "cl-remove"} {
+		_, err := cli.SkillCreate(name, "test")
+		if err != nil {
+			t.Fatalf("SkillCreate failed: %v", err)
+		}
+	}
+
+	// Load both
+	_, err := cli.SkillAgentLoad("cl-agent", []string{"cl-keep", "cl-remove"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+
+	// Load with cleanup, only keeping cl-keep
+	_, err = cli.SkillAgentLoad("cl-agent", []string{"cl-keep"}, true)
+	if err != nil {
+		t.Fatalf("SkillAgentLoad with cleanup failed: %v", err)
+	}
+
+	// Verify cl-remove was cleaned up by trying to delete it (should 404)
+	_, err = cli.SkillAgentCacheDelete("cl-agent", "cl-remove")
+	if err == nil {
+		t.Error("expected error for cleaned-up cache")
 	}
 }
 

@@ -510,10 +510,57 @@ type SkillDeleteRequest struct {
 	Name string `json:"name" binding:"required"`
 }
 
+// SkillGetRequest retrieves a single skill's details.
+type SkillGetRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+type SkillGetResult struct {
+	Skill       SkillMetaJSON `json:"skill"`
+	Frontmatter string        `json:"frontmatter"`
+	Body        string        `json:"body"`
+}
+
+// SkillUpdateRequest updates a skill's metadata.
+type SkillUpdateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+type SkillUpdateResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+// SkillRenameRequest renames a skill.
+type SkillRenameRequest struct {
+	Name    string `json:"name" binding:"required"`
+	NewName string `json:"new_name" binding:"required"`
+}
+
+type SkillRenameResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+// SkillCopyRequest copies a skill.
+type SkillCopyRequest struct {
+	Name    string `json:"name" binding:"required"`
+	NewName string `json:"new_name" binding:"required"`
+}
+
+type SkillCopyResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+// AgentSkillCacheDeleteResult is the response for agent cache deletion.
+type AgentSkillCacheDeleteResult struct {
+	Deleted []string `json:"deleted"`
+}
+
 // AgentSkillRequest is the body for agent skill list/load endpoints.
 // agent_id comes from the URL path parameter.
 type AgentSkillRequest struct {
 	SkillIDs []string `json:"skill_ids" binding:"required"`
+	Cleanup  bool     `json:"cleanup"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.

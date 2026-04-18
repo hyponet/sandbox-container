@@ -74,10 +74,15 @@ func main() {
 	{
 		// Global skill management
 		skills.POST("/create", skillH.Create)
+		skills.POST("/get", skillH.Get)
+		skills.POST("/update", skillH.Update)
+		skills.POST("/rename", skillH.Rename)
 		skills.POST("/import", skillH.Import)
 		skills.POST("/list", skillH.ListGlobal)
 		skills.POST("/delete", skillH.Delete)
 		skills.POST("/tree", skillH.Tree)
+		skills.POST("/copy", skillH.Copy)
+		skills.GET("/export", skillH.Export)
 		skills.POST("/file/read", skillH.FileRead)
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
@@ -91,6 +96,7 @@ func main() {
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
 		agents.POST("/:agent_id/load", auditMW, skillH.AgentLoad)
+		agents.DELETE("/:agent_id/cache", skillH.AgentCacheDelete)
 	}
 
 	// Session Management APIs

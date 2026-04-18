@@ -319,6 +319,28 @@ type SkillGlobalListResult struct {
 	Skills []SkillMetaJSON `json:"skills"`
 }
 
+type SkillGetResult struct {
+	Skill       SkillMetaJSON `json:"skill"`
+	Frontmatter string        `json:"frontmatter"`
+	Body        string        `json:"body"`
+}
+
+type SkillUpdateResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+type SkillRenameResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+type SkillCopyResult struct {
+	Skill SkillMetaJSON `json:"skill"`
+}
+
+type AgentSkillCacheDeleteResult struct {
+	Deleted []string `json:"deleted"`
+}
+
 type SkillSummary struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`

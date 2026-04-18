@@ -60,8 +60,8 @@ All routes are under `/v1/`. Sandbox info endpoints (`/v1/sandbox`, `/v1/sandbox
 | Bash | `POST /v1/bash/exec`, `/output`, `/write`, `/kill`; session management under `/v1/bash/sessions/*` |
 | File | `POST /v1/file/read`, `/write`, `/replace`, `/search`, `/find`, `/grep`, `/glob`, `/upload`, `/list`; `GET /v1/file/download` |
 | Code | `POST /v1/code/execute`, `GET /v1/code/info` |
-| Skills (global) | `POST /v1/skills/create`, `/import`, `/import/upload`, `/list`, `/delete`, `/tree`, `/file/read`, `/file/write`, `/file/update`, `/file/mkdir`, `/file/delete` |
-| Skills (agent) | `POST /v1/skills/agents/:agent_id/list` (frontmatter), `/v1/skills/agents/:agent_id/load` (body) |
+| Skills (global) | `POST /v1/skills/create`, `/get`, `/update`, `/rename`, `/import`, `/import/upload`, `/list`, `/delete`, `/tree`, `/copy`, `/file/read`, `/file/write`, `/file/update`, `/file/mkdir`, `/file/delete`; `GET /v1/skills/export` |
+| Skills (agent) | `POST /v1/skills/agents/:agent_id/list` (frontmatter), `/v1/skills/agents/:agent_id/load` (body); `DELETE /v1/skills/agents/:agent_id/cache` |
 | Sessions | `GET /v1/sessions`, `GET /v1/sessions/:session_id/audits`, `DELETE /v1/sessions/:session_id` |
 
 ## CI

@@ -17,7 +17,7 @@ Docker:
 
 ```bash
 docker build -t sandbox-container .
-docker run -d -p 9090:9090 -v sandbox-data:/data/agents -v sandbox-logs:/var/log/sandbox sandbox-container
+docker run -d -p 9090:9090 -v sandbox-data:/data/agents -v sandbox-skills:/data/skills -v sandbox-logs:/var/log/sandbox sandbox-container
 ```
 
 ## Testing
@@ -38,7 +38,7 @@ main.go → gin router with middleware chain
   ├── session/     - Manager creates/cleans up session dirs; TTL cleanup goroutine (24h default, 10min interval)
   ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager)
   ├── model/       - Shared request/response structs
-  └── client/      - Go SDK for consuming the API (htptest-based integration tests)
+  └── client/      - Go SDK for consuming the API (httptest-based integration tests)
 ```
 
 **Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → Response
@@ -60,7 +60,8 @@ All routes are under `/v1/`. Sandbox info endpoints (`/v1/sandbox`, `/v1/sandbox
 | Bash | `POST /v1/bash/exec`, `/output`, `/write`, `/kill`; session management under `/v1/bash/sessions/*` |
 | File | `POST /v1/file/read`, `/write`, `/replace`, `/search`, `/find`, `/grep`, `/glob`, `/upload`, `/list`; `GET /v1/file/download` |
 | Code | `POST /v1/code/execute`, `GET /v1/code/info` |
-| Skills | `POST /v1/skills/list`, `/load` |
+| Skills | `POST /v1/skills/create`, `/import`, `/list`, `/delete`, `/tree`, `/file/read`, `/file/write`, `/file/update`, `/file/mkdir`, `/load` |
+| Sessions | `GET /v1/sessions`, `GET /v1/sessions/:session_id/audits`, `DELETE /v1/sessions/:session_id` |
 
 ## CI
 

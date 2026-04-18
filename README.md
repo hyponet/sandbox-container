@@ -165,6 +165,26 @@ POST /v1/skills/load
 
 Skills are cached per-agent. When loaded, the system compares the version timestamp (`_meta.json`) — if the agent's cached copy is outdated, it's automatically updated from the global store.
 
+### Session Management
+
+```
+GET    /v1/sessions                    # List all sessions for an agent
+GET    /v1/sessions/:session_id/audits # Get paginated audit logs for a session
+DELETE /v1/sessions/:session_id        # Delete a session and its audit logs
+```
+
+**Example — List sessions:**
+
+```
+GET /v1/sessions?agent_id=agent-1
+```
+
+**Example — Get audit logs:**
+
+```
+GET /v1/sessions/session-1/audits?agent_id=agent-1&offset=0&limit=100
+```
+
 ## Go Client
 
 ```go
@@ -197,7 +217,12 @@ c.SkillFileMkdir("my-skill", "src/utils")
 c.SkillDelete("my-skill")
 
 // Skills — Load into agent session
-content, _ := c.SkillLoad("agent-1", []string{"my-skill"})
+loaded, _ := c.SkillLoad("agent-1", []string{"my-skill"})
+
+// Session management
+sessions, _ := c.SessionList("agent-1")
+audits, _ := c.SessionGetAuditLogs("agent-1", "session-1", 0, 100)
+c.SessionDelete("agent-1", "session-1")
 ```
 
 ## Session Isolation

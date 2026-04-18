@@ -48,3 +48,8 @@ type CodeExecOption func(*codeExecRequest)
 func WithCodeTimeout(seconds int) CodeExecOption {
 	return func(r *codeExecRequest) { r.Timeout = &seconds }
 }
+
+// WithCwd sets the working directory for code execution.
+func WithCwd(cwd string) CodeExecOption {
+	return func(r *codeExecRequest) { r.Cwd = &cwd }
+}

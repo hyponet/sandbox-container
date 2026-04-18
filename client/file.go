@@ -320,6 +320,16 @@ func WithEncoding(encoding string) FileWriteOption {
 	return func(r *fileWriteRequest) { r.Encoding = encoding }
 }
 
+// WithLeadingNewline prepends a newline before the content.
+func WithLeadingNewline(v bool) FileWriteOption {
+	return func(r *fileWriteRequest) { r.LeadingNewline = v }
+}
+
+// WithTrailingNewline appends a newline after the content.
+func WithTrailingNewline(v bool) FileWriteOption {
+	return func(r *fileWriteRequest) { r.TrailingNewline = v }
+}
+
 // FileGrepOption is a functional option for FileGrep.
 type FileGrepOption func(*fileGrepRequest)
 

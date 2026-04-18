@@ -36,6 +36,8 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	// Sandbox
 	sandboxH := handler.NewSandboxHandler()
 	r.GET("/v1/sandbox", sandboxH.GetContext)
+	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
+	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 
 	// Bash
 	bashH := handler.NewBashHandler(mgr)
@@ -86,6 +88,15 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
 		skills.POST("/load", skillH.Load)
+	}
+
+	// Session Management
+	sessionH := handler.NewSessionHandler(mgr)
+	sess := r.Group("/v1/sessions")
+	{
+		sess.GET("", sessionH.ListSessions)
+		sess.GET("/:session_id/audits", sessionH.GetAuditLogs)
+		sess.DELETE("/:session_id", sessionH.DeleteSession)
 	}
 
 	server := httptest.NewServer(r)
@@ -711,6 +722,219 @@ func TestAgentIsolation(t *testing.T) {
 	}
 	if result.Content != "agent1 secret" {
 		t.Errorf("agent isolation broken: expected 'agent1 secret', got %q", result.Content)
+	}
+}
+
+// =============================================
+// Sandbox packages tests
+// =============================================
+
+func TestGetPythonPackages(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetPythonPackages()
+	if err != nil {
+		t.Fatalf("GetPythonPackages failed: %v", err)
+	}
+	// Result should be a non-nil slice (may be empty if pip3 is not installed)
+	if result == nil {
+		t.Error("expected non-nil result slice")
+	}
+}
+
+func TestGetNodejsPackages(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetNodejsPackages()
+	if err != nil {
+		t.Fatalf("GetNodejsPackages failed: %v", err)
+	}
+	if result == nil {
+		t.Error("expected non-nil result slice")
+	}
+}
+
+// =============================================
+// Session management tests
+// =============================================
+
+func TestSessionList(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create some sessions by writing files
+	cli.FileWrite("a1", "s1", "/file1.txt", "data1")
+	cli.FileWrite("a1", "s2", "/file2.txt", "data2")
+
+	result, err := cli.SessionList("a1")
+	if err != nil {
+		t.Fatalf("SessionList failed: %v", err)
+	}
+	if result.Total < 2 {
+		t.Errorf("expected at least 2 sessions, got %d", result.Total)
+	}
+	for _, s := range result.Sessions {
+		if s.AgentID != "a1" {
+			t.Errorf("expected agent_id 'a1', got %q", s.AgentID)
+		}
+	}
+}
+
+func TestSessionListEmpty(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.SessionList("nonexistent-agent")
+	if err != nil {
+		t.Fatalf("SessionList failed: %v", err)
+	}
+	if result.Total != 0 {
+		t.Errorf("expected 0 sessions, got %d", result.Total)
+	}
+}
+
+func TestSessionListMissingAgentID(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SessionList("")
+	if err == nil {
+		t.Error("expected error for empty agent_id")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 error, got %v", err)
+	}
+}
+
+func TestSessionDelete(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create a session
+	cli.FileWrite("a1", "del-sess", "/file.txt", "data")
+
+	// Delete it
+	err := cli.SessionDelete("a1", "del-sess")
+	if err != nil {
+		t.Fatalf("SessionDelete failed: %v", err)
+	}
+
+	// Verify it's gone — reading should fail or session should not appear in list
+	result, err := cli.SessionList("a1")
+	if err != nil {
+		t.Fatalf("SessionList failed: %v", err)
+	}
+	for _, s := range result.Sessions {
+		if s.SessionID == "del-sess" {
+			t.Error("session should have been deleted")
+		}
+	}
+}
+
+func TestSessionDeleteNotFound(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	err := cli.SessionDelete("a1", "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent session")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 error, got %v", err)
+	}
+}
+
+// =============================================
+// New option tests
+// =============================================
+
+func TestBashExecHardTimeout(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.BashExec("a1", "ht1", "echo ok",
+		WithHardTimeout(60),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with HardTimeout failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "ok\n" {
+		t.Errorf("expected stdout 'ok\\n', got %v", result.Stdout)
+	}
+}
+
+func TestBashExecMaxOutputLength(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.BashExec("a1", "mol1", "echo hello",
+		WithMaxOutputLength(1024),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with MaxOutputLength failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "hello\n" {
+		t.Errorf("expected stdout 'hello\\n', got %v", result.Stdout)
+	}
+}
+
+func TestBashCreateSessionWithOptions(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	info, err := cli.BashCreateSession("a1", "opt-sess",
+		WithBashSID("custom-bash"),
+		WithSessionExecDir("/tmp"),
+	)
+	if err != nil {
+		t.Fatalf("BashCreateSession with options failed: %v", err)
+	}
+	if info.SessionID != "custom-bash" {
+		t.Errorf("expected session_id 'custom-bash', got %s", info.SessionID)
+	}
+	if info.Status != SessionReady {
+		t.Errorf("expected status ready, got %s", info.Status)
+	}
+}
+
+func TestCodeExecuteWithCwd(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create a subdirectory inside the session via file write
+	cli.FileWrite("a1", "cwd1", "/mydir/placeholder.txt", "x")
+
+	result, err := cli.CodeExecute("a1", "cwd1", "python", "import os; print(os.path.basename(os.getcwd()))",
+		WithCwd("/mydir"),
+	)
+	if err != nil {
+		t.Fatalf("CodeExecute with Cwd failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "mydir\n" {
+		t.Errorf("expected stdout 'mydir\\n', got %v", result.Stdout)
+	}
+}
+
+func TestFileWriteWithNewlines(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.FileWrite("a1", "nl1", "/newline.txt", "content",
+		WithLeadingNewline(true),
+		WithTrailingNewline(true),
+	)
+	if err != nil {
+		t.Fatalf("FileWrite with newlines failed: %v", err)
+	}
+
+	result, err := cli.FileRead("a1", "nl1", "/newline.txt")
+	if err != nil {
+		t.Fatalf("FileRead failed: %v", err)
+	}
+	if result.Content != "\ncontent\n" {
+		t.Errorf("expected '\\ncontent\\n', got %q", result.Content)
 	}
 }
 

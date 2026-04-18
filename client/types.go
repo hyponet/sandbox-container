@@ -76,6 +76,13 @@ type AvailableTool struct {
 	Description *string `json:"description,omitempty"`
 }
 
+// PackageInfo represents an installed package entry returned by the sandbox packages endpoints.
+// Fields are loosely typed since the exact shape depends on the package manager (pip/npm).
+type PackageInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 // =============================================
 // Bash types
 // =============================================
@@ -311,4 +318,43 @@ type SkillContent struct {
 
 type SkillLoadResult struct {
 	Skills []SkillContent `json:"skills"`
+}
+
+// =============================================
+// Session management types
+// =============================================
+
+type SessionInfo struct {
+	SessionID    string `json:"session_id"`
+	AgentID      string `json:"agent_id"`
+	LastAccess   string `json:"last_access,omitempty"`
+	AuditEntries int    `json:"audit_entries"`
+}
+
+type SessionListResult struct {
+	Sessions []SessionInfo `json:"sessions"`
+	Total    int           `json:"total"`
+}
+
+type AuditEntry struct {
+	Timestamp   string            `json:"timestamp"`
+	AgentID     string            `json:"agent_id,omitempty"`
+	SessionID   string            `json:"session_id,omitempty"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	RequestBody interface{}       `json:"request_body,omitempty"`
+	Status      int               `json:"status"`
+	Response    interface{}       `json:"response,omitempty"`
+	Latency     string            `json:"latency"`
+	ClientIP    string            `json:"client_ip"`
+}
+
+type AuditLogResult struct {
+	SessionID string       `json:"session_id"`
+	AgentID   string       `json:"agent_id"`
+	Entries   []AuditEntry `json:"entries"`
+	Total     int          `json:"total"`
+	Offset    int          `json:"offset"`
+	Limit     int          `json:"limit"`
 }

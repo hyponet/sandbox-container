@@ -65,10 +65,13 @@ func (c *Client) BashKill(agentID, sessionID, signal string) error {
 }
 
 // BashCreateSession creates a new persistent bash session.
-func (c *Client) BashCreateSession(agentID, sessionID string) (*BashSessionInfo, error) {
+func (c *Client) BashCreateSession(agentID, sessionID string, opts ...BashCreateSessionOption) (*BashSessionInfo, error) {
 	req := bashSessionCreateRequest{
 		AgentID:   agentID,
 		SessionID: sessionID,
+	}
+	for _, o := range opts {
+		o(&req)
 	}
 	var result BashSessionInfo
 	if err := c.post("/v1/bash/sessions/create", req, &result); err != nil {
@@ -169,6 +172,30 @@ func WithAsyncMode(async bool) BashExecOption {
 // WithTimeout sets the command timeout in seconds.
 func WithTimeout(seconds float64) BashExecOption {
 	return func(r *bashExecRequest) { r.Timeout = &seconds }
+}
+
+// WithHardTimeout sets the hard timeout in seconds (kills process after this duration).
+func WithHardTimeout(seconds float64) BashExecOption {
+	return func(r *bashExecRequest) { r.HardTimeout = &seconds }
+}
+
+// WithMaxOutputLength sets the maximum output length in bytes.
+// A value of 0 (the default) means no limit.
+func WithMaxOutputLength(length int) BashExecOption {
+	return func(r *bashExecRequest) { r.MaxOutputLength = length }
+}
+
+// BashCreateSessionOption is a functional option for BashCreateSession.
+type BashCreateSessionOption func(*bashSessionCreateRequest)
+
+// WithBashSID sets a custom bash session ID.
+func WithBashSID(sid string) BashCreateSessionOption {
+	return func(r *bashSessionCreateRequest) { r.BashSID = &sid }
+}
+
+// WithSessionExecDir sets the working directory for the bash session.
+func WithSessionExecDir(dir string) BashCreateSessionOption {
+	return func(r *bashSessionCreateRequest) { r.ExecDir = &dir }
 }
 
 // BashOutputOption is a functional option for BashOutput.

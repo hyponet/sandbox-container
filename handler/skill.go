@@ -737,6 +737,204 @@ func (h *SkillHandler) FileMkdir(c *gin.Context) {
 	}))
 }
 
+// FileDelete deletes a file or directory within a global skill.
+func (h *SkillHandler) FileDelete(c *gin.Context) {
+	var req model.SkillFileDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	skillDir := h.mgr.GlobalSkillPath(req.Name)
+	if _, err := os.Stat(skillDir); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+		return
+	}
+
+	resolved, err := resolveSkillFilePath(skillDir, req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+
+	// Don't allow deleting _meta.json
+	if strings.EqualFold(filepath.Base(resolved), metaFile) {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("cannot delete system file: "+metaFile))
+		return
+	}
+
+	// Don't allow deleting the skill root itself
+	if resolved == filepath.Clean(skillDir) {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("cannot delete skill root directory, use /v1/skills/delete instead"))
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Use Lstat inside lock to avoid TOCTOU race and to not follow symlinks
+	if _, err := os.Lstat(resolved); err != nil {
+		c.JSON(http.StatusNotFound, model.ErrResponse("path not found: "+req.Path))
+		return
+	}
+
+	if err := os.RemoveAll(resolved); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete: "+err.Error()))
+		return
+	}
+
+	touchSkillMeta(skillDir)
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileDeleteResult{
+		Path: req.Path,
+	}))
+}
+
+// ImportUpload imports skills from uploaded ZIP files (multipart form).
+// Accepts multiple files via the "files" form field. Each file must have a
+// corresponding "names" form field value specifying the skill ID.
+//
+// NOTE: This operation is NOT atomic. If processing fails mid-way (e.g., on
+// file 2 of 3), previously imported skills remain on disk. Callers should
+// treat partial success as possible and verify results.
+func (h *SkillHandler) ImportUpload(c *gin.Context) {
+	// Limit total request body to prevent memory exhaustion.
+	// Each file is also checked against maxZipSize individually.
+	maxUploadBody := int64(len(c.Request.Header.Get("Content-Type"))+1024) + maxZipSize*10
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBody)
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid multipart form: "+err.Error()))
+		return
+	}
+
+	files := form.File["files"]
+	names := form.Value["names"]
+
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("no files uploaded"))
+		return
+	}
+	if len(names) != len(files) {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("names count (%d) must match files count (%d)", len(names), len(files))))
+		return
+	}
+
+	// Validate all skill IDs upfront and reject duplicates
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if err := validateSkillID(name); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("invalid skill name %q: %s", name, err.Error())))
+			return
+		}
+		if seen[name] {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("duplicate skill name: %q", name)))
+			return
+		}
+		seen[name] = true
+	}
+
+	results := make([]model.SkillMetaJSON, 0, len(files))
+
+	for i, fh := range files {
+		skillName := names[i]
+
+		if fh.Size > maxZipSize {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("file %q exceeds size limit (100MB)", fh.Filename)))
+			return
+		}
+
+		// Save uploaded file to temp
+		src, err := fh.Open()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to open uploaded file %q: %s", fh.Filename, err.Error())))
+			return
+		}
+
+		tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
+		if err != nil {
+			src.Close()
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
+			return
+		}
+		tmpPath := tmpFile.Name()
+
+		_, err = io.Copy(tmpFile, src)
+		src.Close()
+		tmpFile.Close()
+		if err != nil {
+			os.Remove(tmpPath)
+			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to save uploaded file %q: %s", fh.Filename, err.Error())))
+			return
+		}
+
+		meta, err := h.importSkillFromZip(skillName, tmpPath)
+		os.Remove(tmpPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to import %q: %s", fh.Filename, err.Error())))
+			return
+		}
+
+		results = append(results, *meta)
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.SkillImportUploadResult{Skills: results}))
+}
+
+// importSkillFromZip extracts a ZIP into a skill directory with per-skill locking.
+func (h *SkillHandler) importSkillFromZip(skillName, zipPath string) (*model.SkillMetaJSON, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	skillDir := h.mgr.GlobalSkillPath(skillName)
+
+	// Preserve created_at if skill already exists
+	var existingCreatedAt int64
+	if existingMeta, err := readSkillMeta(skillDir); err == nil {
+		existingCreatedAt = existingMeta.CreatedAt
+	}
+
+	// Remove existing and extract
+	os.RemoveAll(skillDir)
+	if err := extractZip(zipPath, skillDir); err != nil {
+		return nil, fmt.Errorf("extract: %w", err)
+	}
+
+	// Write/update _meta.json
+	now := time.Now().UnixNano()
+	if existingCreatedAt == 0 {
+		existingCreatedAt = now
+	}
+	meta := &model.SkillMetaJSON{
+		Name:      skillName,
+		CreatedAt: existingCreatedAt,
+		UpdatedAt: now,
+	}
+
+	if content, err := readSkillsMD(skillDir, skillName); err != nil {
+		defaultMD := fmt.Sprintf("---\nname: %s\n---\n", skillName)
+		if wErr := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(defaultMD), 0644); wErr != nil {
+			return nil, fmt.Errorf("write default SKILLS.md: %w", wErr)
+		}
+	} else {
+		if desc := extractDescriptionFromFrontmatter(content); desc != "" {
+			meta.Description = desc
+		}
+	}
+
+	if err := writeSkillMeta(skillDir, meta); err != nil {
+		return nil, fmt.Errorf("write metadata: %w", err)
+	}
+
+	return meta, nil
+}
+
 // ——— Agent Skill Loading ———
 
 // Sentinel error types for syncSkillToAgent, enabling reliable HTTP status mapping.

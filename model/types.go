@@ -485,6 +485,21 @@ type SkillFileMkdirResult struct {
 	Path string `json:"path"`
 }
 
+// SkillFileDeleteRequest deletes a file or directory within a global skill.
+type SkillFileDeleteRequest struct {
+	Name string `json:"name" binding:"required"`
+	Path string `json:"path" binding:"required"`
+}
+
+type SkillFileDeleteResult struct {
+	Path string `json:"path"`
+}
+
+// SkillImportUploadResult is the response for the upload-based import endpoint.
+type SkillImportUploadResult struct {
+	Skills []SkillMetaJSON `json:"skills"`
+}
+
 // SkillGlobalListResult lists all skills in the global store.
 type SkillGlobalListResult struct {
 	Skills []SkillMetaJSON `json:"skills"`

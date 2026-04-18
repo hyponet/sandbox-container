@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,6 +43,8 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
+		skills.POST("/file/delete", skillH.FileDelete)
+		skills.POST("/import/upload", skillH.ImportUpload)
 	}
 
 	agents := r.Group("/v1/skills/agents")
@@ -1061,4 +1064,462 @@ func TestValidateSkillURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================
+// Tests for file/delete endpoint
+// =============================================
+
+func TestSkillFileDeleteFile(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Create skill and write a file
+	body := `{"name": "del-file-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	writeBody := `{"name": "del-file-skill", "path": "to-remove.txt", "content": "bye"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Delete the file
+	delBody := `{"name": "del-file-skill", "path": "to-remove.txt"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete file failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	if data["path"] != "to-remove.txt" {
+		t.Errorf("expected path 'to-remove.txt', got %v", data["path"])
+	}
+
+	// Verify file is gone
+	readBody := `{"name": "del-file-skill", "path": "to-remove.txt"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/read", bytes.NewBufferString(readBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 after delete, got %d", w.Code)
+	}
+}
+
+func TestSkillFileDeleteDirectory(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Create skill with nested files
+	body := `{"name": "del-dir-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	for _, path := range []string{"src/a.py", "src/sub/b.py"} {
+		writeBody := `{"name": "del-dir-skill", "path": "` + path + `", "content": "x"}`
+		req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+		req.Header.Set("Content-Type", "application/json")
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+
+	// Delete the entire src/ directory
+	delBody := `{"name": "del-dir-skill", "path": "src"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete dir failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify nested files are gone
+	readBody := `{"name": "del-dir-skill", "path": "src/a.py"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/read", bytes.NewBufferString(readBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for deleted nested file, got %d", w.Code)
+	}
+}
+
+func TestSkillFileDeleteMetaBlocked(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "del-meta-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	delBody := `{"name": "del-meta-skill", "path": "_meta.json"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for _meta.json delete, got %d", w.Code)
+	}
+}
+
+func TestSkillFileDeletePathTraversal(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "del-traversal", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	delBody := `{"name": "del-traversal", "path": "../other-skill"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for path traversal, got %d", w.Code)
+	}
+}
+
+func TestSkillFileDeleteNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "del-nf-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	delBody := `{"name": "del-nf-skill", "path": "nonexistent.txt"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent path, got %d", w.Code)
+	}
+}
+
+// =============================================
+// Tests for import/upload endpoint
+// =============================================
+
+func TestSkillImportUpload(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create a test ZIP in memory
+	zipBuf := createTestZipBytes(t, map[string]string{
+		"SKILLS.md": "---\nname: uploaded-skill\ndescription: From upload\n---\nBody content.",
+		"main.py":   "print('hello')",
+	})
+
+	// Build multipart form
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("names", "uploaded-skill")
+	part, err := writer.CreateFormFile("files", "skill.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	part.Write(zipBuf)
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload import failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skills := data["skills"].([]interface{})
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	skill := skills[0].(map[string]interface{})
+	if skill["name"] != "uploaded-skill" {
+		t.Errorf("expected name 'uploaded-skill', got %v", skill["name"])
+	}
+	if skill["description"] != "From upload" {
+		t.Errorf("expected description 'From upload', got %v", skill["description"])
+	}
+
+	// Verify files extracted
+	skillDir := mgr.GlobalSkillPath("uploaded-skill")
+	if _, err := os.Stat(filepath.Join(skillDir, "main.py")); err != nil {
+		t.Errorf("main.py not extracted: %v", err)
+	}
+}
+
+func TestSkillImportUploadMultiple(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	zip1 := createTestZipBytes(t, map[string]string{
+		"SKILLS.md": "---\nname: skill-one\n---\nFirst skill.",
+	})
+	zip2 := createTestZipBytes(t, map[string]string{
+		"SKILLS.md": "---\nname: skill-two\n---\nSecond skill.",
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("names", "skill-one")
+	writer.WriteField("names", "skill-two")
+
+	p1, _ := writer.CreateFormFile("files", "one.zip")
+	p1.Write(zip1)
+	p2, _ := writer.CreateFormFile("files", "two.zip")
+	p2.Write(zip2)
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("multi upload failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skills := data["skills"].([]interface{})
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(skills))
+	}
+
+	// Verify both skill directories exist
+	for _, name := range []string{"skill-one", "skill-two"} {
+		if _, err := os.Stat(mgr.GlobalSkillPath(name)); err != nil {
+			t.Errorf("skill %s directory not created: %v", name, err)
+		}
+	}
+}
+
+func TestSkillImportUploadNamesMismatch(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	zip1 := createTestZipBytes(t, map[string]string{"SKILLS.md": "---\nname: x\n---\n"})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	// 1 file but 2 names
+	writer.WriteField("names", "skill-a")
+	writer.WriteField("names", "skill-b")
+	p, _ := writer.CreateFormFile("files", "one.zip")
+	p.Write(zip1)
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for names/files mismatch, got %d", w.Code)
+	}
+}
+
+func TestSkillImportUploadNoFiles(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for no files, got %d", w.Code)
+	}
+}
+
+func TestSkillImportUploadDuplicateNames(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	zip1 := createTestZipBytes(t, map[string]string{"SKILLS.md": "---\nname: dup\n---\n"})
+	zip2 := createTestZipBytes(t, map[string]string{"SKILLS.md": "---\nname: dup\n---\n"})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("names", "dup-skill")
+	writer.WriteField("names", "dup-skill")
+
+	p1, _ := writer.CreateFormFile("files", "one.zip")
+	p1.Write(zip1)
+	p2, _ := writer.CreateFormFile("files", "two.zip")
+	p2.Write(zip2)
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for duplicate names, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSkillFileDeleteRootBlocked(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "del-root-skill", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Try to delete "." which resolves to skill root
+	delBody := `{"name": "del-root-skill", "path": "."}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for root delete, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSkillFileDeleteMetaCaseInsensitive(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"name": "del-meta-ci", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Try case variation _META.JSON
+	delBody := `{"name": "del-meta-ci", "path": "_META.JSON"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for _META.JSON delete, got %d", w.Code)
+	}
+}
+
+func TestSkillFileDeleteUpdatesMeta(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	body := `{"name": "del-meta-ts", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Write a file
+	writeBody := `{"name": "del-meta-ts", "path": "tmp.txt", "content": "x"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	skillDir := mgr.GlobalSkillPath("del-meta-ts")
+	metaBefore, _ := readSkillMeta(skillDir)
+
+	// Delete the file
+	delBody := `{"name": "del-meta-ts", "path": "tmp.txt"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/delete", bytes.NewBufferString(delBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete failed: %d", w.Code)
+	}
+
+	metaAfter, _ := readSkillMeta(skillDir)
+	if metaAfter.UpdatedAt <= metaBefore.UpdatedAt {
+		t.Errorf("expected updated_at to increase after delete, before=%d after=%d", metaBefore.UpdatedAt, metaAfter.UpdatedAt)
+	}
+}
+
+func TestSkillImportUploadPreservesCreatedAt(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// First create the skill
+	body := `{"name": "upload-preserve", "description": "original"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	skillDir := mgr.GlobalSkillPath("upload-preserve")
+	originalMeta, _ := readSkillMeta(skillDir)
+	originalCreatedAt := originalMeta.CreatedAt
+
+	// Re-import via upload
+	zipBuf := createTestZipBytes(t, map[string]string{
+		"SKILLS.md": "---\nname: upload-preserve\ndescription: updated\n---\nNew body.",
+	})
+
+	var mbody bytes.Buffer
+	writer := multipart.NewWriter(&mbody)
+	writer.WriteField("names", "upload-preserve")
+	part, _ := writer.CreateFormFile("files", "skill.zip")
+	part.Write(zipBuf)
+	writer.Close()
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/import/upload", &mbody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload re-import failed: %d %s", w.Code, w.Body.String())
+	}
+
+	updatedMeta, _ := readSkillMeta(skillDir)
+	if updatedMeta.CreatedAt != originalCreatedAt {
+		t.Errorf("expected created_at preserved (%d), got %d", originalCreatedAt, updatedMeta.CreatedAt)
+	}
+	if updatedMeta.UpdatedAt <= originalCreatedAt {
+		t.Errorf("expected updated_at > created_at")
+	}
+}
+
+// createTestZipBytes creates a ZIP archive in memory and returns the bytes.
+func createTestZipBytes(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for name, content := range files {
+		f, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Write([]byte(content))
+	}
+	w.Close()
+	return buf.Bytes()
 }

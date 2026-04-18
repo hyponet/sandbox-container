@@ -82,6 +82,8 @@ func main() {
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
+		skills.POST("/file/delete", skillH.FileDelete)
+		skills.POST("/import/upload", skillH.ImportUpload)
 	}
 
 	// Agent skill APIs

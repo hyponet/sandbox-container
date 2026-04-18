@@ -129,7 +129,8 @@ POST /v1/skills/file/read     # Read a file in a skill
 POST /v1/skills/file/write    # Write a file to a skill
 POST /v1/skills/file/update   # Replace string content in a skill file
 POST /v1/skills/file/mkdir    # Create a directory in a skill
-POST /v1/skills/load          # Load skills into an agent's session
+POST /v1/skills/agents/:agent_id/list  # List agent skills (frontmatter summaries)
+POST /v1/skills/agents/:agent_id/load  # Load skills into agent session (body content)
 ```
 
 **Example — Create a skill:**
@@ -153,12 +154,20 @@ POST /v1/skills/file/write
 }
 ```
 
+**Example — List agent skills:**
+
+```json
+POST /v1/skills/agents/agent-1/list
+{
+  "skill_ids": ["my-skill", "another-skill"]
+}
+```
+
 **Example — Load skills into an agent session:**
 
 ```json
-POST /v1/skills/load
+POST /v1/skills/agents/agent-1/load
 {
-  "agent_id": "agent-1",
   "skill_ids": ["my-skill", "another-skill"]
 }
 ```

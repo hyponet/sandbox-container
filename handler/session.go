@@ -99,7 +99,18 @@ func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 	auditPath := h.mgr.AuditPath(agentID, sessionID)
 	f, err := os.Open(auditPath)
 	if err != nil {
-		c.JSON(http.StatusNotFound, model.ErrResponse("no audit logs found for session"))
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusOK, model.OkResponse(model.AuditLogResult{
+				SessionID: sessionID,
+				AgentID:   agentID,
+				Entries:   []model.AuditEntry{},
+				Total:     0,
+				Offset:    offset,
+				Limit:     limit,
+			}))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read audit logs: "+err.Error()))
 		return
 	}
 	defer f.Close()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -844,14 +845,14 @@ func (h *SkillHandler) AgentList(c *gin.Context) {
 	for _, skillID := range req.SkillIDs {
 		agentDir, err := h.syncSkillToAgent(agentID, skillID)
 		if err != nil {
-			c.JSON(syncErrToStatus(err), model.ErrResponse(err.Error()))
-			return
+			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
+			continue
 		}
 
 		content, err := readSkillsMD(agentDir, skillID)
 		if err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse(err.Error()))
-			return
+			log.Printf("[WARN] agent %s: skip skill %s: read SKILLS.md failed: %v", agentID, skillID, err)
+			continue
 		}
 
 		fm, _ := splitFrontmatter(content)
@@ -881,14 +882,14 @@ func (h *SkillHandler) AgentLoad(c *gin.Context) {
 	for _, skillID := range req.SkillIDs {
 		agentDir, err := h.syncSkillToAgent(agentID, skillID)
 		if err != nil {
-			c.JSON(syncErrToStatus(err), model.ErrResponse(err.Error()))
-			return
+			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
+			continue
 		}
 
 		content, err := readSkillsMD(agentDir, skillID)
 		if err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse(err.Error()))
-			return
+			log.Printf("[WARN] agent %s: skip skill %s: read SKILLS.md failed: %v", agentID, skillID, err)
+			continue
 		}
 
 		_, body := splitFrontmatter(content)

@@ -23,8 +23,9 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(middleware.AuditLogger(auditW))
+	r.Use(gin.Logger())
 	auth := middleware.AuthRequired()
+	auditMW := middleware.AuditLogger(auditW)
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
 	sandboxH := handler.NewSandboxHandler()
@@ -36,10 +37,10 @@ func main() {
 	bashH := handler.NewBashHandler(mgr)
 	bash := r.Group("/v1/bash", auth)
 	{
-		bash.POST("/exec", bashH.Exec)
+		bash.POST("/exec", auditMW, bashH.Exec)
 		bash.POST("/output", bashH.Output)
-		bash.POST("/write", bashH.Write)
-		bash.POST("/kill", bashH.Kill)
+		bash.POST("/write", auditMW, bashH.Write)
+		bash.POST("/kill", auditMW, bashH.Kill)
 		bash.GET("/sessions", bashH.ListSessions)
 		bash.POST("/sessions/create", bashH.CreateSession)
 		bash.POST("/sessions/:session_id/close", bashH.CloseSession)
@@ -50,20 +51,20 @@ func main() {
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
-		f.POST("/write", fileH.Write)
-		f.POST("/replace", fileH.Replace)
+		f.POST("/write", auditMW, fileH.Write)
+		f.POST("/replace", auditMW, fileH.Replace)
 		f.POST("/search", fileH.Search)
 		f.POST("/find", fileH.Find)
 		f.POST("/grep", fileH.Grep)
 		f.POST("/glob", fileH.Glob)
-		f.POST("/upload", fileH.Upload)
+		f.POST("/upload", auditMW, fileH.Upload)
 		f.GET("/download", fileH.Download)
 		f.POST("/list", fileH.List)
 	}
 
 	// Code APIs
 	codeH := handler.NewCodeHandler(mgr)
-	r.POST("/v1/code/execute", auth, codeH.Execute)
+	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 
 	// Skills APIs
@@ -87,7 +88,7 @@ func main() {
 	agents := r.Group("/v1/skills/agents", auth)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
-		agents.POST("/:agent_id/load", skillH.AgentLoad)
+		agents.POST("/:agent_id/load", auditMW, skillH.AgentLoad)
 	}
 
 	// Session Management APIs

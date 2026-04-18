@@ -706,7 +706,14 @@ func (h *FileHandler) List(c *gin.Context) {
 	} else {
 		entries, err := os.ReadDir(realPath)
 		if err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse("directory not found: "+err.Error()))
+			if os.IsNotExist(err) {
+				c.JSON(http.StatusOK, model.OkResponse(model.FileListResult{
+					Path:  req.Path,
+					Files: []model.FileInfo{},
+				}))
+				return
+			}
+			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to list directory: "+err.Error()))
 			return
 		}
 

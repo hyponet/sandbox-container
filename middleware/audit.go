@@ -51,9 +51,12 @@ func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 			}
 		}
 
-		// Fallback to query params for GET/DELETE requests
+		// Fallback to path params and query params
 		if agentID == "" {
-			agentID = c.Query("agent_id")
+			agentID = c.Param("agent_id")
+			if agentID == "" {
+				agentID = c.Query("agent_id")
+			}
 		}
 		if sessionID == "" {
 			sessionID = c.Param("session_id")

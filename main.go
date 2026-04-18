@@ -81,8 +81,13 @@ func main() {
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
-		// Agent skill loading
-		skills.POST("/load", skillH.Load)
+	}
+
+	// Agent skill APIs
+	agents := r.Group("/v1/skills/agents", auth)
+	{
+		agents.POST("/:agent_id/list", skillH.AgentList)
+		agents.POST("/:agent_id/load", skillH.AgentLoad)
 	}
 
 	// Session Management APIs

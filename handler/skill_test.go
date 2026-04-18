@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,12 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
-		skills.POST("/load", skillH.Load)
+	}
+
+	agents := r.Group("/v1/skills/agents")
+	{
+		agents.POST("/:agent_id/list", skillH.AgentList)
+		agents.POST("/:agent_id/load", skillH.AgentLoad)
 	}
 
 	return r, mgr
@@ -519,7 +525,7 @@ func TestSkillFilePathTraversal(t *testing.T) {
 	}
 }
 
-func TestSkillLoad(t *testing.T) {
+func TestAgentSkillLoad(t *testing.T) {
 	r, _ := setupSkillRouter()
 
 	// Create global skill with specific SKILLS.md content
@@ -529,9 +535,9 @@ func TestSkillLoad(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// Load into agent
-	loadBody := `{"agent_id": "a1", "skill_ids": ["load-skill"]}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(loadBody))
+	// Load into agent via new route
+	loadBody := `{"skill_ids": ["load-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -552,13 +558,59 @@ func TestSkillLoad(t *testing.T) {
 	if skill["name"] != "load-skill" {
 		t.Errorf("expected name 'load-skill', got %v", skill["name"])
 	}
+	// Content should be body only (no frontmatter)
 	content := skill["content"].(string)
-	if content == "" {
-		t.Error("expected non-empty content")
+	if strings.Contains(content, "---") {
+		t.Error("expected content without frontmatter delimiters")
 	}
 }
 
-func TestSkillLoadCaching(t *testing.T) {
+func TestAgentSkillList(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Create global skill
+	body := `{"name": "list-skill", "description": "test list"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// List via new route
+	listBody := `{"skill_ids": ["list-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/list", bytes.NewBufferString(listBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	skills := data["skills"].([]interface{})
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+
+	skill := skills[0].(map[string]interface{})
+	if skill["name"] != "list-skill" {
+		t.Errorf("expected name 'list-skill', got %v", skill["name"])
+	}
+	if skill["path"] != "/skills/list-skill" {
+		t.Errorf("expected path '/skills/list-skill', got %v", skill["path"])
+	}
+	fm := skill["frontmatter"].(string)
+	if !strings.Contains(fm, "name: list-skill") {
+		t.Errorf("expected frontmatter to contain 'name: list-skill', got %q", fm)
+	}
+	if strings.Contains(fm, "---") {
+		t.Error("frontmatter should not contain --- delimiters")
+	}
+}
+
+func TestAgentSkillLoadCaching(t *testing.T) {
 	r, _ := setupSkillRouter()
 
 	// Create global skill
@@ -569,8 +621,8 @@ func TestSkillLoadCaching(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// First load
-	loadBody := `{"agent_id": "a1", "skill_ids": ["cache-skill"]}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(loadBody))
+	loadBody := `{"skill_ids": ["cache-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -580,7 +632,7 @@ func TestSkillLoadCaching(t *testing.T) {
 	}
 
 	// Just call load again - should still work
-	req = httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(loadBody))
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -590,7 +642,7 @@ func TestSkillLoadCaching(t *testing.T) {
 	}
 }
 
-func TestSkillLoadCacheInvalidation(t *testing.T) {
+func TestAgentSkillLoadCacheInvalidation(t *testing.T) {
 	r, mgr := setupSkillRouter()
 
 	// Create global skill
@@ -601,8 +653,8 @@ func TestSkillLoadCacheInvalidation(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Load into agent
-	loadBody := `{"agent_id": "a1", "skill_ids": ["inv-skill"]}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(loadBody))
+	loadBody := `{"skill_ids": ["inv-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -625,7 +677,7 @@ func TestSkillLoadCacheInvalidation(t *testing.T) {
 	}
 
 	// Load again - should re-copy due to cache invalidation
-	req = httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(loadBody))
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -641,11 +693,112 @@ func TestSkillLoadCacheInvalidation(t *testing.T) {
 	}
 }
 
-func TestSkillLoadNotFound(t *testing.T) {
+func TestSplitFrontmatter(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		wantFM string
+		wantB  string
+	}{
+		{"with frontmatter", "---\nname: x\n---\nbody here", "name: x", "body here"},
+		{"no frontmatter", "just content", "", "just content"},
+		{"only opening", "---\nname: x\nno closing", "", "---\nname: x\nno closing"},
+		{"empty body", "---\nname: x\n---\n", "name: x", ""},
+		{"leading newlines trimmed", "---\nk: v\n---\n\n\nbody", "k: v", "body"},
+		{"empty frontmatter and body", "---\n---", "", ""},
+		{"empty frontmatter with body", "---\n---\ncontent", "", "content"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm, body := splitFrontmatter(tt.input)
+			if fm != tt.wantFM {
+				t.Errorf("frontmatter: got %q, want %q", fm, tt.wantFM)
+			}
+			if body != tt.wantB {
+				t.Errorf("body: got %q, want %q", body, tt.wantB)
+			}
+		})
+	}
+}
+
+func TestAgentSkillLoadImportedFrontmatterSplit(t *testing.T) {
 	r, _ := setupSkillRouter()
 
-	body := `{"agent_id": "a1", "skill_ids": ["nonexistent"]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/skills/load", bytes.NewBufferString(body))
+	// Create a skill with rich frontmatter via import
+	zipPath := createTestZip(t, map[string]string{
+		"SKILLS.MD": "---\nname: rich-skill\ndescription: A rich skill\ntags: [a, b]\n---\n## Instructions\nDo things.",
+	})
+	defer os.Remove(zipPath)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/skill.zip", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, zipPath)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	importBody := `{"name": "rich-skill", "zip_url": "` + server.URL + `/skill.zip"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import", bytes.NewBufferString(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("import failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Test list returns frontmatter only
+	listBody := `{"skill_ids": ["rich-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/list", bytes.NewBufferString(listBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var listResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &listResp)
+	listData := listResp["data"].(map[string]interface{})
+	listSkills := listData["skills"].([]interface{})
+	fm := listSkills[0].(map[string]interface{})["frontmatter"].(string)
+	if !strings.Contains(fm, "tags:") {
+		t.Errorf("expected frontmatter to contain 'tags:', got %q", fm)
+	}
+	if strings.Contains(fm, "Instructions") {
+		t.Error("frontmatter should not contain body content")
+	}
+
+	// Test load returns body only
+	loadBody := `{"skill_ids": ["rich-skill"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(loadBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("load failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var loadResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &loadResp)
+	loadData := loadResp["data"].(map[string]interface{})
+	loadSkills := loadData["skills"].([]interface{})
+	content := loadSkills[0].(map[string]interface{})["content"].(string)
+	if !strings.Contains(content, "## Instructions") {
+		t.Errorf("expected body to contain '## Instructions', got %q", content)
+	}
+	if strings.Contains(content, "---") {
+		t.Error("body should not contain frontmatter delimiters")
+	}
+	if strings.Contains(content, "tags:") {
+		t.Error("body should not contain frontmatter fields")
+	}
+}
+
+func TestAgentSkillLoadNotFound(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	body := `{"skill_ids": ["nonexistent"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/agents/a1/load", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

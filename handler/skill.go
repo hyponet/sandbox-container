@@ -399,9 +399,9 @@ func (h *SkillHandler) Import(c *gin.Context) {
 	}
 
 	// Try to extract description from SKILLS.md frontmatter if present
-	skillsMDPath := filepath.Join(skillDir, "SKILLS.md")
-	if content, err := os.ReadFile(skillsMDPath); err != nil {
+	if content, err := readSkillsMD(skillDir, req.Name); err != nil {
 		// Create default SKILLS.md if not in ZIP
+		skillsMDPath := filepath.Join(skillDir, "SKILLS.md")
 		defaultMD := fmt.Sprintf("---\nname: %s\n---\n", req.Name)
 		if wErr := os.WriteFile(skillsMDPath, []byte(defaultMD), 0644); wErr != nil {
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write default SKILLS.md: "+wErr.Error()))
@@ -409,7 +409,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 		}
 	} else {
 		// Try to extract description from frontmatter
-		desc := extractDescriptionFromFrontmatter(string(content))
+		desc := extractDescriptionFromFrontmatter(content)
 		if desc != "" {
 			meta.Description = desc
 		}
@@ -738,6 +738,42 @@ func (h *SkillHandler) FileMkdir(c *gin.Context) {
 
 // ——— Agent Skill Loading ———
 
+// Sentinel error types for syncSkillToAgent, enabling reliable HTTP status mapping.
+type errSkillNotFound struct{ msg string }
+
+func (e *errSkillNotFound) Error() string { return e.msg }
+
+type errSkillInvalid struct{ msg string }
+
+func (e *errSkillInvalid) Error() string { return e.msg }
+
+// syncErrToStatus maps syncSkillToAgent errors to HTTP status codes.
+func syncErrToStatus(err error) int {
+	switch err.(type) {
+	case *errSkillNotFound:
+		return http.StatusNotFound
+	case *errSkillInvalid:
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// splitFrontmatter splits SKILLS.md content into frontmatter (YAML between --- delimiters)
+// and body (everything after the second ---).
+func splitFrontmatter(content string) (frontmatter, body string) {
+	if !strings.HasPrefix(content, "---") {
+		return "", content
+	}
+	end := strings.Index(content[3:], "---")
+	if end < 0 {
+		return "", content
+	}
+	frontmatter = strings.TrimSpace(content[3 : end+3])
+	body = strings.TrimLeft(content[end+6:], "\n")
+	return
+}
+
 // copySkillToAgent copies a skill from global store to agent cache with proper locking.
 func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 	h.mu.Lock()
@@ -747,75 +783,121 @@ func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 	return copyDir(globalDir, agentDir)
 }
 
-// Load loads skills into an agent's local cache and returns their content.
-// For each skill_id: checks global store, compares version with agent cache,
-// copies from global if outdated or missing, then returns SKILLS.md content.
-func (h *SkillHandler) Load(c *gin.Context) {
-	var req model.SkillLoadRequest
+// syncSkillToAgent validates a skill ID, checks the global store, and syncs to agent cache
+// if needed. Returns the agent-local skill directory path.
+func (h *SkillHandler) syncSkillToAgent(agentID, skillID string) (string, error) {
+	if err := validateSkillID(skillID); err != nil {
+		return "", &errSkillInvalid{msg: fmt.Sprintf("invalid skill ID %q: %s", skillID, err.Error())}
+	}
+
+	globalDir := h.mgr.GlobalSkillPath(skillID)
+	if _, err := os.Stat(globalDir); err != nil {
+		return "", &errSkillNotFound{msg: "skill not found: " + skillID}
+	}
+
+	globalMeta, err := readSkillMeta(globalDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read skill metadata: %s", skillID)
+	}
+
+	agentDir := filepath.Join(h.mgr.SkillsRoot(agentID), skillID)
+	needCopy := true
+
+	if localMeta, err := readSkillMeta(agentDir); err == nil {
+		if localMeta.UpdatedAt >= globalMeta.UpdatedAt {
+			needCopy = false
+		}
+	}
+
+	if needCopy {
+		if err := h.copySkillToAgent(globalDir, agentDir); err != nil {
+			return "", fmt.Errorf("failed to copy skill: %s", skillID)
+		}
+	}
+
+	return agentDir, nil
+}
+
+// readSkillsMD reads the SKILLS.md (case-insensitive) from a skill directory.
+func readSkillsMD(skillDir, skillID string) (string, error) {
+	for _, name := range []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"} {
+		p := filepath.Join(skillDir, name)
+		if content, err := os.ReadFile(p); err == nil {
+			return string(content), nil
+		}
+	}
+	return "", fmt.Errorf("SKILLS.md not found for skill: %s", skillID)
+}
+
+// AgentList syncs skills to agent cache and returns frontmatter summaries.
+func (h *SkillHandler) AgentList(c *gin.Context) {
+	agentID := c.Param("agent_id")
+
+	var req model.AgentSkillRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
 
-	var skills []model.SkillContent
+	skills := make([]model.SkillSummary, 0, len(req.SkillIDs))
 
 	for _, skillID := range req.SkillIDs {
-		if err := validateSkillID(skillID); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrResponse(fmt.Sprintf("invalid skill ID %q: %s", skillID, err.Error())))
-			return
-		}
-
-		globalDir := h.mgr.GlobalSkillPath(skillID)
-		if _, err := os.Stat(globalDir); err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+skillID))
-			return
-		}
-
-		// Read global meta
-		globalMeta, err := readSkillMeta(globalDir)
+		agentDir, err := h.syncSkillToAgent(agentID, skillID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+skillID))
+			c.JSON(syncErrToStatus(err), model.ErrResponse(err.Error()))
 			return
 		}
 
-		agentDir := filepath.Join(h.mgr.SkillsRoot(req.AgentID), skillID)
-		needCopy := true
-
-		// Check agent cache
-		if localMeta, err := readSkillMeta(agentDir); err == nil {
-			if localMeta.UpdatedAt >= globalMeta.UpdatedAt {
-				needCopy = false
-			}
-		}
-
-		if needCopy {
-			if err := h.copySkillToAgent(globalDir, agentDir); err != nil {
-				c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to copy skill: "+skillID))
-				return
-			}
-		}
-
-		// Read SKILLS.md from agent-local copy
-		skillsMD := filepath.Join(agentDir, "SKILLS.md")
-		if _, err := os.Stat(skillsMD); err != nil {
-			skillsMD = filepath.Join(agentDir, "SKILL.md")
-		}
-
-		content, err := os.ReadFile(skillsMD)
+		content, err := readSkillsMD(agentDir, skillID)
 		if err != nil {
-			c.JSON(http.StatusNotFound, model.ErrResponse("SKILLS.md not found for skill: "+skillID))
+			c.JSON(http.StatusNotFound, model.ErrResponse(err.Error()))
 			return
 		}
 
-		skills = append(skills, model.SkillContent{
-			Name:    skillID,
-			Content: string(content),
+		fm, _ := splitFrontmatter(content)
+
+		skills = append(skills, model.SkillSummary{
+			Name:        skillID,
+			Path:        "/skills/" + skillID,
+			Frontmatter: fm,
 		})
 	}
 
-	if skills == nil {
-		skills = []model.SkillContent{}
+	c.JSON(http.StatusOK, model.OkResponse(model.AgentSkillListResult{Skills: skills}))
+}
+
+// AgentLoad syncs skills to agent cache and returns SKILLS.md body (post-frontmatter).
+func (h *SkillHandler) AgentLoad(c *gin.Context) {
+	agentID := c.Param("agent_id")
+
+	var req model.AgentSkillRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
 	}
 
-	c.JSON(http.StatusOK, model.OkResponse(model.SkillLoadResult{Skills: skills}))
+	skills := make([]model.SkillContent, 0, len(req.SkillIDs))
+
+	for _, skillID := range req.SkillIDs {
+		agentDir, err := h.syncSkillToAgent(agentID, skillID)
+		if err != nil {
+			c.JSON(syncErrToStatus(err), model.ErrResponse(err.Error()))
+			return
+		}
+
+		content, err := readSkillsMD(agentDir, skillID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, model.ErrResponse(err.Error()))
+			return
+		}
+
+		_, body := splitFrontmatter(content)
+
+		skills = append(skills, model.SkillContent{
+			Name:    skillID,
+			Content: body,
+		})
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.AgentSkillLoadResult{Skills: skills}))
 }

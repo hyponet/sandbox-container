@@ -311,12 +311,22 @@ type SkillGlobalListResult struct {
 	Skills []SkillMetaJSON `json:"skills"`
 }
 
+type SkillSummary struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Frontmatter string `json:"frontmatter"`
+}
+
+type AgentSkillListResult struct {
+	Skills []SkillSummary `json:"skills"`
+}
+
 type SkillContent struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 }
 
-type SkillLoadResult struct {
+type AgentSkillLoadResult struct {
 	Skills []SkillContent `json:"skills"`
 }
 

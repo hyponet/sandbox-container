@@ -146,18 +146,31 @@ func (c *Client) SkillFileMkdir(name, path string) (*SkillFileMkdirResult, error
 	return &result, nil
 }
 
-// SkillLoad loads skills into an agent's local cache and returns their content.
-func (c *Client) SkillLoad(agentID string, skillIDs []string) (*SkillLoadResult, error) {
+// SkillAgentList syncs skills to agent cache and returns frontmatter summaries.
+func (c *Client) SkillAgentList(agentID string, skillIDs []string) (*AgentSkillListResult, error) {
 	req := struct {
-		AgentID  string   `json:"agent_id"`
 		SkillIDs []string `json:"skill_ids"`
 	}{
-		AgentID:  agentID,
 		SkillIDs: skillIDs,
 	}
 
-	var result SkillLoadResult
-	if err := c.post("/v1/skills/load", req, &result); err != nil {
+	var result AgentSkillListResult
+	if err := c.post("/v1/skills/agents/"+agentID+"/list", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SkillAgentLoad syncs skills to agent cache and returns SKILLS.md body content.
+func (c *Client) SkillAgentLoad(agentID string, skillIDs []string) (*AgentSkillLoadResult, error) {
+	req := struct {
+		SkillIDs []string `json:"skill_ids"`
+	}{
+		SkillIDs: skillIDs,
+	}
+
+	var result AgentSkillLoadResult
+	if err := c.post("/v1/skills/agents/"+agentID+"/load", req, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

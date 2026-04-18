@@ -495,18 +495,32 @@ type SkillDeleteRequest struct {
 	Name string `json:"name" binding:"required"`
 }
 
-// SkillLoadRequest loads skills into an agent's local cache and returns their content.
-type SkillLoadRequest struct {
-	AgentID  string   `json:"agent_id" binding:"required"`
+// AgentSkillRequest is the body for agent skill list/load endpoints.
+// agent_id comes from the URL path parameter.
+type AgentSkillRequest struct {
 	SkillIDs []string `json:"skill_ids" binding:"required"`
 }
 
+// SkillSummary is returned by the agent list endpoint with frontmatter metadata.
+type SkillSummary struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Frontmatter string `json:"frontmatter"`
+}
+
+// AgentSkillListResult is the response for the agent list endpoint.
+type AgentSkillListResult struct {
+	Skills []SkillSummary `json:"skills"`
+}
+
+// SkillContent holds the body (post-frontmatter) of a SKILLS.md.
 type SkillContent struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 }
 
-type SkillLoadResult struct {
+// AgentSkillLoadResult is the response for the agent load endpoint.
+type AgentSkillLoadResult struct {
 	Skills []SkillContent `json:"skills"`
 }
 

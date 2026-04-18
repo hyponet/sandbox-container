@@ -87,7 +87,12 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 		skills.POST("/file/write", skillH.FileWrite)
 		skills.POST("/file/update", skillH.FileUpdate)
 		skills.POST("/file/mkdir", skillH.FileMkdir)
-		skills.POST("/load", skillH.Load)
+	}
+
+	agents := r.Group("/v1/skills/agents")
+	{
+		agents.POST("/:agent_id/list", skillH.AgentList)
+		agents.POST("/:agent_id/load", skillH.AgentLoad)
 	}
 
 	// Session Management
@@ -500,9 +505,9 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Load it into agent's local cache
-	_, err = cli.SkillLoad("a1", []string{"test"})
+	_, err = cli.SkillAgentLoad("a1", []string{"test"})
 	if err != nil {
-		t.Fatalf("SkillLoad failed: %v", err)
+		t.Fatalf("SkillAgentLoad failed: %v", err)
 	}
 
 	// Write to skills path should fail
@@ -618,9 +623,9 @@ func TestSkillImportAndLoad(t *testing.T) {
 	}
 
 	// Load into agent
-	loadResult, err := cli.SkillLoad("a1", []string{"imported-skill"})
+	loadResult, err := cli.SkillAgentLoad("a1", []string{"imported-skill"})
 	if err != nil {
-		t.Fatalf("SkillLoad failed: %v", err)
+		t.Fatalf("SkillAgentLoad failed: %v", err)
 	}
 	if len(loadResult.Skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d", len(loadResult.Skills))
@@ -692,11 +697,78 @@ func TestSkillFileOperations(t *testing.T) {
 	}
 }
 
-func TestSkillLoadNotFound(t *testing.T) {
+func TestSkillAgentList(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillLoad("a1", []string{"nonexistent"})
+	_, err := cli.SkillCreate("list-test", "A list test skill")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	result, err := cli.SkillAgentList("a1", []string{"list-test"})
+	if err != nil {
+		t.Fatalf("SkillAgentList failed: %v", err)
+	}
+	if len(result.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	}
+	s := result.Skills[0]
+	if s.Name != "list-test" {
+		t.Errorf("expected name 'list-test', got %s", s.Name)
+	}
+	if s.Path != "/skills/list-test" {
+		t.Errorf("expected path '/skills/list-test', got %s", s.Path)
+	}
+	if s.Frontmatter == "" {
+		t.Error("expected non-empty frontmatter")
+	}
+}
+
+func TestSkillAgentListNotFound(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillAgentList("a1", []string{"nonexistent"})
+	if err == nil {
+		t.Error("expected error for nonexistent skill")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 error, got %v", err)
+	}
+}
+
+func TestSkillAgentLoadBody(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	zipURL := createTestZIPServer(t, map[string]string{
+		"SKILLS.MD": "---\nname: body-test\ndescription: test\n---\n## Usage\nDo stuff.",
+	})
+
+	_, err := cli.SkillImport("body-test", zipURL)
+	if err != nil {
+		t.Fatalf("SkillImport failed: %v", err)
+	}
+
+	result, err := cli.SkillAgentLoad("a1", []string{"body-test"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+	if len(result.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	}
+	content := result.Skills[0].Content
+	if content != "## Usage\nDo stuff." {
+		t.Errorf("expected body without frontmatter, got %q", content)
+	}
+}
+
+func TestSkillAgentLoadNotFound(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.SkillAgentLoad("a1", []string{"nonexistent"})
 	if err == nil {
 		t.Error("expected error for nonexistent skill")
 	}

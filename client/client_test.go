@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyponet/sandbox-container/audit"
 	"github.com/hyponet/sandbox-container/handler"
+	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
@@ -27,8 +29,13 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	os.MkdirAll(dir, 0755)
 	globalSkillsDir := filepath.Join(dir, "global-skills")
 	os.MkdirAll(globalSkillsDir, 0755)
+	fallbackDir := filepath.Join(dir, "fallback-logs")
 	mgr := session.NewManager(dir, 24*time.Hour)
 	mgr.SetGlobalSkillsRoot(globalSkillsDir)
+
+	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
+	mgr.SetAuditWriter(auditW)
+	auditMW := middleware.AuditLogger(auditW)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -43,10 +50,10 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	bashH := handler.NewBashHandler(mgr)
 	bash := r.Group("/v1/bash")
 	{
-		bash.POST("/exec", bashH.Exec)
+		bash.POST("/exec", auditMW, bashH.Exec)
 		bash.POST("/output", bashH.Output)
-		bash.POST("/write", bashH.Write)
-		bash.POST("/kill", bashH.Kill)
+		bash.POST("/write", auditMW, bashH.Write)
+		bash.POST("/kill", auditMW, bashH.Kill)
 		bash.GET("/sessions", bashH.ListSessions)
 		bash.POST("/sessions/create", bashH.CreateSession)
 		bash.POST("/sessions/:session_id/close", bashH.CloseSession)
@@ -57,26 +64,26 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
-		f.POST("/write", fileH.Write)
-		f.POST("/replace", fileH.Replace)
+		f.POST("/write", auditMW, fileH.Write)
+		f.POST("/replace", auditMW, fileH.Replace)
 		f.POST("/search", fileH.Search)
 		f.POST("/find", fileH.Find)
 		f.POST("/grep", fileH.Grep)
 		f.POST("/glob", fileH.Glob)
-		f.POST("/upload", fileH.Upload)
+		f.POST("/upload", auditMW, fileH.Upload)
 		f.GET("/download", fileH.Download)
 		f.POST("/list", fileH.List)
 	}
 
 	// Code
 	codeH := handler.NewCodeHandler(mgr)
-	r.POST("/v1/code/execute", codeH.Execute)
+	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
 	// Skills
 	skillH := handler.NewSkillHandler(mgr)
 	skillH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
-	skills := r.Group("/v1/skills")
+	skills := r.Group("/v1/skills", auditMW)
 	{
 		skills.POST("/create", skillH.Create)
 		skills.POST("/get", skillH.Get)
@@ -96,7 +103,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 		skills.POST("/import/upload", skillH.ImportUpload)
 	}
 
-	agents := r.Group("/v1/skills/agents")
+	agents := r.Group("/v1/skills/agents", auditMW)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
 		agents.POST("/:agent_id/load", skillH.AgentLoad)
@@ -116,6 +123,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	cli := NewClient(server.URL)
 
 	cleanup := func() {
+		auditW.Close()
 		server.Close()
 		os.RemoveAll(dir)
 	}
@@ -925,6 +933,136 @@ func TestSessionDeleteNotFound(t *testing.T) {
 	}
 	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 error, got %v", err)
+	}
+}
+
+// =============================================
+// Audit log tests
+// =============================================
+
+func TestAuditLogBashExec(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.BashExec("a1", "audit-bash", "echo hello")
+	if err != nil {
+		t.Fatalf("BashExec failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-bash", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total < 1 {
+		t.Fatalf("expected at least 1 audit entry for bash exec, got %d", logs.Total)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/bash/exec" && e.Method == "POST" {
+			found = true
+			if e.Status != 200 {
+				t.Errorf("expected status 200, got %d", e.Status)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/bash/exec not found")
+	}
+}
+
+func TestAuditLogFileWrite(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.FileWrite("a1", "audit-file", "/test.txt", "hello")
+	if err != nil {
+		t.Fatalf("FileWrite failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-file", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total < 1 {
+		t.Fatalf("expected at least 1 audit entry for file write, got %d", logs.Total)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/file/write" && e.Method == "POST" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/file/write not found")
+	}
+}
+
+func TestAuditLogCodeExecute(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.CodeExecute("a1", "audit-code", "python", "print(1)")
+	if err != nil {
+		t.Fatalf("CodeExecute failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-code", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total < 1 {
+		t.Fatalf("expected at least 1 audit entry for code execute, got %d", logs.Total)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/code/execute" && e.Method == "POST" {
+			found = true
+			if e.Status != 200 {
+				t.Errorf("expected status 200, got %d", e.Status)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/code/execute not found")
+	}
+}
+
+func TestAuditLogMultipleActions(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Perform multiple audited actions in the same session
+	cli.BashExec("a1", "audit-multi", "echo 1")
+	cli.FileWrite("a1", "audit-multi", "/f.txt", "data")
+	cli.BashExec("a1", "audit-multi", "echo 2")
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-multi", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total != 3 {
+		t.Errorf("expected 3 audit entries, got %d", logs.Total)
+	}
+}
+
+func TestAuditLogNoEntryForUnauditedRoute(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// file/read is not audited
+	cli.FileWrite("a1", "audit-noentry", "/r.txt", "x")
+	cli.FileRead("a1", "audit-noentry", "/r.txt")
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-noentry", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	// Only the write should be audited, not the read
+	if logs.Total != 1 {
+		t.Errorf("expected 1 audit entry (write only), got %d", logs.Total)
 	}
 }
 

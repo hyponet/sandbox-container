@@ -204,7 +204,9 @@ func extractZip(zipPath, destDir string) error {
 	}
 	defer r.Close()
 
-	os.MkdirAll(destDir, 0755)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("create destination directory %s: %w", destDir, err)
+	}
 
 	var totalSize int64
 
@@ -222,8 +224,10 @@ func extractZip(zipPath, destDir string) error {
 			continue
 		}
 
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, 0755)
+		if f.FileInfo().IsDir() || strings.HasSuffix(f.Name, "/") {
+			if err := os.MkdirAll(fpath, 0755); err != nil {
+				return fmt.Errorf("create directory %s: %w", fpath, err)
+			}
 			continue
 		}
 
@@ -232,9 +236,11 @@ func extractZip(zipPath, destDir string) error {
 			return fmt.Errorf("total extracted size exceeds limit (%dMB)", maxExtractedSize/1024/1024)
 		}
 
-		os.MkdirAll(filepath.Dir(fpath), 0755)
+		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+			return fmt.Errorf("create parent directory %s: %w", filepath.Dir(fpath), err)
+		}
 
-		outFile, err := os.OpenFile(fpath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		outFile, err := os.OpenFile(fpath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode()&0755)
 		if err != nil {
 			return err
 		}

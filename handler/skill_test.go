@@ -1015,6 +1015,143 @@ func TestSkillCreateYAMLInjectionSafe(t *testing.T) {
 	}
 }
 
+func TestExtractZipNestedDirsWithoutDirFlag(t *testing.T) {
+	// Simulate zip files where directory entries lack the proper directory flag
+	// but are indicated by a trailing "/" in the name (common on Windows zip tools).
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	// Create directory entry WITHOUT setting ModeDir — only the trailing "/" identifies it
+	fh := &zip.FileHeader{Name: "scripts/", Method: zip.Deflate}
+	fh.SetMode(0644) // regular file mode, NOT a directory
+	if _, err := w.CreateHeader(fh); err != nil {
+		t.Fatalf("CreateHeader scripts/: %v", err)
+	}
+
+	// File inside that directory
+	f, err := w.Create("scripts/run_bioinfor.py")
+	if err != nil {
+		t.Fatalf("Create scripts/run_bioinfor.py: %v", err)
+	}
+	if _, err := f.Write([]byte("#!/usr/bin/env python3\nprint('hello')\n")); err != nil {
+		t.Fatalf("Write run_bioinfor.py: %v", err)
+	}
+
+	// Another nested level
+	fh2 := &zip.FileHeader{Name: "scripts/sub/", Method: zip.Deflate}
+	fh2.SetMode(0644)
+	if _, err := w.CreateHeader(fh2); err != nil {
+		t.Fatalf("CreateHeader scripts/sub/: %v", err)
+	}
+
+	f3, err := w.Create("scripts/sub/deep.txt")
+	if err != nil {
+		t.Fatalf("Create scripts/sub/deep.txt: %v", err)
+	}
+	if _, err := f3.Write([]byte("deep file")); err != nil {
+		t.Fatalf("Write deep.txt: %v", err)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("zip.Writer.Close: %v", err)
+	}
+
+	tmpZip, err := os.CreateTemp("", "nodirflag-*.zip")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if _, err := tmpZip.Write(buf.Bytes()); err != nil {
+		t.Fatalf("Write zip: %v", err)
+	}
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	destDir, err := os.MkdirTemp("", "extract-dest-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(destDir)
+
+	if err := extractZip(tmpZip.Name(), destDir); err != nil {
+		t.Fatalf("extractZip failed: %v", err)
+	}
+
+	// Verify files were extracted correctly
+	for _, path := range []string{
+		"scripts/run_bioinfor.py",
+		"scripts/sub/deep.txt",
+	} {
+		fullPath := filepath.Join(destDir, path)
+		if _, err := os.Stat(fullPath); err != nil {
+			t.Errorf("%s should exist: %v", path, err)
+		}
+	}
+
+	// Verify scripts is a directory, not a file
+	info, err := os.Stat(filepath.Join(destDir, "scripts"))
+	if err != nil {
+		t.Fatalf("scripts should exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("scripts should be a directory, not a regular file")
+	}
+}
+
+func TestExtractZipPermissionMasking(t *testing.T) {
+	// Verify that extracted files have permissions masked to 0755 max,
+	// preventing setuid/setgid/sticky bits or overly permissive modes.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	// Create a file with setuid + 0777 permissions
+	fh := &zip.FileHeader{Name: "dangerous.sh", Method: zip.Deflate}
+	fh.SetMode(os.FileMode(0o4777)) // setuid + rwxrwxrwx
+	fw, err := w.CreateHeader(fh)
+	if err != nil {
+		t.Fatalf("CreateHeader: %v", err)
+	}
+	if _, err := fw.Write([]byte("#!/bin/sh\necho hi\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("zip.Writer.Close: %v", err)
+	}
+
+	tmpZip, err := os.CreateTemp("", "permmask-*.zip")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if _, err := tmpZip.Write(buf.Bytes()); err != nil {
+		t.Fatalf("Write zip: %v", err)
+	}
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	destDir, err := os.MkdirTemp("", "permmask-dest-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(destDir)
+
+	if err := extractZip(tmpZip.Name(), destDir); err != nil {
+		t.Fatalf("extractZip failed: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(destDir, "dangerous.sh"))
+	if err != nil {
+		t.Fatalf("dangerous.sh should exist: %v", err)
+	}
+
+	perm := info.Mode().Perm()
+	if perm&os.ModeSetuid != 0 || perm&os.ModeSetgid != 0 || perm&os.ModeSticky != 0 {
+		t.Errorf("setuid/setgid/sticky bits should be stripped, got %v", info.Mode())
+	}
+	if perm > 0755 {
+		t.Errorf("permissions should be at most 0755, got %04o", perm)
+	}
+}
+
 func TestExtractZipPathTraversal(t *testing.T) {
 	// Create a ZIP with a path traversal entry
 	var buf bytes.Buffer

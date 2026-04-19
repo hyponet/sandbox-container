@@ -120,19 +120,25 @@ POST /v1/code/execute
 Skills are managed globally in `/data/skills/`. Each skill is identified by a unique name (letters, digits, hyphens only).
 
 ```
-POST /v1/skills/create        # Create an empty skill
-POST /v1/skills/import        # Import skill from a ZIP URL
-POST /v1/skills/list          # List all global skills
-POST /v1/skills/delete        # Delete a global skill
-POST /v1/skills/tree          # View skill directory tree
-POST /v1/skills/file/read     # Read a file in a skill
-POST /v1/skills/file/write    # Write a file to a skill
-POST /v1/skills/file/update   # Replace string content in a skill file
-POST /v1/skills/file/mkdir    # Create a directory in a skill
-POST /v1/skills/file/delete   # Delete a file or directory in a skill
-POST /v1/skills/import/upload # Import skills from uploaded ZIP files (multipart)
-POST /v1/skills/agents/:agent_id/list  # List agent skills (frontmatter summaries)
-POST /v1/skills/agents/:agent_id/load  # Load skills into agent session (body content)
+POST   /v1/skills/create        # Create an empty skill
+POST   /v1/skills/get           # Get skill metadata
+POST   /v1/skills/update        # Update skill description
+POST   /v1/skills/rename        # Rename a skill
+POST   /v1/skills/import        # Import skill from a ZIP URL
+POST   /v1/skills/import/upload # Import skills from uploaded ZIP files (multipart)
+POST   /v1/skills/list          # List all global skills
+POST   /v1/skills/delete        # Delete a global skill
+POST   /v1/skills/tree          # View skill directory tree
+POST   /v1/skills/copy          # Copy a skill to a new name
+GET    /v1/skills/export        # Export skill as ZIP download
+POST   /v1/skills/file/read     # Read a file in a skill
+POST   /v1/skills/file/write    # Write a file to a skill
+POST   /v1/skills/file/update   # Replace string content in a skill file
+POST   /v1/skills/file/mkdir    # Create a directory in a skill
+POST   /v1/skills/file/delete   # Delete a file or directory in a skill
+POST   /v1/skills/agents/:agent_id/list  # List agent skills (frontmatter summaries)
+POST   /v1/skills/agents/:agent_id/load  # Load skills into agent session (body content)
+DELETE /v1/skills/agents/:agent_id/cache # Clear agent skill cache
 ```
 
 **Example — Create a skill:**
@@ -220,19 +226,26 @@ files, _ := c.FileGlob("agent-1", "session-1", "/", "**/*.go")
 
 // Skills — Global management
 c.SkillCreate("my-skill", "A useful skill")
+c.SkillGet("my-skill")
+c.SkillUpdate("my-skill", "Updated description")
+c.SkillRename("my-skill", "new-name")
+c.SkillCopy("new-name", "copied-skill")
 c.SkillImport("imported-skill", "https://example.com/skill.zip")
 skills, _ := c.SkillList()
-tree, _ := c.SkillTree("my-skill")
-c.SkillFileWrite("my-skill", "src/helper.py", "def greet(): pass")
-c.SkillFileMkdir("my-skill", "src/utils")
-c.SkillFileDelete("my-skill", "src/helper.py")
+tree, _ := c.SkillTree("new-name")
+zipReader, _ := c.SkillExport("new-name")
+c.SkillFileWrite("new-name", "src/helper.py", "def greet(): pass")
+c.SkillFileMkdir("new-name", "src/utils")
+c.SkillFileDelete("new-name", "src/helper.py")
 c.SkillImportUpload([]client.SkillUploadEntry{
     {Name: "uploaded-skill", ZipPath: "/tmp/skill.zip"},
 })
-c.SkillDelete("my-skill")
+c.SkillDelete("new-name")
 
-// Skills — Load into agent session
-loaded, _ := c.SkillLoad("agent-1", []string{"my-skill"})
+// Skills — Agent-level operations
+loaded, _ := c.SkillAgentLoad("agent-1", []string{"my-skill"})
+listed, _ := c.SkillAgentList("agent-1", []string{"my-skill"})
+c.SkillAgentCacheDelete("agent-1", "my-skill")
 
 // Session management
 sessions, _ := c.SessionList("agent-1")

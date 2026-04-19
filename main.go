@@ -70,7 +70,7 @@ func main() {
 	// Skills APIs
 	os.MkdirAll(session.DefaultGlobalSkills, 0755)
 	skillH := handler.NewSkillHandler(mgr)
-	skills := r.Group("/v1/skills", auth)
+	skills := r.Group("/v1/skills", auth, auditMW)
 	{
 		// Global skill management
 		skills.POST("/create", skillH.Create)
@@ -92,10 +92,10 @@ func main() {
 	}
 
 	// Agent skill APIs
-	agents := r.Group("/v1/skills/agents", auth)
+	agents := r.Group("/v1/skills/agents", auth, auditMW)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
-		agents.POST("/:agent_id/load", auditMW, skillH.AgentLoad)
+		agents.POST("/:agent_id/load", skillH.AgentLoad)
 		agents.DELETE("/:agent_id/cache", skillH.AgentCacheDelete)
 	}
 

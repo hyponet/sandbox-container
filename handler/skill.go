@@ -2,6 +2,7 @@ package handler
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1058,6 +1059,7 @@ func (h *SkillHandler) syncSkillToAgent(agentID, skillID string) (string, error)
 }
 
 // readSkillsMD reads the SKILLS.md (case-insensitive) from a skill directory.
+// Returns the file path, content, and any error.
 func readSkillsMD(skillDir, skillID string) (string, error) {
 	for _, name := range []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"} {
 		p := filepath.Join(skillDir, name)
@@ -1068,15 +1070,16 @@ func readSkillsMD(skillDir, skillID string) (string, error) {
 	return "", fmt.Errorf("SKILLS.md not found for skill: %s", skillID)
 }
 
-// findSkillsMDPath returns the resolved path of the SKILLS.md file in a skill directory.
-func findSkillsMDPath(skillDir string) (string, error) {
+// findSkillsMDFile reads the SKILLS.md and returns both its path and content.
+// This avoids the double filesystem lookup that separate read + find would cause.
+func findSkillsMDFile(skillDir string) (path string, content string, err error) {
 	for _, name := range []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"} {
 		p := filepath.Join(skillDir, name)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
+		if data, readErr := os.ReadFile(p); readErr == nil {
+			return p, string(data), nil
 		}
 	}
-	return "", fmt.Errorf("SKILLS.md not found in %s", skillDir)
+	return "", "", fmt.Errorf("SKILLS.md not found in %s", skillDir)
 }
 
 // quoteYAMLDescription returns a JSON-quoted string safe for embedding in YAML frontmatter.
@@ -1094,16 +1097,12 @@ func buildSkillsMDContent(name, description, body string) string {
 // writeSkillsMDFrontmatter updates the SKILLS.md frontmatter in a skill directory,
 // preserving the body content. Returns an error if the write fails.
 func writeSkillsMDFrontmatter(skillDir, skillName, description string) error {
-	content, err := readSkillsMD(skillDir, skillName)
+	mdPath, content, err := findSkillsMDFile(skillDir)
 	if err != nil {
 		return nil // no SKILLS.md to update — not an error
 	}
 	_, body := splitFrontmatter(content)
 	newContent := buildSkillsMDContent(skillName, description, body)
-	mdPath, err := findSkillsMDPath(skillDir)
-	if err != nil {
-		return nil // shouldn't happen since readSkillsMD succeeded
-	}
 	return os.WriteFile(mdPath, []byte(newContent), 0644)
 }
 
@@ -1261,6 +1260,8 @@ func (h *SkillHandler) Rename(c *gin.Context) {
 }
 
 // Export exports a skill as a ZIP file for download.
+// The ZIP is built in a buffer first so that errors can be reported as proper
+// HTTP error responses instead of producing a corrupt partial ZIP.
 func (h *SkillHandler) Export(c *gin.Context) {
 	name := c.Query("name")
 	if err := validateSkillID(name); err != nil {
@@ -1274,12 +1275,9 @@ func (h *SkillHandler) Export(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Type", "application/zip")
-	// Safe: name is validated by validateSkillID (alphanumeric + hyphens only).
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, name))
-
-	zw := zip.NewWriter(c.Writer)
-	defer zw.Close()
+	// Build ZIP into buffer so we can return a proper error on failure.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
 
 	var totalSize int64
 	if err := filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
@@ -1321,8 +1319,21 @@ func (h *SkillHandler) Export(c *gin.Context) {
 		_, err = w.Write(data)
 		return err
 	}); err != nil {
-		log.Printf("[WARN] skill %s: export walk error: %v", name, err)
+		log.Printf("[ERROR] Export skill %s: %v", name, err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to export skill: "+err.Error()))
+		return
 	}
+
+	if err := zw.Close(); err != nil {
+		log.Printf("[ERROR] Export skill %s: close zip: %v", name, err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to finalize zip: "+err.Error()))
+		return
+	}
+
+	c.Header("Content-Type", "application/zip")
+	// Safe: name is validated by validateSkillID (alphanumeric + hyphens only).
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, name))
+	c.Writer.Write(buf.Bytes())
 }
 
 // Copy copies a skill to a new name.
@@ -1547,7 +1558,10 @@ func (h *SkillHandler) AgentCacheDelete(c *gin.Context) {
 			if !entry.IsDir() {
 				continue
 			}
-			os.RemoveAll(filepath.Join(skillsRoot, entry.Name()))
+			if err := os.RemoveAll(filepath.Join(skillsRoot, entry.Name())); err != nil {
+				log.Printf("[ERROR] AgentCacheDelete: remove %s: %v", entry.Name(), err)
+				continue
+			}
 			deleted = append(deleted, entry.Name())
 		}
 	}

@@ -42,8 +42,8 @@ func main() {
 		bash.POST("/write", auditMW, bashH.Write)
 		bash.POST("/kill", auditMW, bashH.Kill)
 		bash.GET("/sessions", bashH.ListSessions)
-		bash.POST("/sessions/create", bashH.CreateSession)
-		bash.POST("/sessions/:session_id/close", bashH.CloseSession)
+		bash.POST("/sessions/create", auditMW, bashH.CreateSession)
+		bash.POST("/sessions/:session_id/close", auditMW, bashH.CloseSession)
 	}
 
 	// File APIs

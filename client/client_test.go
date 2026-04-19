@@ -55,8 +55,8 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 		bash.POST("/write", auditMW, bashH.Write)
 		bash.POST("/kill", auditMW, bashH.Kill)
 		bash.GET("/sessions", bashH.ListSessions)
-		bash.POST("/sessions/create", bashH.CreateSession)
-		bash.POST("/sessions/:session_id/close", bashH.CloseSession)
+		bash.POST("/sessions/create", auditMW, bashH.CreateSession)
+		bash.POST("/sessions/:session_id/close", auditMW, bashH.CloseSession)
 	}
 
 	// File
@@ -1045,6 +1045,190 @@ func TestAuditLogMultipleActions(t *testing.T) {
 	}
 	if logs.Total != 3 {
 		t.Errorf("expected 3 audit entries, got %d", logs.Total)
+	}
+}
+
+func TestAuditLogBashWrite(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Start an async command so we have something to write to
+	result, err := cli.BashExec("a1", "audit-bw", "cat", WithAsyncMode(true))
+	if err != nil {
+		t.Fatalf("BashExec async failed: %v", err)
+	}
+
+	err = cli.BashWrite("a1", "audit-bw", result.CommandID, "hello\n")
+	if err != nil {
+		t.Fatalf("BashWrite failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-bw", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/bash/write" && e.Method == "POST" {
+			found = true
+			if e.Status != 200 {
+				t.Errorf("expected status 200, got %d", e.Status)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/bash/write not found")
+	}
+}
+
+func TestAuditLogBashKill(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Start an async command to kill
+	_, err := cli.BashExec("a1", "audit-bk", "sleep 60", WithAsyncMode(true))
+	if err != nil {
+		t.Fatalf("BashExec async failed: %v", err)
+	}
+
+	// Kill it — may fail if no process, but audit entry should still be written
+	cli.BashKill("a1", "audit-bk", "SIGTERM")
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-bk", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/bash/kill" && e.Method == "POST" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/bash/kill not found")
+	}
+}
+
+func TestAuditLogFileReplace(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	cli.FileWrite("a1", "audit-fr", "/rep.txt", "foo bar foo")
+
+	_, err := cli.FileReplace("a1", "audit-fr", "/rep.txt", "foo", "baz")
+	if err != nil {
+		t.Fatalf("FileReplace failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-fr", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/file/replace" && e.Method == "POST" {
+			found = true
+			if e.Status != 200 {
+				t.Errorf("expected status 200, got %d", e.Status)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/file/replace not found")
+	}
+}
+
+func TestAuditLogFileUpload(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	content := bytes.NewReader([]byte("audit upload content"))
+	_, err := cli.FileUpload("a1", "audit-fu", "/uploaded.txt", content, "test.txt")
+	if err != nil {
+		t.Fatalf("FileUpload failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-fu", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	found := false
+	for _, e := range logs.Entries {
+		if e.Path == "/v1/file/upload" && e.Method == "POST" {
+			found = true
+			if e.Status != 200 {
+				t.Errorf("expected status 200, got %d", e.Status)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log entry for /v1/file/upload not found")
+	}
+}
+
+func TestAuditLogSkillsFallback(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Skills routes have auditMW but no agent_id/session_id in body,
+	// so entries should go to fallback log, not per-session files.
+	_, err := cli.SkillCreate("audit-skill", "test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	// No per-session audit should exist
+	logs, err := cli.SessionGetAuditLogs("nonexistent-agent", "nonexistent-session", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total != 0 {
+		t.Errorf("expected 0 per-session audit entries for skills (should go to fallback), got %d", logs.Total)
+	}
+}
+
+func TestAuditLogEntryFields(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.BashExec("a1", "audit-fields", "echo check-fields")
+	if err != nil {
+		t.Fatalf("BashExec failed: %v", err)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "audit-fields", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+	if logs.Total < 1 {
+		t.Fatalf("expected at least 1 audit entry, got %d", logs.Total)
+	}
+
+	e := logs.Entries[0]
+	if e.AgentID != "a1" {
+		t.Errorf("expected agent_id 'a1', got %q", e.AgentID)
+	}
+	if e.SessionID != "audit-fields" {
+		t.Errorf("expected session_id 'audit-fields', got %q", e.SessionID)
+	}
+	if e.Method != "POST" {
+		t.Errorf("expected method POST, got %q", e.Method)
+	}
+	if e.Path != "/v1/bash/exec" {
+		t.Errorf("expected path /v1/bash/exec, got %q", e.Path)
+	}
+	if e.Timestamp == "" {
+		t.Error("expected non-empty timestamp")
+	}
+	if e.Latency == "" {
+		t.Error("expected non-empty latency")
+	}
+	if e.Status != 200 {
+		t.Errorf("expected status 200, got %d", e.Status)
 	}
 }
 

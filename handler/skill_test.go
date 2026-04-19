@@ -2423,8 +2423,8 @@ func TestBuildSkillsMDContent(t *testing.T) {
 	}
 }
 
-// Test findSkillsMDPath helper
-func TestFindSkillsMDPath(t *testing.T) {
+// Test findSkillsMDFile helper
+func TestFindSkillsMDFile(t *testing.T) {
 	r, mgr := setupSkillRouter()
 
 	body := `{"name": "find-md", "description": "test"}`
@@ -2434,16 +2434,19 @@ func TestFindSkillsMDPath(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	skillDir := mgr.GlobalSkillPath("find-md")
-	p, err := findSkillsMDPath(skillDir)
+	p, content, err := findSkillsMDFile(skillDir)
 	if err != nil {
-		t.Fatalf("findSkillsMDPath failed: %v", err)
+		t.Fatalf("findSkillsMDFile failed: %v", err)
 	}
 	if filepath.Base(p) != "SKILLS.md" {
 		t.Errorf("expected SKILLS.md, got %s", filepath.Base(p))
 	}
+	if content == "" {
+		t.Error("expected non-empty content")
+	}
 
 	// Non-existent skill dir
-	_, err = findSkillsMDPath("/nonexistent")
+	_, _, err = findSkillsMDFile("/nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent dir")
 	}

@@ -108,39 +108,42 @@ func (w *Writer) WriteEntry(agentID, sessionID string, entry interface{}) error 
 
 // writeData handles the actual file write with proper lock management.
 func (w *Writer) writeData(agentID, sessionID string, data []byte) error {
-	fh, err := w.getOrCreate(agentID, sessionID)
-	if err != nil {
-		return err
-	}
-
-	fh.mu.Lock()
-	if fh.closed {
-		// Handle was evicted — release this lock, purge stale entry, and retry once.
-		fh.mu.Unlock()
-
-		w.mu.Lock()
-		key := handleKey(agentID, sessionID)
-		if cur, ok := w.handles[key]; ok && cur == fh {
-			delete(w.handles, key)
-		}
-		w.mu.Unlock()
-
-		fh, err = w.getOrCreate(agentID, sessionID)
+	const maxRetries = 2
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		fh, err := w.getOrCreate(agentID, sessionID)
 		if err != nil {
 			return err
 		}
-		fh.mu.Lock()
-	}
-	defer fh.mu.Unlock()
 
-	_, err = fh.f.Write(data)
-	fh.lastWrite = time.Now()
-	return err
+		fh.mu.Lock()
+		if fh.closed {
+			fh.mu.Unlock()
+
+			// Purge stale entry so getOrCreate opens a fresh handle.
+			w.mu.Lock()
+			key := handleKey(agentID, sessionID)
+			if cur, ok := w.handles[key]; ok && cur == fh {
+				delete(w.handles, key)
+			}
+			w.mu.Unlock()
+			continue
+		}
+
+		_, err = fh.f.Write(data)
+		fh.lastWrite = time.Now()
+		fh.mu.Unlock()
+		return err
+	}
+	return fmt.Errorf("audit write failed: file handle evicted after %d retries", maxRetries)
 }
 
 // WriteFallback writes an entry to the global fallback audit log.
 func (w *Writer) WriteFallback(entry interface{}) {
-	data, _ := json.Marshal(entry)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("[AUDIT] fallback marshal error: %v", err)
+		return
+	}
 	data = append(data, '\n')
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -170,6 +173,24 @@ func (w *Writer) getOrCreate(agentID, sessionID string) (*fileHandle, error) {
 	fh := &fileHandle{f: f, lastWrite: time.Now()}
 	w.handles[key] = fh
 	return fh, nil
+}
+
+// SyncSession flushes buffered data for a session to disk without closing the handle.
+// Call this before reading the audit file to ensure all written entries are visible.
+func (w *Writer) SyncSession(agentID, sessionID string) {
+	key := handleKey(agentID, sessionID)
+
+	w.mu.Lock()
+	fh, ok := w.handles[key]
+	w.mu.Unlock()
+
+	if ok {
+		fh.mu.Lock()
+		if !fh.closed {
+			fh.f.Sync()
+		}
+		fh.mu.Unlock()
+	}
 }
 
 // CloseSession closes and removes the file handle for a session, syncing data to disk.

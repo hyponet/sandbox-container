@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hyponet/sandbox-container/audit"
@@ -15,6 +16,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// scannerBufPool reuses 1MB scanner buffers across GetAuditLogs requests.
+var scannerBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 1024*1024)
+		return &buf
+	},
+}
 
 type SessionHandler struct {
 	mgr *session.Manager
@@ -68,6 +77,9 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 
 // GetAuditLogs returns paginated audit log entries for a session.
 // GET /v1/sessions/:session_id/audits?agent_id=xxx&offset=0&limit=100
+//
+// Total reflects the number of valid (parseable) audit entries in the file,
+// not the raw line count. Malformed lines are silently skipped.
 func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 	sessionID := c.Param("session_id")
 	agentID := c.Query("agent_id")
@@ -97,6 +109,9 @@ func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 		return
 	}
 
+	// Sync the audit file before reading to ensure all buffered writes are visible.
+	h.mgr.SyncAudit(agentID, sessionID)
+
 	auditPath := h.mgr.AuditPath(agentID, sessionID)
 	f, err := os.Open(auditPath)
 	if err != nil {
@@ -117,28 +132,29 @@ func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 	}
 	defer f.Close()
 
+	// Reuse scanner buffer from pool to reduce allocation pressure.
+	bufPtr := scannerBufPool.Get().(*[]byte)
+	defer scannerBufPool.Put(bufPtr)
+
 	var entries []model.AuditEntry
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
-	lineNum := 0
+	scanner.Buffer(*bufPtr, len(*bufPtr))
+
+	// Total counts only valid (parseable) entries, not raw lines.
+	validCount := 0
 	for scanner.Scan() {
-		if lineNum < offset {
-			lineNum++
+		var entry model.AuditEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue // skip malformed lines
+		}
+		validCount++
+		if validCount <= offset {
 			continue
 		}
-		if len(entries) >= limit {
-			lineNum++
-			// Continue counting total lines
-			for scanner.Scan() {
-				lineNum++
-			}
-			break
-		}
-		var entry model.AuditEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err == nil {
+		if len(entries) < limit {
 			entries = append(entries, entry)
 		}
-		lineNum++
+		// keep scanning to get accurate total
 	}
 
 	if entries == nil {
@@ -149,7 +165,7 @@ func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 		SessionID: sessionID,
 		AgentID:   agentID,
 		Entries:   entries,
-		Total:     lineNum,
+		Total:     validCount,
 		Offset:    offset,
 		Limit:     limit,
 	}))

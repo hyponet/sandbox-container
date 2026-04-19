@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,43 +14,125 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// sensitiveHeaders are redacted from audit logs.
+// sensitiveHeaders are redacted from audit logs (keys stored in lowercase).
 var sensitiveHeaders = map[string]bool{
-	"Authorization": true,
-	"Cookie":        true,
-	"Set-Cookie":    true,
-	"X-Api-Key":     true,
+	"authorization": true,
+	"cookie":        true,
+	"set-cookie":    true,
+	"x-api-key":     true,
 }
+
+// maxAuditBodySize limits how much of the request body is stored in the audit record.
+const maxAuditBodySize = 512 * 1024 // 512KB
+
+// maxAuditRespSize limits how much of the response body is stored in the audit record.
+const maxAuditRespSize = 512 * 1024 // 512KB
+
+// maxIDExtractSize is the maximum number of bytes read to extract agent_id/session_id.
+// This is kept small so that even if the full body is huge, ID extraction is cheap.
+const maxIDExtractSize = 4 * 1024 // 4KB
 
 type bodyWriter struct {
 	gin.ResponseWriter
-	body *bytes.Buffer
+	body    *bytes.Buffer
+	capped  bool
+	maxSize int
 }
 
-func (w bodyWriter) Write(b []byte) (int, error) {
-	w.body.Write(b)
+func (w *bodyWriter) Write(b []byte) (int, error) {
+	if !w.capped {
+		remaining := w.maxSize - w.body.Len()
+		if remaining > 0 {
+			if len(b) <= remaining {
+				w.body.Write(b)
+			} else {
+				w.body.Write(b[:remaining])
+				w.capped = true
+			}
+		} else {
+			w.capped = true
+		}
+	}
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *bodyWriter) WriteString(s string) (int, error) {
+	if !w.capped {
+		remaining := w.maxSize - w.body.Len()
+		if remaining > 0 {
+			if len(s) <= remaining {
+				w.body.WriteString(s)
+			} else {
+				w.body.WriteString(s[:remaining])
+				w.capped = true
+			}
+		} else {
+			w.capped = true
+		}
+	}
+	return io.WriteString(w.ResponseWriter, s)
+}
+
+// idPattern matches "agent_id":"value" or "session_id":"value" in JSON,
+// tolerating truncated bodies where json.Unmarshal would fail.
+var idPattern = regexp.MustCompile(`"(agent_id|session_id)"\s*:\s*"([^"]*)"`)
+
+// extractIDs pulls agent_id and session_id from a JSON byte slice.
+// Uses regexp so it works on truncated JSON where Unmarshal would fail.
+func extractIDs(data []byte) (agentID, sessionID string) {
+	for _, match := range idPattern.FindAllSubmatch(data, -1) {
+		key := string(match[1])
+		val := string(match[2])
+		switch key {
+		case "agent_id":
+			if agentID == "" {
+				agentID = val
+			}
+		case "session_id":
+			if sessionID == "" {
+				sessionID = val
+			}
+		}
+		if agentID != "" && sessionID != "" {
+			break
+		}
+	}
+	return
 }
 
 // AuditLogger records full request/response for audit purposes,
 // routing entries to per-session JSONL files via the audit writer.
 func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Capture request body
-		var reqBody interface{}
-		rawBody, _ := io.ReadAll(c.Request.Body)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
-		json.Unmarshal(rawBody, &reqBody)
+		// Read the full request body so the handler can consume it normally.
+		// We use io.LimitReader to cap what we keep for the audit record,
+		// but we must restore the full body for the handler.
+		fullBody, _ := io.ReadAll(c.Request.Body)
+		c.Request.Body = io.NopCloser(bytes.NewReader(fullBody))
 
-		// Extract agent_id and session_id from request body
-		var agentID, sessionID string
-		if m, ok := reqBody.(map[string]interface{}); ok {
-			if v, ok := m["agent_id"].(string); ok {
-				agentID = v
-			}
-			if v, ok := m["session_id"].(string); ok {
-				sessionID = v
-			}
+		// Extract agent_id/session_id from the first few KB of the body.
+		// This works even when the full body is very large (e.g. file uploads)
+		// because we only parse a small prefix for ID extraction.
+		idSlice := fullBody
+		if len(idSlice) > maxIDExtractSize {
+			idSlice = idSlice[:maxIDExtractSize]
+		}
+		agentID, sessionID := extractIDs(idSlice)
+
+		// Build the audit request body from the (possibly truncated) body.
+		var reqBody interface{}
+		auditBody := fullBody
+		if len(auditBody) > maxAuditBodySize {
+			auditBody = auditBody[:maxAuditBodySize]
+		}
+		json.Unmarshal(auditBody, &reqBody)
+
+		// Fallback to multipart form fields (e.g. file upload)
+		if agentID == "" {
+			agentID = c.PostForm("agent_id")
+		}
+		if sessionID == "" {
+			sessionID = c.PostForm("session_id")
 		}
 
 		// Fallback to path params and query params
@@ -69,23 +153,20 @@ func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 		headers := make(map[string]string)
 		for k, v := range c.Request.Header {
 			if len(v) > 0 {
-				canonical := strings.ToLower(k)
-				redacted := false
-				for sk := range sensitiveHeaders {
-					if strings.ToLower(sk) == canonical {
-						headers[k] = "[REDACTED]"
-						redacted = true
-						break
-					}
-				}
-				if !redacted {
+				if sensitiveHeaders[strings.ToLower(k)] {
+					headers[k] = "[REDACTED]"
+				} else {
 					headers[k] = v[0]
 				}
 			}
 		}
 
-		// Capture response
-		bw := bodyWriter{body: bytes.NewBuffer(nil), ResponseWriter: c.Writer}
+		// Capture response with a capped buffer
+		bw := &bodyWriter{
+			body:           bytes.NewBuffer(nil),
+			ResponseWriter: c.Writer,
+			maxSize:        maxAuditRespSize,
+		}
 		c.Writer = bw
 
 		start := time.Now()
@@ -111,8 +192,11 @@ func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 		}
 
 		if agentID != "" && sessionID != "" {
-			w.WriteEntry(agentID, sessionID, entry)
+			if err := w.WriteEntry(agentID, sessionID, entry); err != nil {
+				log.Printf("[AUDIT] failed to write entry for agent=%s session=%s path=%s: %v", agentID, sessionID, c.Request.URL.Path, err)
+			}
 		} else {
+			log.Printf("[AUDIT] missing identity: agent_id=%q session_id=%q method=%s path=%s client=%s, writing to fallback log", agentID, sessionID, c.Request.Method, c.Request.URL.Path, c.ClientIP())
 			w.WriteFallback(entry)
 		}
 	}

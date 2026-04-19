@@ -283,7 +283,7 @@ func (c *Client) SkillRename(name, newName string) (*SkillRenameResult, error) {
 
 // SkillExport downloads a skill as a ZIP stream.
 func (c *Client) SkillExport(name string) (io.ReadCloser, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/skills/export?name="+name, nil)
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/skills/export?name="+url.QueryEscape(name), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

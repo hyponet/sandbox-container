@@ -248,6 +248,14 @@ func (m *Manager) AuditPath(agentID, sessionID string) string {
 	return filepath.Join(m.root, agentID, "audits", sessionID+".jsonl")
 }
 
+// SyncAudit flushes buffered audit data for a session to disk.
+// This should be called before reading the audit file to ensure consistency.
+func (m *Manager) SyncAudit(agentID, sessionID string) {
+	if m.auditWriter != nil {
+		m.auditWriter.SyncSession(agentID, sessionID)
+	}
+}
+
 // ListSessions returns all sessions for a given agent, merging in-memory and on-disk state.
 func (m *Manager) ListSessions(agentID string) ([]SessionEntry, error) {
 	if err := audit.ValidateID(agentID); err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -329,5 +330,68 @@ func TestBashListSessions(t *testing.T) {
 	data := resp["data"].([]interface{})
 	if len(data) < 1 {
 		t.Errorf("expected at least 1 session, got %d", len(data))
+	}
+}
+
+func TestBashExec_DisableSessionIsolation(t *testing.T) {
+	r, mgr := setupBashRouter()
+
+	body := `{"agent_id": "a1", "session_id": "bash_dsi", "command": "pwd", "disable_session_isolation": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("exec with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+
+	// The working directory should be the workspace root, not a sessions path
+	wsRoot := mgr.WorkspaceRoot("a1")
+	if !strings.Contains(stdout, wsRoot) {
+		t.Errorf("expected stdout to contain workspace path %q, got %q", wsRoot, stdout)
+	}
+	if strings.Contains(stdout, "sessions") {
+		t.Errorf("stdout should NOT contain 'sessions' when disable_session_isolation is true, got %q", stdout)
+	}
+}
+
+func TestBashExec_DisableSessionIsolation_Persistence(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	// Create a file with session1 in workspace mode
+	body := `{"agent_id": "a1", "session_id": "ws_sess1", "command": "echo persistent-data > ws-persist.txt", "disable_session_isolation": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("create file in workspace mode failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Read the file with a different session (session2) in workspace mode
+	body = `{"agent_id": "a1", "session_id": "ws_sess2", "command": "cat ws-persist.txt", "disable_session_isolation": true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("read file from different session in workspace mode failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+
+	if !strings.Contains(stdout, "persistent-data") {
+		t.Errorf("expected stdout to contain 'persistent-data', got %q", stdout)
 	}
 }

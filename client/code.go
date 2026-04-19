@@ -36,7 +36,8 @@ type codeExecRequest struct {
 	Language  string  `json:"language"`
 	Code      string  `json:"code"`
 	Timeout   *int    `json:"timeout,omitempty"`
-	Cwd       *string `json:"cwd,omitempty"`
+	Cwd                     *string `json:"cwd,omitempty"`
+	DisableSessionIsolation bool    `json:"disable_session_isolation"`
 }
 
 // --- Functional options ---
@@ -52,4 +53,9 @@ func WithCodeTimeout(seconds int) CodeExecOption {
 // WithCwd sets the working directory for code execution.
 func WithCwd(cwd string) CodeExecOption {
 	return func(r *codeExecRequest) { r.Cwd = &cwd }
+}
+
+// WithCodeDisableSessionIsolation disables session isolation for CodeExecute.
+func WithCodeDisableSessionIsolation() CodeExecOption {
+	return func(r *codeExecRequest) { r.DisableSessionIsolation = true }
 }

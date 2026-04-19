@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1572,7 +1573,7 @@ func TestSkillAgentLoadWithCleanupViaClient(t *testing.T) {
 	}
 
 	// Load with cleanup, only keeping cl-keep
-	_, err = cli.SkillAgentLoad("cl-agent", []string{"cl-keep"}, true)
+	_, err = cli.SkillAgentLoad("cl-agent", []string{"cl-keep"}, WithCleanup())
 	if err != nil {
 		t.Fatalf("SkillAgentLoad with cleanup failed: %v", err)
 	}
@@ -1581,6 +1582,155 @@ func TestSkillAgentLoadWithCleanupViaClient(t *testing.T) {
 	_, err = cli.SkillAgentCacheDelete("cl-agent", "cl-remove")
 	if err == nil {
 		t.Error("expected error for cleaned-up cache")
+	}
+}
+
+// =============================================
+// DisableSessionIsolation & SkillsWritable tests
+// =============================================
+
+func TestClient_FileWrite_DisableSessionIsolation(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write a file with session isolation disabled — goes to workspace dir
+	_, err := cli.FileWrite("a1", "dsi-s1", "/shared.txt", "cross-session data",
+		WithFileWriteDisableSessionIsolation(),
+	)
+	if err != nil {
+		t.Fatalf("FileWrite with DisableSessionIsolation failed: %v", err)
+	}
+
+	// Read it back from a different session, also with isolation disabled
+	result, err := cli.FileRead("a1", "dsi-s2", "/shared.txt",
+		WithFileReadDisableSessionIsolation(),
+	)
+	if err != nil {
+		t.Fatalf("FileRead with DisableSessionIsolation from different session failed: %v", err)
+	}
+	if result.Content != "cross-session data" {
+		t.Errorf("expected 'cross-session data', got %q", result.Content)
+	}
+
+	// The file should NOT be visible without DisableSessionIsolation (different session)
+	_, err = cli.FileRead("a1", "dsi-s2", "/shared.txt")
+	if err == nil {
+		t.Error("expected error reading workspace file from different session without DisableSessionIsolation")
+	}
+}
+
+func TestClient_FileWrite_SkillsWritable(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create a skill in global store
+	_, err := cli.SkillCreate("sw-test", "skills writable test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	// Load it into agent's local cache
+	_, err = cli.SkillAgentLoad("a1", []string{"sw-test"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+
+	// Write to skills path without SkillsWritable — should fail with 403
+	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "blocked")
+	if err == nil {
+		t.Error("expected write to skills without SkillsWritable to be blocked")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 error, got %v", err)
+	}
+
+	// Write to skills path WITH SkillsWritable — should succeed
+	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "allowed",
+		WithSkillsWritable(),
+	)
+	if err != nil {
+		t.Fatalf("FileWrite with SkillsWritable failed: %v", err)
+	}
+
+	// Read back and verify content
+	readResult, err := cli.FileRead("a1", "sw-s1", "/skills/sw-test/new.txt")
+	if err != nil {
+		t.Fatalf("FileRead of skills file failed: %v", err)
+	}
+	if readResult.Content != "allowed" {
+		t.Errorf("expected 'allowed', got %q", readResult.Content)
+	}
+}
+
+func TestClient_BashExec_DisableSessionIsolation(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Exec pwd with session isolation disabled — working dir should be workspace, not sessions
+	result, err := cli.BashExec("a1", "dsi-bash1", "pwd",
+		WithDisableSessionIsolation(),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with DisableSessionIsolation failed: %v", err)
+	}
+	if result.Stdout == nil {
+		t.Fatal("expected non-nil stdout")
+	}
+	stdout := *result.Stdout
+
+	if !strings.Contains(stdout, "workspace") {
+		t.Errorf("expected stdout to contain 'workspace', got %q", stdout)
+	}
+	if strings.Contains(stdout, "sessions") {
+		t.Errorf("expected stdout NOT to contain 'sessions', got %q", stdout)
+	}
+}
+
+func TestClient_SkillAgentList_SkillsWritable(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Create a skill and write a SKILLS.md with specific content
+	_, err := cli.SkillCreate("wlist-test", "writable list test")
+	if err != nil {
+		t.Fatalf("SkillCreate failed: %v", err)
+	}
+
+	// Load into agent cache (syncs from global)
+	loadResult, err := cli.SkillAgentLoad("a1", []string{"wlist-test"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+	if len(loadResult.Skills) != 1 {
+		t.Fatalf("expected 1 skill loaded, got %d", len(loadResult.Skills))
+	}
+
+	// Modify the global skill's content
+	_, err = cli.SkillFileWrite("wlist-test", "SKILLS.md",
+		"---\nname: wlist-test\ndescription: modified globally\n---\nGlobal version content.")
+	if err != nil {
+		t.Fatalf("SkillFileWrite to modify global skill failed: %v", err)
+	}
+
+	// List with SkillsWritable=true — should return local (cached) version, not synced from global
+	listResult, err := cli.SkillAgentList("a1", []string{"wlist-test"},
+		WithAgentSkillsWritable(),
+	)
+	if err != nil {
+		t.Fatalf("SkillAgentList with SkillsWritable failed: %v", err)
+	}
+	if len(listResult.Skills) != 1 {
+		t.Fatalf("expected 1 skill in list, got %d", len(listResult.Skills))
+	}
+	s := listResult.Skills[0]
+	if s.Name != "wlist-test" {
+		t.Errorf("expected name 'wlist-test', got %s", s.Name)
+	}
+
+	// The local version's frontmatter should NOT contain "modified globally"
+	// because SkillsWritable skips the global→local sync
+	if strings.Contains(s.Frontmatter, "modified globally") {
+		t.Errorf("expected local version frontmatter (not synced from global), got %q", s.Frontmatter)
 	}
 }
 

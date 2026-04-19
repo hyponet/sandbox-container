@@ -112,6 +112,7 @@ type bashExecRequest struct {
 	Timeout         *float64          `json:"timeout,omitempty"`
 	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
 	MaxOutputLength int               `json:"max_output_length"`
+	DisableSessionIsolation bool              `json:"disable_session_isolation"`
 }
 
 type bashOutputRequest struct {
@@ -142,6 +143,7 @@ type bashSessionCreateRequest struct {
 	SessionID string  `json:"session_id"`
 	BashSID  *string `json:"bash_session_id,omitempty"`
 	ExecDir  *string `json:"exec_dir,omitempty"`
+	DisableSessionIsolation bool    `json:"disable_session_isolation"`
 }
 
 type bashSessionCloseRequest struct {
@@ -185,6 +187,11 @@ func WithMaxOutputLength(length int) BashExecOption {
 	return func(r *bashExecRequest) { r.MaxOutputLength = length }
 }
 
+// WithDisableSessionIsolation disables session isolation for BashExec.
+func WithDisableSessionIsolation() BashExecOption {
+	return func(r *bashExecRequest) { r.DisableSessionIsolation = true }
+}
+
 // BashCreateSessionOption is a functional option for BashCreateSession.
 type BashCreateSessionOption func(*bashSessionCreateRequest)
 
@@ -196,6 +203,11 @@ func WithBashSID(sid string) BashCreateSessionOption {
 // WithSessionExecDir sets the working directory for the bash session.
 func WithSessionExecDir(dir string) BashCreateSessionOption {
 	return func(r *bashSessionCreateRequest) { r.ExecDir = &dir }
+}
+
+// WithCreateSessionDisableSessionIsolation disables session isolation for BashCreateSession.
+func WithCreateSessionDisableSessionIsolation() BashCreateSessionOption {
+	return func(r *bashSessionCreateRequest) { r.DisableSessionIsolation = true }
 }
 
 // BashOutputOption is a functional option for BashOutput.

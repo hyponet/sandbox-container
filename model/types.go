@@ -79,15 +79,16 @@ type AvailableTool struct {
 // =============================================
 
 type BashExecRequest struct {
-	AgentID         string            `json:"agent_id" binding:"required"`
-	SessionID       string            `json:"session_id" binding:"required"`
-	Command         string            `json:"command" binding:"required"`
-	ExecDir         *string           `json:"exec_dir,omitempty"`
-	Env             map[string]string `json:"env,omitempty"`
-	AsyncMode       bool              `json:"async_mode"`
-	Timeout         *float64          `json:"timeout,omitempty"`
-	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
-	MaxOutputLength int               `json:"max_output_length"`
+	AgentID                string            `json:"agent_id" binding:"required"`
+	SessionID              string            `json:"session_id" binding:"required"`
+	Command                string            `json:"command" binding:"required"`
+	ExecDir                *string           `json:"exec_dir,omitempty"`
+	Env                    map[string]string `json:"env,omitempty"`
+	AsyncMode              bool              `json:"async_mode"`
+	Timeout                *float64          `json:"timeout,omitempty"`
+	HardTimeout            *float64          `json:"hard_timeout,omitempty"`
+	MaxOutputLength        int               `json:"max_output_length"`
+	DisableSessionIsolation bool             `json:"disable_session_isolation"`
 }
 
 type BashExecResult struct {
@@ -135,10 +136,11 @@ type BashKillRequest struct {
 }
 
 type BashSessionCreateRequest struct {
-	AgentID    string  `json:"agent_id" binding:"required"`
-	SessionID  string  `json:"session_id" binding:"required"`
-	BashSID   *string `json:"bash_session_id,omitempty"`
-	ExecDir   *string `json:"exec_dir,omitempty"`
+	AgentID                 string  `json:"agent_id" binding:"required"`
+	SessionID               string  `json:"session_id" binding:"required"`
+	BashSID                 *string `json:"bash_session_id,omitempty"`
+	ExecDir                 *string `json:"exec_dir,omitempty"`
+	DisableSessionIsolation bool    `json:"disable_session_isolation"`
 }
 
 type BashSessionCloseRequest struct {
@@ -185,11 +187,12 @@ const (
 // =============================================
 
 type FileReadRequest struct {
-	AgentID   string `json:"agent_id" binding:"required"`
-	SessionID string `json:"session_id" binding:"required"`
-	File      string `json:"file" binding:"required"`
-	StartLine *int   `json:"start_line,omitempty"`
-	EndLine   *int   `json:"end_line,omitempty"`
+	AgentID                 string `json:"agent_id" binding:"required"`
+	SessionID               string `json:"session_id" binding:"required"`
+	File                    string `json:"file" binding:"required"`
+	StartLine               *int   `json:"start_line,omitempty"`
+	EndLine                 *int   `json:"end_line,omitempty"`
+	DisableSessionIsolation bool   `json:"disable_session_isolation"`
 }
 
 type FileReadResult struct {
@@ -198,14 +201,16 @@ type FileReadResult struct {
 }
 
 type FileWriteRequest struct {
-	AgentID         string `json:"agent_id" binding:"required"`
-	SessionID       string `json:"session_id" binding:"required"`
-	File            string `json:"file" binding:"required"`
-	Content         string `json:"content" binding:"required"`
-	Encoding        string `json:"encoding,omitempty"`
-	Append          bool   `json:"append"`
-	LeadingNewline  bool   `json:"leading_newline"`
-	TrailingNewline bool   `json:"trailing_newline"`
+	AgentID                 string `json:"agent_id" binding:"required"`
+	SessionID               string `json:"session_id" binding:"required"`
+	File                    string `json:"file" binding:"required"`
+	Content                 string `json:"content" binding:"required"`
+	Encoding                string `json:"encoding,omitempty"`
+	Append                  bool   `json:"append"`
+	LeadingNewline          bool   `json:"leading_newline"`
+	TrailingNewline         bool   `json:"trailing_newline"`
+	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	SkillsWritable          bool   `json:"skills_writable"`
 }
 
 type FileWriteResult struct {
@@ -214,11 +219,13 @@ type FileWriteResult struct {
 }
 
 type FileReplaceRequest struct {
-	AgentID   string `json:"agent_id" binding:"required"`
-	SessionID string `json:"session_id" binding:"required"`
-	File      string `json:"file" binding:"required"`
-	OldStr    string `json:"old_str" binding:"required"`
-	NewStr    string `json:"new_str" binding:"required"`
+	AgentID                 string `json:"agent_id" binding:"required"`
+	SessionID               string `json:"session_id" binding:"required"`
+	File                    string `json:"file" binding:"required"`
+	OldStr                  string `json:"old_str" binding:"required"`
+	NewStr                  string `json:"new_str" binding:"required"`
+	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	SkillsWritable          bool   `json:"skills_writable"`
 }
 
 type FileReplaceResult struct {
@@ -227,10 +234,11 @@ type FileReplaceResult struct {
 }
 
 type FileSearchRequest struct {
-	AgentID   string `json:"agent_id" binding:"required"`
-	SessionID string `json:"session_id" binding:"required"`
-	File      string `json:"file" binding:"required"`
-	Regex     string `json:"regex" binding:"required"`
+	AgentID                 string `json:"agent_id" binding:"required"`
+	SessionID               string `json:"session_id" binding:"required"`
+	File                    string `json:"file" binding:"required"`
+	Regex                   string `json:"regex" binding:"required"`
+	DisableSessionIsolation bool   `json:"disable_session_isolation"`
 }
 
 type FileSearchResult struct {
@@ -240,10 +248,11 @@ type FileSearchResult struct {
 }
 
 type FileFindRequest struct {
-	AgentID   string `json:"agent_id" binding:"required"`
-	SessionID string `json:"session_id" binding:"required"`
-	Path      string `json:"path" binding:"required"`
-	Glob      string `json:"glob" binding:"required"`
+	AgentID                 string `json:"agent_id" binding:"required"`
+	SessionID               string `json:"session_id" binding:"required"`
+	Path                    string `json:"path" binding:"required"`
+	Glob                    string `json:"glob" binding:"required"`
+	DisableSessionIsolation bool   `json:"disable_session_isolation"`
 }
 
 type FileFindResult struct {
@@ -252,18 +261,19 @@ type FileFindResult struct {
 }
 
 type FileGrepRequest struct {
-	AgentID          string   `json:"agent_id" binding:"required"`
-	SessionID        string   `json:"session_id" binding:"required"`
-	Path             string   `json:"path" binding:"required"`
-	Pattern          string   `json:"pattern" binding:"required"`
-	Include          []string `json:"include,omitempty"`
-	Exclude          []string `json:"exclude,omitempty"`
-	CaseInsensitive  bool     `json:"case_insensitive"`
-	FixedStrings     bool     `json:"fixed_strings"`
-	ContextBefore    int      `json:"context_before"`
-	ContextAfter     int      `json:"context_after"`
-	MaxResults       int      `json:"max_results"`
-	Recursive        *bool    `json:"recursive,omitempty"`
+	AgentID                 string   `json:"agent_id" binding:"required"`
+	SessionID               string   `json:"session_id" binding:"required"`
+	Path                    string   `json:"path" binding:"required"`
+	Pattern                 string   `json:"pattern" binding:"required"`
+	Include                 []string `json:"include,omitempty"`
+	Exclude                 []string `json:"exclude,omitempty"`
+	CaseInsensitive         bool     `json:"case_insensitive"`
+	FixedStrings            bool     `json:"fixed_strings"`
+	ContextBefore           int      `json:"context_before"`
+	ContextAfter            int      `json:"context_after"`
+	MaxResults              int      `json:"max_results"`
+	Recursive               *bool    `json:"recursive,omitempty"`
+	DisableSessionIsolation bool     `json:"disable_session_isolation"`
 }
 
 type FileGrepResult struct {
@@ -285,15 +295,16 @@ type GrepMatch struct {
 }
 
 type FileGlobRequest struct {
-	AgentID          string   `json:"agent_id" binding:"required"`
-	SessionID        string   `json:"session_id" binding:"required"`
-	Path             string   `json:"path" binding:"required"`
-	Pattern          string   `json:"pattern" binding:"required"`
-	Exclude          []string `json:"exclude,omitempty"`
-	IncludeHidden    bool     `json:"include_hidden"`
-	FilesOnly        *bool    `json:"files_only,omitempty"`
-	IncludeMetadata  *bool    `json:"include_metadata,omitempty"`
-	MaxResults       int      `json:"max_results"`
+	AgentID                 string   `json:"agent_id" binding:"required"`
+	SessionID               string   `json:"session_id" binding:"required"`
+	Path                    string   `json:"path" binding:"required"`
+	Pattern                 string   `json:"pattern" binding:"required"`
+	Exclude                 []string `json:"exclude,omitempty"`
+	IncludeHidden           bool     `json:"include_hidden"`
+	FilesOnly               *bool    `json:"files_only,omitempty"`
+	IncludeMetadata         *bool    `json:"include_metadata,omitempty"`
+	MaxResults              int      `json:"max_results"`
+	DisableSessionIsolation bool     `json:"disable_session_isolation"`
 }
 
 type FileGlobResult struct {
@@ -313,15 +324,16 @@ type GlobFileInfo struct {
 }
 
 type FileListRequest struct {
-	AgentID            string   `json:"agent_id" binding:"required"`
-	SessionID          string   `json:"session_id" binding:"required"`
-	Path               string   `json:"path" binding:"required"`
-	Recursive          bool     `json:"recursive"`
-	ShowHidden         *bool    `json:"show_hidden,omitempty"`
-	FileTypes          []string `json:"file_types,omitempty"`
-	MaxDepth           *int     `json:"max_depth,omitempty"`
-	IncludeSize        *bool    `json:"include_size,omitempty"`
-	IncludePermissions *bool    `json:"include_permissions,omitempty"`
+	AgentID                 string   `json:"agent_id" binding:"required"`
+	SessionID               string   `json:"session_id" binding:"required"`
+	Path                    string   `json:"path" binding:"required"`
+	Recursive               bool     `json:"recursive"`
+	ShowHidden              *bool    `json:"show_hidden,omitempty"`
+	FileTypes               []string `json:"file_types,omitempty"`
+	MaxDepth                *int     `json:"max_depth,omitempty"`
+	IncludeSize             *bool    `json:"include_size,omitempty"`
+	IncludePermissions      *bool    `json:"include_permissions,omitempty"`
+	DisableSessionIsolation bool     `json:"disable_session_isolation"`
 }
 
 type FileListResult struct {
@@ -359,12 +371,13 @@ type FileUploadResult struct {
 // =============================================
 
 type CodeExecuteRequest struct {
-	AgentID   string  `json:"agent_id" binding:"required"`
-	SessionID string  `json:"session_id" binding:"required"`
-	Language  string  `json:"language" binding:"required"`
-	Code      string  `json:"code" binding:"required"`
-	Timeout   *int    `json:"timeout,omitempty"`
-	Cwd       *string `json:"cwd,omitempty"`
+	AgentID                 string  `json:"agent_id" binding:"required"`
+	SessionID               string  `json:"session_id" binding:"required"`
+	Language                string  `json:"language" binding:"required"`
+	Code                    string  `json:"code" binding:"required"`
+	Timeout                 *int    `json:"timeout,omitempty"`
+	Cwd                     *string `json:"cwd,omitempty"`
+	DisableSessionIsolation bool    `json:"disable_session_isolation"`
 }
 
 type CodeExecuteResponse struct {
@@ -559,8 +572,9 @@ type AgentSkillCacheDeleteResult struct {
 // AgentSkillRequest is the body for agent skill list/load endpoints.
 // agent_id comes from the URL path parameter.
 type AgentSkillRequest struct {
-	SkillIDs []string `json:"skill_ids" binding:"required"`
-	Cleanup  bool     `json:"cleanup"`
+	SkillIDs       []string `json:"skill_ids" binding:"required"`
+	Cleanup        bool     `json:"cleanup"`
+	SkillsWritable bool     `json:"skills_writable"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.

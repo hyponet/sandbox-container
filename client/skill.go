@@ -322,15 +322,30 @@ func (c *Client) SkillCopy(name, newName string) (*SkillCopyResult, error) {
 	return &result, nil
 }
 
+// AgentSkillOption is a functional option for SkillAgentList and SkillAgentLoad.
+type AgentSkillOption func(*agentSkillRequest)
+
+type agentSkillRequest struct {
+	SkillIDs       []string `json:"skill_ids"`
+	Cleanup        bool     `json:"cleanup"`
+	SkillsWritable bool     `json:"skills_writable"`
+}
+
+// WithCleanup enables cleanup of skills not in the requested list.
+func WithCleanup() AgentSkillOption {
+	return func(r *agentSkillRequest) { r.Cleanup = true }
+}
+
+// WithAgentSkillsWritable enables writable mode for agent skill operations.
+func WithAgentSkillsWritable() AgentSkillOption {
+	return func(r *agentSkillRequest) { r.SkillsWritable = true }
+}
+
 // SkillAgentList syncs skills to agent cache and returns frontmatter summaries.
-func (c *Client) SkillAgentList(agentID string, skillIDs []string, cleanup ...bool) (*AgentSkillListResult, error) {
-	doCleanup := len(cleanup) > 0 && cleanup[0]
-	req := struct {
-		SkillIDs []string `json:"skill_ids"`
-		Cleanup  bool     `json:"cleanup"`
-	}{
-		SkillIDs: skillIDs,
-		Cleanup:  doCleanup,
+func (c *Client) SkillAgentList(agentID string, skillIDs []string, opts ...AgentSkillOption) (*AgentSkillListResult, error) {
+	req := agentSkillRequest{SkillIDs: skillIDs}
+	for _, o := range opts {
+		o(&req)
 	}
 
 	var result AgentSkillListResult
@@ -341,14 +356,10 @@ func (c *Client) SkillAgentList(agentID string, skillIDs []string, cleanup ...bo
 }
 
 // SkillAgentLoad syncs skills to agent cache and returns SKILLS.md body content.
-func (c *Client) SkillAgentLoad(agentID string, skillIDs []string, cleanup ...bool) (*AgentSkillLoadResult, error) {
-	doCleanup := len(cleanup) > 0 && cleanup[0]
-	req := struct {
-		SkillIDs []string `json:"skill_ids"`
-		Cleanup  bool     `json:"cleanup"`
-	}{
-		SkillIDs: skillIDs,
-		Cleanup:  doCleanup,
+func (c *Client) SkillAgentLoad(agentID string, skillIDs []string, opts ...AgentSkillOption) (*AgentSkillLoadResult, error) {
+	req := agentSkillRequest{SkillIDs: skillIDs}
+	for _, o := range opts {
+		o(&req)
 	}
 
 	var result AgentSkillLoadResult

@@ -621,3 +621,243 @@ func TestFileWriteMissingRequired(t *testing.T) {
 		t.Errorf("expected 400 for missing file field, got %d", w.Code)
 	}
 }
+
+func TestFileWrite_DisableSessionIsolation(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Write with disable_session_isolation=true
+	body := `{"agent_id": "a1", "session_id": "test_dsi", "file": "/workspace-file.txt", "content": "in workspace", "disable_session_isolation": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("write with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the file exists in the workspace directory, not the session directory
+	wsRoot := mgr.WorkspaceRoot("a1")
+	data, err := os.ReadFile(filepath.Join(wsRoot, "workspace-file.txt"))
+	if err != nil {
+		t.Fatalf("file not found in workspace dir: %v", err)
+	}
+	if string(data) != "in workspace" {
+		t.Errorf("expected 'in workspace', got %q", string(data))
+	}
+
+	// Verify the file does NOT exist in the session directory
+	sessionRoot := mgr.SessionRoot("a1", "test_dsi")
+	_, err = os.Stat(filepath.Join(sessionRoot, "workspace-file.txt"))
+	if err == nil {
+		t.Error("file should NOT exist in session directory when disable_sessionIsolation is true")
+	}
+}
+
+func TestFileRead_DisableSessionIsolation(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create a file in the workspace directory
+	wsRoot := mgr.WorkspaceRoot("a1")
+	os.MkdirAll(wsRoot, 0755)
+	os.WriteFile(filepath.Join(wsRoot, "ws-read-test.txt"), []byte("workspace content"), 0644)
+
+	// Read with disable_session_isolation=true
+	body := `{"agent_id": "a1", "session_id": "test_dsi_read", "file": "/ws-read-test.txt", "disable_session_isolation": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("read with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	if data["content"] != "workspace content" {
+		t.Errorf("expected 'workspace content', got %v", data["content"])
+	}
+}
+
+func TestFileWrite_SkillsWritable(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create the skills directory with a skill
+	skillsDir := mgr.SkillsRoot("a1")
+	os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0755)
+
+	// Write to skills path with skills_writable=true
+	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/skills/my-skill/new-file.txt", "content": "skill data", "skills_writable": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("write to skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the file was created in the skills directory
+	data, err := os.ReadFile(filepath.Join(skillsDir, "my-skill", "new-file.txt"))
+	if err != nil {
+		t.Fatalf("file not found in skills dir: %v", err)
+	}
+	if string(data) != "skill data" {
+		t.Errorf("expected 'skill data', got %q", string(data))
+	}
+}
+
+func TestFileReplace_SkillsWritable(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create a skill file in the skills directory
+	skillsDir := mgr.SkillsRoot("a1")
+	os.MkdirAll(filepath.Join(skillsDir, "replace-skill"), 0755)
+	os.WriteFile(filepath.Join(skillsDir, "replace-skill", "config.txt"), []byte("foo bar foo"), 0644)
+
+	// Replace in skills path with skills_writable=true
+	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "skills_writable": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("replace in skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	if int(data["replaced_count"].(float64)) != 2 {
+		t.Errorf("expected 2 replacements, got %v", data["replaced_count"])
+	}
+
+	// Verify file content on disk
+	content, err := os.ReadFile(filepath.Join(skillsDir, "replace-skill", "config.txt"))
+	if err != nil {
+		t.Fatalf("failed to read skills file: %v", err)
+	}
+	if string(content) != "baz bar baz" {
+		t.Errorf("expected 'baz bar baz', got %q", string(content))
+	}
+}
+
+func TestFileUpload_DisableSessionIsolation(t *testing.T) {
+	r, mgr := setupRouter()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.WriteField("agent_id", "a1")
+	writer.WriteField("session_id", "test_dsi_upload")
+	writer.WriteField("path", "/upload-ws.txt")
+	writer.WriteField("disable_session_isolation", "true")
+	part, _ := writer.CreateFormFile("file", "test.txt")
+	part.Write([]byte("uploaded in workspace mode"))
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the file landed in the workspace directory
+	wsRoot := mgr.WorkspaceRoot("a1")
+	data, err := os.ReadFile(filepath.Join(wsRoot, "upload-ws.txt"))
+	if err != nil {
+		t.Fatalf("file not found in workspace dir: %v", err)
+	}
+	if string(data) != "uploaded in workspace mode" {
+		t.Errorf("expected 'uploaded in workspace mode', got %q", string(data))
+	}
+}
+
+func TestFileUpload_SkillsWritable(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create skills directory
+	skillsDir := mgr.SkillsRoot("a1")
+	os.MkdirAll(filepath.Join(skillsDir, "upload-skill"), 0755)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.WriteField("agent_id", "a1")
+	writer.WriteField("session_id", "test_sw_upload")
+	writer.WriteField("path", "/skills/upload-skill/uploaded.txt")
+	writer.WriteField("skills_writable", "true")
+	part, _ := writer.CreateFormFile("file", "test.txt")
+	part.Write([]byte("uploaded to skills"))
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload to skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the file was created in the skills directory
+	data, err := os.ReadFile(filepath.Join(skillsDir, "upload-skill", "uploaded.txt"))
+	if err != nil {
+		t.Fatalf("file not found in skills dir: %v", err)
+	}
+	if string(data) != "uploaded to skills" {
+		t.Errorf("expected 'uploaded to skills', got %q", string(data))
+	}
+}
+
+func TestFileWrite_BothFlags(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create skills directory
+	skillsDir := mgr.SkillsRoot("a1")
+	os.MkdirAll(filepath.Join(skillsDir, "both-skill"), 0755)
+
+	// Write with both disable_session_isolation and skills_writable enabled
+	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/skills/both-skill/combined.txt", "content": "both flags", "disable_session_isolation": true, "skills_writable": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("write with both flags failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify the file was created in the skills directory
+	data, err := os.ReadFile(filepath.Join(skillsDir, "both-skill", "combined.txt"))
+	if err != nil {
+		t.Fatalf("file not found in skills dir: %v", err)
+	}
+	if string(data) != "both flags" {
+		t.Errorf("expected 'both flags', got %q", string(data))
+	}
+
+	// Also verify workspace mode works for a non-skills path with both flags
+	body = `{"agent_id": "a1", "session_id": "test_both", "file": "/workspace-both.txt", "content": "ws with both", "disable_session_isolation": true, "skills_writable": true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("write workspace file with both flags failed: %d %s", w.Code, w.Body.String())
+	}
+
+	wsRoot := mgr.WorkspaceRoot("a1")
+	data, err = os.ReadFile(filepath.Join(wsRoot, "workspace-both.txt"))
+	if err != nil {
+		t.Fatalf("file not found in workspace dir: %v", err)
+	}
+	if string(data) != "ws with both" {
+		t.Errorf("expected 'ws with both', got %q", string(data))
+	}
+}

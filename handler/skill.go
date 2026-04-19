@@ -1025,9 +1025,21 @@ func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 
 // syncSkillToAgent validates a skill ID, checks the global store, and syncs to agent cache
 // if needed. Returns the agent-local skill directory path.
-func (h *SkillHandler) syncSkillToAgent(agentID, skillID string) (string, error) {
+// When skillsWritable is true, skips version checking and uses the local copy as-is.
+func (h *SkillHandler) syncSkillToAgent(agentID, skillID string, skillsWritable bool) (string, error) {
 	if err := validateSkillID(skillID); err != nil {
 		return "", &errSkillInvalid{msg: fmt.Sprintf("invalid skill ID %q: %s", skillID, err.Error())}
+	}
+
+	agentDir := filepath.Join(h.mgr.SkillsRoot(agentID), skillID)
+
+	if skillsWritable {
+		// In writable mode: use local copy directly, skip global sync
+		if _, err := os.Stat(agentDir); err != nil {
+			// Local skill doesn't exist — skip it silently (consistent with not-found behavior)
+			return "", &errSkillNotFound{msg: "skill not found locally: " + skillID}
+		}
+		return agentDir, nil
 	}
 
 	globalDir := h.mgr.GlobalSkillPath(skillID)
@@ -1040,7 +1052,6 @@ func (h *SkillHandler) syncSkillToAgent(agentID, skillID string) (string, error)
 		return "", fmt.Errorf("failed to read skill metadata: %s", skillID)
 	}
 
-	agentDir := filepath.Join(h.mgr.SkillsRoot(agentID), skillID)
 	needCopy := true
 
 	if localMeta, err := readSkillMeta(agentDir); err == nil {
@@ -1451,7 +1462,7 @@ func (h *SkillHandler) AgentList(c *gin.Context) {
 	skills := make([]model.SkillSummary, 0, len(req.SkillIDs))
 
 	for _, skillID := range req.SkillIDs {
-		agentDir, err := h.syncSkillToAgent(agentID, skillID)
+		agentDir, err := h.syncSkillToAgent(agentID, skillID, req.SkillsWritable)
 		if err != nil {
 			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
 			continue
@@ -1492,7 +1503,7 @@ func (h *SkillHandler) AgentLoad(c *gin.Context) {
 	skills := make([]model.SkillContent, 0, len(req.SkillIDs))
 
 	for _, skillID := range req.SkillIDs {
-		agentDir, err := h.syncSkillToAgent(agentID, skillID)
+		agentDir, err := h.syncSkillToAgent(agentID, skillID, req.SkillsWritable)
 		if err != nil {
 			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
 			continue

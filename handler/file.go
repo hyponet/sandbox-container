@@ -31,6 +31,14 @@ func NewFileHandler(mgr *session.Manager) *FileHandler {
 	return &FileHandler{mgr: mgr}
 }
 
+// baseRootForDisplay returns the base directory for computing relative display paths.
+func (h *FileHandler) baseRootForDisplay(agentID, sessionID string, disableSessionIsolation bool) string {
+	if disableSessionIsolation {
+		return filepath.Clean(h.mgr.WorkspaceRoot(agentID))
+	}
+	return filepath.Clean(h.mgr.SessionRoot(agentID, sessionID))
+}
+
 // ---- Read ----
 
 func (h *FileHandler) Read(c *gin.Context) {
@@ -40,7 +48,7 @@ func (h *FileHandler) Read(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.File)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -80,18 +88,18 @@ func (h *FileHandler) Write(c *gin.Context) {
 		return
 	}
 
-	if session.IsSkillsPath(req.File) {
+	if session.IsSkillsPath(req.File) && !req.SkillsWritable {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
 
 	// Ensure parent directory exists
-	if err := h.mgr.EnsureParentDir(req.AgentID, req.SessionID, req.File); err != nil {
+	if err := h.mgr.EnsureParentDirEx(req.AgentID, req.SessionID, req.File, req.DisableSessionIsolation); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.File)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -156,12 +164,12 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	if session.IsSkillsPath(req.File) {
+	if session.IsSkillsPath(req.File) && !req.SkillsWritable {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.File)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -201,7 +209,7 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.File)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -252,7 +260,7 @@ func (h *FileHandler) Find(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.Path)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -290,7 +298,7 @@ func (h *FileHandler) Grep(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.Path)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -318,8 +326,8 @@ func (h *FileHandler) Grep(c *gin.Context) {
 	var matches []model.GrepMatch
 	truncated := false
 
-	// Determine the session root for relative path display
-	sessionRoot := filepath.Clean(h.mgr.SessionRoot(req.AgentID, req.SessionID))
+	// Determine the base root for relative path display
+	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.DisableSessionIsolation)
 	// If searching in skills, use skills root for relative paths
 	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
@@ -403,7 +411,7 @@ func (h *FileHandler) Glob(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.Path)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -433,7 +441,7 @@ func (h *FileHandler) Glob(c *gin.Context) {
 		matches = globWalk(realPath, req.Pattern, req.IncludeHidden)
 	}
 
-	sessionRoot := filepath.Clean(h.mgr.SessionRoot(req.AgentID, req.SessionID))
+	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.DisableSessionIsolation)
 	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
 	baseRoot := sessionRoot
@@ -507,7 +515,10 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	if session.IsSkillsPath(targetPath) {
+	disableSessionIsolation := c.PostForm("disable_session_isolation") == "true"
+	skillsWritable := c.PostForm("skills_writable") == "true"
+
+	if session.IsSkillsPath(targetPath) && !skillsWritable {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
@@ -518,12 +529,12 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	if err := h.mgr.EnsureParentDir(agentID, sessionID, targetPath); err != nil {
+	if err := h.mgr.EnsureParentDirEx(agentID, sessionID, targetPath, disableSessionIsolation); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(agentID, sessionID, targetPath)
+	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, targetPath, disableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -578,7 +589,9 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(agentID, sessionID, filePath)
+	disableSessionIsolation := c.Query("disable_session_isolation") == "true"
+
+	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, filePath, disableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -608,7 +621,7 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePath(req.AgentID, req.SessionID, req.Path)
+	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.DisableSessionIsolation)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -632,7 +645,7 @@ func (h *FileHandler) List(c *gin.Context) {
 	dirCount := 0
 
 	// Determine base root for relative paths
-	sessionRoot := filepath.Clean(h.mgr.SessionRoot(req.AgentID, req.SessionID))
+	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.DisableSessionIsolation)
 	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
 	baseRoot := sessionRoot

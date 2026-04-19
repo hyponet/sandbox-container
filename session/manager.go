@@ -28,6 +28,7 @@ type Manager struct {
 	mu               sync.RWMutex
 	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
 	auditWriter      *audit.Writer
+	workspaceInited  sync.Map // agentID -> struct{}, tracks agents whose workspace is set up
 }
 
 // SessionEntry represents a session with its last access time.
@@ -73,6 +74,11 @@ func (m *Manager) SessionRoot(agentID, sessionID string) string {
 	return filepath.Join(m.root, agentID, "sessions", sessionID)
 }
 
+// WorkspaceRoot returns the persistent workspace directory for a given agent.
+func (m *Manager) WorkspaceRoot(agentID string) string {
+	return filepath.Join(m.root, agentID, "workspace")
+}
+
 // SkillsRoot returns the skills directory for a given agent.
 func (m *Manager) SkillsRoot(agentID string) string {
 	return filepath.Join(m.root, agentID, "skills")
@@ -111,7 +117,7 @@ func IsSkillsPath(reqPath string) bool {
 func (m *Manager) ResolvePath(agentID, sessionID, reqPath string) (string, error) {
 	m.Touch(agentID, sessionID)
 
-	// Security: reject any path containing ".." components
+	// Security: reject any path containing ".." components before Clean normalizes them away.
 	for _, component := range strings.Split(reqPath, "/") {
 		if component == ".." {
 			return "", fmt.Errorf("path escapes session directory: %s", reqPath)
@@ -161,6 +167,61 @@ func (m *Manager) ResolveReadOnlyPath(agentID, sessionID, reqPath string) (strin
 	return m.ResolvePath(agentID, sessionID, reqPath)
 }
 
+// ResolvePathEx resolves a path with optional workspace mode support.
+// When disableSessionIsolation is true, non-skills paths resolve under the agent's workspace directory.
+// When false, it delegates to ResolvePath (session-based isolation).
+func (m *Manager) ResolvePathEx(agentID, sessionID, reqPath string, disableSessionIsolation bool) (string, error) {
+	if !disableSessionIsolation {
+		return m.ResolvePath(agentID, sessionID, reqPath)
+	}
+
+	m.TouchWorkspace(agentID)
+
+	// Security: reject any path containing ".." components before Clean normalizes them away.
+	for _, component := range strings.Split(reqPath, "/") {
+		if component == ".." {
+			return "", fmt.Errorf("path escapes workspace directory: %s", reqPath)
+		}
+	}
+
+	// Clean the requested path
+	cleanPath := filepath.Clean(reqPath)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = "/" + cleanPath
+	}
+
+	// Check if this is a skills path — always resolves to agent skills dir
+	if IsSkillsPath(cleanPath) {
+		skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
+		relPath := strings.TrimPrefix(cleanPath, "/skills")
+		relPath = strings.TrimPrefix(relPath, "/")
+		var realPath string
+		if relPath == "" {
+			realPath = skillsRoot
+		} else {
+			realPath = filepath.Join(skillsRoot, relPath)
+		}
+		realPath = filepath.Clean(realPath)
+		if !strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) && realPath != skillsRoot {
+			return "", fmt.Errorf("path escapes skills directory: %s", reqPath)
+		}
+		return realPath, nil
+	}
+
+	// Regular workspace path
+	wsRoot := filepath.Clean(m.WorkspaceRoot(agentID))
+	relPath := strings.TrimPrefix(cleanPath, "/")
+	realPath := filepath.Join(wsRoot, relPath)
+
+	// Ensure resolved path is within workspace root
+	realPath = filepath.Clean(realPath)
+	if !strings.HasPrefix(realPath+string(os.PathSeparator), wsRoot+string(os.PathSeparator)) && realPath != wsRoot {
+		return "", fmt.Errorf("path escapes workspace directory: %s", reqPath)
+	}
+
+	return realPath, nil
+}
+
 // IsResolvedSkillsPath checks if a resolved absolute path is within an agent's skills directory.
 func (m *Manager) IsResolvedSkillsPath(agentID, resolvedPath string) bool {
 	skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
@@ -180,6 +241,16 @@ func (m *Manager) EnsureDir(agentID, sessionID, dirPath string) error {
 // EnsureParentDir creates parent directories for a file path.
 func (m *Manager) EnsureParentDir(agentID, sessionID, filePath string) error {
 	realPath, err := m.ResolvePath(agentID, sessionID, filePath)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(realPath)
+	return os.MkdirAll(parent, 0755)
+}
+
+// EnsureParentDirEx creates parent directories for a file path with workspace mode support.
+func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, disableSessionIsolation bool) error {
+	realPath, err := m.ResolvePathEx(agentID, sessionID, filePath, disableSessionIsolation)
 	if err != nil {
 		return err
 	}
@@ -219,6 +290,38 @@ func (m *Manager) Touch(agentID, sessionID string) {
 		relSkills = skillsDir
 	}
 	os.Symlink(relSkills, symlinkPath)
+}
+
+// TouchWorkspace creates the workspace directory and skills symlink for an agent.
+// Unlike Touch, it does not track TTL-based cleanup.
+// It is idempotent: once initialized for an agent, subsequent calls are no-ops.
+func (m *Manager) TouchWorkspace(agentID string) {
+	if _, loaded := m.workspaceInited.LoadOrStore(agentID, struct{}{}); loaded {
+		return
+	}
+
+	wsDir := m.WorkspaceRoot(agentID)
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		log.Printf("[ERROR] TouchWorkspace: failed to create workspace dir %s: %v", wsDir, err)
+		m.workspaceInited.Delete(agentID)
+		return
+	}
+
+	skillsDir := m.SkillsRoot(agentID)
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		log.Printf("[ERROR] TouchWorkspace: failed to create skills dir %s: %v", skillsDir, err)
+		m.workspaceInited.Delete(agentID)
+		return
+	}
+
+	// Create skills symlink: <workspace>/skills -> <agent>/skills
+	symlinkPath := filepath.Join(wsDir, "skills")
+	relSkills, err := filepath.Rel(wsDir, skillsDir)
+	if err != nil {
+		relSkills = skillsDir
+	}
+	// Ignore error: symlink may already exist from a previous process run
+	_ = os.Symlink(relSkills, symlinkPath)
 }
 
 // Exists checks if a session directory exists.

@@ -68,6 +68,19 @@ POST /v1/bash/exec
 }
 ```
 
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | Yes | Agent identifier |
+| `session_id` | string | Yes | Session identifier |
+| `command` | string | Yes | Bash command to execute |
+| `exec_dir` | string | No | Working directory for command execution |
+| `env` | map | No | Environment variables |
+| `async_mode` | bool | No | Run command asynchronously (default: false) |
+| `timeout` | float | No | Command timeout in seconds |
+| `hard_timeout` | float | No | Hard kill timeout in seconds |
+| `max_output_length` | int | No | Maximum output length |
+| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
+
 ### File Operations
 
 ```
@@ -95,6 +108,14 @@ POST /v1/file/write
 }
 ```
 
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | Yes | Agent identifier |
+| `session_id` | string | Yes | Session identifier |
+| `file` | string | Yes | File path |
+| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
+| `skills_writable` | bool | No | Allow writing to skills directories (default: false, applies to write/replace/upload) |
+
 ### Code Execution
 
 ```
@@ -114,6 +135,16 @@ POST /v1/code/execute
   "timeout": 30
 }
 ```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | Yes | Agent identifier |
+| `session_id` | string | Yes | Session identifier |
+| `language` | string | Yes | `python` or `javascript` |
+| `code` | string | Yes | Source code to execute |
+| `timeout` | int | No | Execution timeout in seconds |
+| `cwd` | string | No | Working directory for execution |
+| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
 
 ### Skills Management
 
@@ -180,7 +211,23 @@ POST /v1/skills/agents/agent-1/load
 }
 ```
 
-Skills are cached per-agent. When loaded, the system compares the version timestamp (`_meta.json`) — if the agent's cached copy is outdated, it's automatically updated from the global store.
+**Example — Load skills with writable mode (skips version sync, uses local copy):**
+
+```json
+POST /v1/skills/agents/agent-1/load
+{
+  "skill_ids": ["my-skill"],
+  "skills_writable": true
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `skill_ids` | []string | Yes | List of skill IDs to list/load |
+| `cleanup` | bool | No | Clean up stale skills (default: false) |
+| `skills_writable` | bool | No | Skip version sync, use agent's local copy as-is (default: false) |
+
+Skills are cached per-agent. When loaded, the system compares the version timestamp (`_meta.json`) — if the agent's cached copy is outdated, it's automatically updated from the global store. When `skills_writable` is true, this version sync is skipped.
 
 ### Session Management
 
@@ -268,6 +315,8 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
     <agent_id>/
       skills/                     # Agent-level skill cache (copied from global)
         <skill-id>/
+      workspace/                  # Persistent workspace (used when disable_session_isolation=true)
+        skills -> ../skills       # Symlink to agent's skills cache
       sessions/
         <session_id>/             # Session working directory
           skills -> ../../skills  # Symlink to agent's skills cache
@@ -276,6 +325,107 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
 - Default TTL: 24 hours
 - Cleanup interval: 10 minutes
 - Path traversal protection: paths containing `..` are rejected
+
+## Workspace Mode
+
+By default, all file and command operations are scoped to a session-specific directory under `/data/agents/<agent_id>/sessions/<session_id>/`. Each session gets a fresh, isolated filesystem that is automatically cleaned up after the TTL expires.
+
+When `disable_session_isolation` is set to `true`, the request resolves paths against a **persistent workspace directory** instead of the session directory:
+
+```
+/data/agents/<agent_id>/workspace/
+```
+
+Files in the workspace persist across sessions and are **not** subject to TTL-based cleanup. This is useful for long-lived agent workflows that need to maintain state between sessions.
+
+### How It Works
+
+- When `disable_session_isolation` is `false` (default), paths resolve under the session directory as usual.
+- When `disable_session_isolation` is `true`, non-skills paths resolve under `/data/agents/<agent_id>/workspace/`. Skills paths (`/skills/...`) continue to resolve to the agent's skills cache directory.
+- The workspace directory is created on first access with a `skills` symlink pointing to the agent's skills cache.
+
+### Supported Endpoints
+
+The `disable_session_isolation` parameter is available on the following endpoints:
+
+| Endpoint Group | Endpoints |
+|----------------|-----------|
+| File | `read`, `write`, `replace`, `search`, `find`, `grep`, `glob`, `list`, `upload`, `download` |
+| Bash | `exec`, `sessions/create` |
+| Code | `execute` |
+
+### Example
+
+```json
+POST /v1/file/write
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "file": "/project/src/main.py",
+  "content": "print('persistent')",
+  "disable_session_isolation": true
+}
+```
+
+The file is written to `/data/agents/agent-1/workspace/project/src/main.py` and can be read back from any session with `disable_session_isolation: true`.
+
+```json
+POST /v1/bash/exec
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "command": "ls /project/src/",
+  "disable_session_isolation": true
+}
+```
+
+The command runs with the workspace directory as the root for path resolution.
+
+## Skills Writable Mode
+
+By default, the skills directory (`/skills/...`) is read-only for file API endpoints. Write operations to paths under `/skills/` are rejected with a `403 Forbidden` error. This protects the agent's skill cache from accidental modification.
+
+When `skills_writable` is set to `true`, the file APIs allow writing to skills directories, and the agent skill list/load endpoints skip version sync checking.
+
+### How It Works
+
+- **File APIs (`write`, `replace`, `upload`):** When `skills_writable` is `true`, paths targeting `/skills/...` are accepted. Without it, such requests return `403`.
+- **Agent skill list/load:** When `skills_writable` is `true`, the system skips the version comparison against the global skills store and uses the agent's local copy as-is. This allows the agent to modify its cached skills without the changes being overwritten by the global sync.
+
+### Supported Endpoints
+
+| Endpoint | Parameter | Behavior |
+|----------|-----------|----------|
+| `POST /v1/file/write` | `skills_writable` | Allow writing to `/skills/...` paths |
+| `POST /v1/file/replace` | `skills_writable` | Allow string replacement in `/skills/...` paths |
+| `POST /v1/file/upload` | `skills_writable` | Allow file uploads to `/skills/...` paths |
+| `POST /v1/skills/agents/:agent_id/list` | `skills_writable` | Skip version sync, use local copy |
+| `POST /v1/skills/agents/:agent_id/load` | `skills_writable` | Skip version sync, use local copy |
+
+### Example — Write to a skills file
+
+```json
+POST /v1/file/write
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "file": "/skills/my-skill/config.json",
+  "content": "{\"enabled\": true}",
+  "skills_writable": true
+}
+```
+
+### Example — Load skills with writable mode
+
+```json
+POST /v1/skills/agents/agent-1/load
+{
+  "skill_ids": ["my-skill"],
+  "skills_writable": true
+}
+```
+
+This loads the skill from the agent's local cache without checking or syncing from the global store.
 
 ## Pre-installed Environment
 

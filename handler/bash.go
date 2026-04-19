@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -118,7 +119,9 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		}
 		workingDir = resolved
 	}
-	os.MkdirAll(workingDir, 0755)
+	if err := os.MkdirAll(workingDir, 0755); err != nil {
+		log.Printf("[ERROR] CreateSession: mkdir %s: %v", workingDir, err)
+	}
 
 	bs := &bashSession{
 		sandboxSID: req.SessionID,
@@ -163,7 +166,9 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		}
 		workingDir = resolved
 	}
-	os.MkdirAll(workingDir, 0755)
+	if err := os.MkdirAll(workingDir, 0755); err != nil {
+		log.Printf("[ERROR] Exec: mkdir %s: %v", workingDir, err)
+	}
 
 	cmdID := uuid.New().String()[:8]
 	timeout := 30.0
@@ -195,12 +200,14 @@ func (h *BashHandler) Exec(c *gin.Context) {
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
+		log.Printf("[ERROR] Exec: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create stdin pipe: "+err.Error()))
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		log.Printf("[ERROR] Exec: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to start command: "+err.Error()))
 		return
 	}

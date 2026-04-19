@@ -68,7 +68,9 @@ func main() {
 	r.GET("/v1/code/info", auth, codeH.Info)
 
 	// Skills APIs
-	os.MkdirAll(session.DefaultGlobalSkills, 0755)
+	if err := os.MkdirAll(session.DefaultGlobalSkills, 0755); err != nil {
+		log.Fatalf("Failed to create global skills directory %s: %v", session.DefaultGlobalSkills, err)
+	}
 	skillH := handler.NewSkillHandler(mgr)
 	skills := r.Group("/v1/skills", auth, auditMW)
 	{

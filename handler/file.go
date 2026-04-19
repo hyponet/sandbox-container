@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -118,12 +119,14 @@ func (h *FileHandler) Write(c *gin.Context) {
 	if req.Append {
 		f, err := os.OpenFile(realPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
+			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to open file: "+err.Error()))
 			return
 		}
 		defer f.Close()
 		n, err := f.Write(content)
 		if err != nil {
+			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write: "+err.Error()))
 			return
 		}
@@ -131,6 +134,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 	} else {
 		err = os.WriteFile(realPath, content, 0644)
 		if err != nil {
+			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
 			return
 		}
@@ -527,6 +531,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	src, err := file.Open()
 	if err != nil {
+		log.Printf("[ERROR] Upload: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to open uploaded file"))
 		return
 	}
@@ -534,6 +539,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	dst, err := os.Create(realPath)
 	if err != nil {
+		log.Printf("[ERROR] Upload: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create file"))
 		return
 	}
@@ -541,6 +547,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	written, err := ioCopyBuffer(dst, src)
 	if err != nil {
+		log.Printf("[ERROR] Upload: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file"))
 		return
 	}
@@ -713,6 +720,7 @@ func (h *FileHandler) List(c *gin.Context) {
 				}))
 				return
 			}
+			log.Printf("[ERROR] List: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to list directory: "+err.Error()))
 			return
 		}

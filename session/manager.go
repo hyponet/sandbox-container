@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,7 +50,9 @@ func NewManager(root string, ttl time.Duration) *Manager {
 		ttl:              ttl,
 		accessTime:       make(map[string]time.Time),
 	}
-	os.MkdirAll(root, 0755)
+	if err := os.MkdirAll(root, 0755); err != nil {
+		log.Printf("[ERROR] failed to create root directory %s: %v", root, err)
+	}
 	// Only create globalSkillsRoot on first use or when explicitly set via SetGlobalSkillsRoot.
 	// Avoids creating /data/skills on the host filesystem during tests.
 	go m.cleanupLoop()
@@ -88,7 +91,9 @@ func (m *Manager) GlobalSkillPath(skillID string) string {
 // SetGlobalSkillsRoot sets the global skills root directory (for testing).
 func (m *Manager) SetGlobalSkillsRoot(path string) {
 	m.globalSkillsRoot = path
-	os.MkdirAll(path, 0755)
+	if err := os.MkdirAll(path, 0755); err != nil {
+		log.Printf("[ERROR] SetGlobalSkillsRoot: failed to create %s: %v", path, err)
+	}
 }
 
 // IsSkillsPath checks if a request path targets the skills directory.
@@ -191,7 +196,9 @@ func (m *Manager) Touch(agentID, sessionID string) {
 
 	// Ensure session directory exists
 	sessionDir := m.SessionRoot(agentID, sessionID)
-	os.MkdirAll(sessionDir, 0755)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		log.Printf("[ERROR] Touch: failed to create session dir %s: %v", sessionDir, err)
+	}
 
 	// Create skills symlink: <session>/skills -> <agent>/skills
 	symlinkPath := filepath.Join(sessionDir, "skills")
@@ -201,7 +208,9 @@ func (m *Manager) Touch(agentID, sessionID string) {
 	os.Remove(symlinkPath)
 
 	// Ensure skills directory exists
-	os.MkdirAll(skillsDir, 0755)
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		log.Printf("[ERROR] Touch: failed to create skills dir %s: %v", skillsDir, err)
+	}
 
 	// Create relative symlink
 	relSkills, err := filepath.Rel(sessionDir, skillsDir)

@@ -219,10 +219,12 @@ RUN groupadd -r gem && \
 # 9. Create required directories
 # ---------------------------------------------------------------------------
 RUN mkdir -p /data/agents \
+    && mkdir -p /data/skills \
     && mkdir -p /var/log/sandbox \
     && mkdir -p /home/gem/.local/bin \
     && mkdir -p /home/gem/.npm-global \
     && chown -R gem:gem /data/agents \
+    && chown -R gem:gem /data/skills \
     && chown -R gem:gem /var/log/sandbox \
     && chown -R gem:gem /home/gem
 

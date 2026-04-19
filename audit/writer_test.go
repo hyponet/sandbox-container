@@ -226,3 +226,51 @@ func TestAuditPath(t *testing.T) {
 		t.Errorf("expected %s, got %s", expected, got)
 	}
 }
+
+// TestGetOrCreateReadOnlyDir verifies that getOrCreate returns an error
+// when the audit directory cannot be created (e.g. read-only parent).
+func TestGetOrCreateReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir, time.Minute)
+	defer w.Close()
+
+	// Write one entry to verify normal operation
+	err := w.WriteEntry("a1", "s1", map[string]string{"msg": "ok"})
+	if err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+
+	// Create agent dir then make it read-only so MkdirAll for audits/ fails
+	agentDir := filepath.Join(dir, "a2")
+	os.MkdirAll(agentDir, 0755)
+	os.Chmod(agentDir, 0555)
+	defer os.Chmod(agentDir, 0755)
+
+	err = w.WriteEntry("a2", "s1", map[string]string{"msg": "fail"})
+	if err == nil {
+		t.Error("expected error when audit dir is not writable")
+	}
+}
+
+// TestNewWriterWithFallbackDir verifies fallback dir creation and usage.
+func TestNewWriterWithFallbackDir(t *testing.T) {
+	dir := t.TempDir()
+	fallbackDir := filepath.Join(dir, "fallback")
+
+	w := NewWriterWithFallback(dir, time.Minute, fallbackDir)
+	defer w.Close()
+
+	// Verify fallback dir was created
+	info, err := os.Stat(fallbackDir)
+	if err != nil {
+		t.Fatalf("fallback dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("fallback should be a directory")
+	}
+
+	// Verify fallback audit.log was created
+	if _, err := os.Stat(filepath.Join(fallbackDir, "audit.log")); err != nil {
+		t.Fatalf("audit.log not created in fallback dir: %v", err)
+	}
+}

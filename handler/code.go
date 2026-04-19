@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,7 +43,9 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		}
 		workingDir = resolved
 	}
-	os.MkdirAll(workingDir, 0755)
+	if err := os.MkdirAll(workingDir, 0755); err != nil {
+		log.Printf("[ERROR] Execute: mkdir %s: %v", workingDir, err)
+	}
 
 	timeout := 30
 	if req.Timeout != nil && *req.Timeout > 0 {

@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,9 @@ func NewWriterWithFallback(root string, maxIdle time.Duration, fallbackDir strin
 		fallbackDir = "/var/log/sandbox"
 	}
 
-	os.MkdirAll(fallbackDir, 0755)
+	if err := os.MkdirAll(fallbackDir, 0755); err != nil {
+		log.Printf("[ERROR] failed to create fallback audit dir %s: %v", fallbackDir, err)
+	}
 	fallback, err := os.OpenFile(filepath.Join(fallbackDir, "audit.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fallback = os.Stderr
@@ -155,7 +158,9 @@ func (w *Writer) getOrCreate(agentID, sessionID string) (*fileHandle, error) {
 	}
 
 	path := w.auditPath(agentID, sessionID)
-	os.MkdirAll(filepath.Dir(path), 0755)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create audit dir %s: %w", filepath.Dir(path), err)
+	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {

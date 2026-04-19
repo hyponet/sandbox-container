@@ -289,6 +289,7 @@ func (h *SkillHandler) Create(c *gin.Context) {
 	}
 
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		log.Printf("[ERROR] Create: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create skill directory: "+err.Error()))
 		return
 	}
@@ -303,6 +304,7 @@ func (h *SkillHandler) Create(c *gin.Context) {
 
 	if err := writeSkillMeta(skillDir, meta); err != nil {
 		os.RemoveAll(skillDir)
+		log.Printf("[ERROR] Create: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
 		return
 	}
@@ -311,6 +313,7 @@ func (h *SkillHandler) Create(c *gin.Context) {
 	skillsMD := buildSkillsMDContent(req.Name, req.Description, "")
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(skillsMD), 0644); err != nil {
 		os.RemoveAll(skillDir)
+		log.Printf("[ERROR] Create: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write SKILLS.md: "+err.Error()))
 		return
 	}
@@ -351,12 +354,14 @@ func (h *SkillHandler) Import(c *gin.Context) {
 	// Download ZIP
 	resp, err := h.client().Get(req.ZipURL)
 	if err != nil {
+		log.Printf("[ERROR] Import: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill: "+err.Error()))
 		return
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
+		log.Printf("[ERROR] Import: download returned HTTP %s", resp.Status)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to download skill: HTTP "+resp.Status))
 		return
 	}
@@ -364,6 +369,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 	tmpFile, err := os.CreateTemp("", "skill-*.zip")
 	if err != nil {
 		resp.Body.Close()
+		log.Printf("[ERROR] Import: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
 		return
 	}
@@ -375,6 +381,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 
 	if err != nil {
 		os.Remove(tmpPath)
+		log.Printf("[ERROR] Import: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to save skill zip: "+err.Error()))
 		return
 	}
@@ -388,6 +395,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 	os.RemoveAll(skillDir)
 	if err := extractZip(tmpPath, skillDir); err != nil {
 		os.Remove(tmpPath)
+		log.Printf("[ERROR] Import: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to extract skill: "+err.Error()))
 		return
 	}
@@ -411,6 +419,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 		skillsMDPath := filepath.Join(skillDir, "SKILLS.md")
 		defaultMD := fmt.Sprintf("---\nname: %s\n---\n", req.Name)
 		if wErr := os.WriteFile(skillsMDPath, []byte(defaultMD), 0644); wErr != nil {
+			log.Printf("[ERROR] Import: %v", wErr)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write default SKILLS.md: "+wErr.Error()))
 			return
 		}
@@ -423,6 +432,7 @@ func (h *SkillHandler) Import(c *gin.Context) {
 	}
 
 	if err := writeSkillMeta(skillDir, meta); err != nil {
+		log.Printf("[ERROR] Import: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
 		return
 	}
@@ -505,6 +515,7 @@ func (h *SkillHandler) Delete(c *gin.Context) {
 	}
 
 	if err := os.RemoveAll(skillDir); err != nil {
+		log.Printf("[ERROR] Delete: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete skill: "+err.Error()))
 		return
 	}
@@ -630,10 +641,15 @@ func (h *SkillHandler) FileWrite(c *gin.Context) {
 	defer h.mu.Unlock()
 
 	// Ensure parent directory inside lock to prevent TOCTOU
-	os.MkdirAll(filepath.Dir(resolved), 0755)
+	if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
+		log.Printf("[ERROR] FileWrite %q: mkdir parent: %v", req.Name, err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create parent directory: "+err.Error()))
+		return
+	}
 
 	data := []byte(req.Content)
 	if err := os.WriteFile(resolved, data, 0644); err != nil {
+		log.Printf("[ERROR] FileWrite: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
 		return
 	}
@@ -691,6 +707,7 @@ func (h *SkillHandler) FileUpdate(c *gin.Context) {
 	if replacedCount > 0 {
 		newContent := strings.ReplaceAll(string(content), req.OldStr, req.NewStr)
 		if err := os.WriteFile(resolved, []byte(newContent), 0644); err != nil {
+			log.Printf("[ERROR] FileUpdate: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
 			return
 		}
@@ -732,6 +749,7 @@ func (h *SkillHandler) FileMkdir(c *gin.Context) {
 	defer h.mu.Unlock()
 
 	if err := os.MkdirAll(resolved, 0755); err != nil {
+		log.Printf("[ERROR] FileMkdir: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create directory: "+err.Error()))
 		return
 	}
@@ -790,6 +808,7 @@ func (h *SkillHandler) FileDelete(c *gin.Context) {
 	}
 
 	if err := os.RemoveAll(resolved); err != nil {
+		log.Printf("[ERROR] FileDelete: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete: "+err.Error()))
 		return
 	}
@@ -862,6 +881,7 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 		// Save uploaded file to temp
 		src, err := fh.Open()
 		if err != nil {
+			log.Printf("[ERROR] ImportUpload: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to open uploaded file %q: %s", fh.Filename, err.Error())))
 			return
 		}
@@ -869,6 +889,7 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 		tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
 		if err != nil {
 			src.Close()
+			log.Printf("[ERROR] ImportUpload: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create temp file: "+err.Error()))
 			return
 		}
@@ -879,6 +900,7 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 		tmpFile.Close()
 		if err != nil {
 			os.Remove(tmpPath)
+			log.Printf("[ERROR] ImportUpload: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to save uploaded file %q: %s", fh.Filename, err.Error())))
 			return
 		}
@@ -891,6 +913,7 @@ func (h *SkillHandler) ImportUpload(c *gin.Context) {
 		meta, err := h.importSkillFromZip(skillName, tmpPath)
 		os.Remove(tmpPath)
 		if err != nil {
+			log.Printf("[ERROR] ImportUpload: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse(fmt.Sprintf("failed to import %q: %s", fh.Filename, err.Error())))
 			return
 		}
@@ -992,7 +1015,10 @@ func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	os.RemoveAll(agentDir)
-	os.MkdirAll(filepath.Dir(agentDir), 0755)
+	if err := os.MkdirAll(filepath.Dir(agentDir), 0755); err != nil {
+		log.Printf("[ERROR] copySkillToAgent %s: mkdir: %v", agentDir, err)
+		return err
+	}
 	return copyDir(globalDir, agentDir)
 }
 
@@ -1104,6 +1130,7 @@ func (h *SkillHandler) Get(c *gin.Context) {
 
 	meta, err := readSkillMeta(skillDir)
 	if err != nil {
+		log.Printf("[ERROR] Get: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+err.Error()))
 		return
 	}
@@ -1144,6 +1171,7 @@ func (h *SkillHandler) Update(c *gin.Context) {
 
 	meta, err := readSkillMeta(skillDir)
 	if err != nil {
+		log.Printf("[ERROR] Update: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+err.Error()))
 		return
 	}
@@ -1152,6 +1180,7 @@ func (h *SkillHandler) Update(c *gin.Context) {
 	meta.UpdatedAt = time.Now().UnixNano()
 
 	if err := writeSkillMeta(skillDir, meta); err != nil {
+		log.Printf("[ERROR] Update: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
 		return
 	}
@@ -1201,6 +1230,7 @@ func (h *SkillHandler) Rename(c *gin.Context) {
 	}
 
 	if err := os.Rename(oldDir, newDir); err != nil {
+		log.Printf("[ERROR] Rename: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to rename skill: "+err.Error()))
 		return
 	}
@@ -1209,6 +1239,7 @@ func (h *SkillHandler) Rename(c *gin.Context) {
 	meta, err := readSkillMeta(newDir)
 	if err != nil {
 		os.Rename(newDir, oldDir) // best-effort rollback
+		log.Printf("[ERROR] Rename: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+err.Error()))
 		return
 	}
@@ -1216,6 +1247,7 @@ func (h *SkillHandler) Rename(c *gin.Context) {
 	meta.UpdatedAt = time.Now().UnixNano()
 	if err := writeSkillMeta(newDir, meta); err != nil {
 		os.Rename(newDir, oldDir) // best-effort rollback
+		log.Printf("[ERROR] Rename: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
 		return
 	}
@@ -1330,12 +1362,14 @@ func (h *SkillHandler) Copy(c *gin.Context) {
 	}
 
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		log.Printf("[ERROR] Copy: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create target directory: "+err.Error()))
 		return
 	}
 
 	if err := copyDir(srcDir, dstDir); err != nil {
 		os.RemoveAll(dstDir)
+		log.Printf("[ERROR] Copy: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to copy skill: "+err.Error()))
 		return
 	}
@@ -1355,6 +1389,7 @@ func (h *SkillHandler) Copy(c *gin.Context) {
 	}
 	if err := writeSkillMeta(dstDir, meta); err != nil {
 		os.RemoveAll(dstDir)
+		log.Printf("[ERROR] Copy: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
 		return
 	}
@@ -1495,6 +1530,7 @@ func (h *SkillHandler) AgentCacheDelete(c *gin.Context) {
 			return
 		}
 		if err := os.RemoveAll(cacheDir); err != nil {
+			log.Printf("[ERROR] AgentCacheDelete: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete cache: "+err.Error()))
 			return
 		}

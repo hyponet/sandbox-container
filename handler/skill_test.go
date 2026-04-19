@@ -2448,3 +2448,92 @@ func TestFindSkillsMDPath(t *testing.T) {
 		t.Error("expected error for nonexistent dir")
 	}
 }
+
+// =============================================
+// Tests for code review error-handling fixes
+// =============================================
+
+// P0: Import handler should report HTTP status, not stale nil err, when server returns non-200.
+func TestSkillImportNon200Response(t *testing.T) {
+	r, _ := setupSkillRouter()
+
+	// Stand up a server that returns 404
+	mux := http.NewServeMux()
+	mux.HandleFunc("/skill.zip", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	body := `{"name": "import-404", "zip_url": "` + server.URL + `/skill.zip"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/import", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+
+	// The error message must mention the HTTP status, not "<nil>"
+	respBody := w.Body.String()
+	if strings.Contains(respBody, "<nil>") {
+		t.Errorf("response should not contain '<nil>' (stale err bug), got: %s", respBody)
+	}
+	if !strings.Contains(respBody, "404") {
+		t.Errorf("response should mention HTTP 404 status, got: %s", respBody)
+	}
+}
+
+// P2: FileWrite should return 500 when parent MkdirAll fails (short-circuit).
+func TestSkillFileWriteReadOnlyParent(t *testing.T) {
+	r, mgr := setupSkillRouter()
+
+	// Create skill
+	body := `{"name": "ro-parent", "description": "test"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skills/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Make the skill directory read-only so MkdirAll for a nested path fails
+	skillDir := mgr.GlobalSkillPath("ro-parent")
+	os.Chmod(skillDir, 0555)
+	defer os.Chmod(skillDir, 0755) // restore for cleanup
+
+	// Try to write a file in a new subdirectory — MkdirAll should fail
+	writeBody := `{"name": "ro-parent", "path": "newdir/file.txt", "content": "hello"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/skills/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when MkdirAll fails, got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "parent directory") {
+		t.Errorf("expected error about parent directory, got: %s", w.Body.String())
+	}
+}
+
+// Verify session manager NewManager handles root creation gracefully.
+func TestNewManagerWithTempDir(t *testing.T) {
+	dir := t.TempDir()
+	mgr := session.NewManager(dir, time.Hour)
+	if mgr == nil {
+		t.Fatal("manager should not be nil")
+	}
+
+	// Verify root was created
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("root dir should exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("root should be a directory")
+	}
+}

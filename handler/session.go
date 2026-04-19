@@ -3,6 +3,7 @@ package handler
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -110,6 +111,7 @@ func (h *SessionHandler) GetAuditLogs(c *gin.Context) {
 			}))
 			return
 		}
+		log.Printf("[ERROR] GetAuditLogs: read %s: %v", auditPath, err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read audit logs: "+err.Error()))
 		return
 	}

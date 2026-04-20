@@ -37,7 +37,7 @@ type codeExecRequest struct {
 	Code      string  `json:"code"`
 	Timeout   *int    `json:"timeout,omitempty"`
 	Cwd                     *string `json:"cwd,omitempty"`
-	DisableSessionIsolation bool    `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
 }
 
 // --- Functional options ---
@@ -55,7 +55,7 @@ func WithCwd(cwd string) CodeExecOption {
 	return func(r *codeExecRequest) { r.Cwd = &cwd }
 }
 
-// WithCodeDisableSessionIsolation disables session isolation for CodeExecute.
-func WithCodeDisableSessionIsolation() CodeExecOption {
-	return func(r *codeExecRequest) { r.DisableSessionIsolation = true }
+// WithCodeAgentWorkspace enables agent workspace mode for CodeExecute.
+func WithCodeAgentWorkspace() CodeExecOption {
+	return func(r *codeExecRequest) { r.EnableAgentWorkspace = true }
 }

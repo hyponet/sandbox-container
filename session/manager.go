@@ -14,16 +14,18 @@ import (
 )
 
 const (
-	DefaultAgentRoot    = "/data/agents"
-	DefaultGlobalSkills = "/data/skills"
-	DefaultTTL          = 24 * time.Hour
-	CleanupInterval     = 10 * time.Minute
+	DefaultAgentRoot     = "/data/agents"
+	DefaultGlobalSkills  = "/data/skills"
+	DefaultRegistryRoot  = "/data/skill-registry"
+	DefaultTTL           = 24 * time.Hour
+	CleanupInterval      = 10 * time.Minute
 )
 
 // Manager manages session directories with TTL-based cleanup.
 type Manager struct {
 	root             string
 	globalSkillsRoot string
+	registryRoot     string
 	ttl              time.Duration
 	mu               sync.RWMutex
 	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
@@ -48,14 +50,15 @@ func NewManager(root string, ttl time.Duration) *Manager {
 	m := &Manager{
 		root:             root,
 		globalSkillsRoot: DefaultGlobalSkills,
+		registryRoot:     DefaultRegistryRoot,
 		ttl:              ttl,
 		accessTime:       make(map[string]time.Time),
 	}
 	if err := os.MkdirAll(root, 0755); err != nil {
-		log.Printf("[ERROR] failed to create root directory %s: %v", root, err)
+		log.Fatalf("[FATAL] failed to create root directory %s: %v", root, err)
 	}
-	// Only create globalSkillsRoot on first use or when explicitly set via SetGlobalSkillsRoot.
-	// Avoids creating /data/skills on the host filesystem during tests.
+	// Registry and globalSkillsRoot directories are created in main.go at startup,
+	// or via SetRegistryRoot/SetGlobalSkillsRoot in tests.
 	go m.cleanupLoop()
 	return m
 }
@@ -99,6 +102,29 @@ func (m *Manager) SetGlobalSkillsRoot(path string) {
 	m.globalSkillsRoot = path
 	if err := os.MkdirAll(path, 0755); err != nil {
 		log.Printf("[ERROR] SetGlobalSkillsRoot: failed to create %s: %v", path, err)
+	}
+}
+
+// RegistryRoot returns the skill registry root directory.
+func (m *Manager) RegistryRoot() string {
+	return m.registryRoot
+}
+
+// RegistrySkillPath returns the registry directory for a specific skill.
+func (m *Manager) RegistrySkillPath(skillID string) string {
+	return filepath.Join(m.registryRoot, skillID)
+}
+
+// RegistryVersionPath returns the path for a specific version of a skill.
+func (m *Manager) RegistryVersionPath(skillID, version string) string {
+	return filepath.Join(m.registryRoot, skillID, version)
+}
+
+// SetRegistryRoot sets the registry root directory (for testing).
+func (m *Manager) SetRegistryRoot(path string) {
+	m.registryRoot = path
+	if err := os.MkdirAll(path, 0755); err != nil {
+		log.Printf("[ERROR] SetRegistryRoot: failed to create %s: %v", path, err)
 	}
 }
 
@@ -168,10 +194,10 @@ func (m *Manager) ResolveReadOnlyPath(agentID, sessionID, reqPath string) (strin
 }
 
 // ResolvePathEx resolves a path with optional workspace mode support.
-// When disableSessionIsolation is true, non-skills paths resolve under the agent's workspace directory.
+// When agentWorkspace is true, non-skills paths resolve under the agent's workspace directory.
 // When false, it delegates to ResolvePath (session-based isolation).
-func (m *Manager) ResolvePathEx(agentID, sessionID, reqPath string, disableSessionIsolation bool) (string, error) {
-	if !disableSessionIsolation {
+func (m *Manager) ResolvePathEx(agentID, sessionID, reqPath string, agentWorkspace bool) (string, error) {
+	if !agentWorkspace {
 		return m.ResolvePath(agentID, sessionID, reqPath)
 	}
 
@@ -249,8 +275,8 @@ func (m *Manager) EnsureParentDir(agentID, sessionID, filePath string) error {
 }
 
 // EnsureParentDirEx creates parent directories for a file path with workspace mode support.
-func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, disableSessionIsolation bool) error {
-	realPath, err := m.ResolvePathEx(agentID, sessionID, filePath, disableSessionIsolation)
+func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, agentWorkspace bool) error {
+	realPath, err := m.ResolvePathEx(agentID, sessionID, filePath, agentWorkspace)
 	if err != nil {
 		return err
 	}

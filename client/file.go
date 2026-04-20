@@ -174,11 +174,8 @@ func (c *Client) FileUpload(agentID, sessionID, path string, reader io.Reader, f
 	for _, o := range opts {
 		o(ur)
 	}
-	if ur.DisableSessionIsolation {
-		w.WriteField("disable_session_isolation", "true")
-	}
-	if ur.SkillsWritable {
-		w.WriteField("skills_writable", "true")
+	if ur.EnableAgentWorkspace {
+		w.WriteField("enable_agent_workspace", "true")
 	}
 
 	part, err := w.CreateFormFile("file", filename)
@@ -222,8 +219,8 @@ func (c *Client) FileDownload(agentID, sessionID, path string, opts ...FileDownl
 	for _, o := range opts {
 		o(fd)
 	}
-	if fd.DisableSessionIsolation {
-		params.Set("disable_session_isolation", "true")
+	if fd.EnableAgentWorkspace {
+		params.Set("enable_agent_workspace", "true")
 	}
 
 	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/file/download?"+params.Encode(), nil)
@@ -252,7 +249,7 @@ type fileReadRequest struct {
 	File      string `json:"file"`
 	StartLine *int   `json:"start_line,omitempty"`
 	EndLine   *int   `json:"end_line,omitempty"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type fileWriteRequest struct {
@@ -264,8 +261,7 @@ type fileWriteRequest struct {
 	Append          bool   `json:"append"`
 	LeadingNewline  bool   `json:"leading_newline"`
 	TrailingNewline bool   `json:"trailing_newline"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
-	SkillsWritable          bool   `json:"skills_writable"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type fileReplaceRequest struct {
@@ -274,8 +270,7 @@ type fileReplaceRequest struct {
 	File      string `json:"file"`
 	OldStr    string `json:"old_str"`
 	NewStr    string `json:"new_str"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
-	SkillsWritable          bool   `json:"skills_writable"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type fileSearchRequest struct {
@@ -283,7 +278,7 @@ type fileSearchRequest struct {
 	SessionID string `json:"session_id"`
 	File      string `json:"file"`
 	Regex     string `json:"regex"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type fileFindRequest struct {
@@ -291,7 +286,7 @@ type fileFindRequest struct {
 	SessionID string `json:"session_id"`
 	Path      string `json:"path"`
 	Glob      string `json:"glob"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type fileGrepRequest struct {
@@ -307,7 +302,7 @@ type fileGrepRequest struct {
 	ContextAfter    int      `json:"context_after"`
 	MaxResults      int      `json:"max_results"`
 	Recursive       *bool    `json:"recursive,omitempty"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 type fileGlobRequest struct {
@@ -320,7 +315,7 @@ type fileGlobRequest struct {
 	FilesOnly       *bool    `json:"files_only,omitempty"`
 	IncludeMetadata *bool    `json:"include_metadata,omitempty"`
 	MaxResults      int      `json:"max_results"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 type fileListRequest struct {
@@ -333,7 +328,7 @@ type fileListRequest struct {
 	MaxDepth           *int     `json:"max_depth,omitempty"`
 	IncludeSize        *bool    `json:"include_size,omitempty"`
 	IncludePermissions *bool    `json:"include_permissions,omitempty"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 // --- Functional options ---
@@ -398,93 +393,77 @@ func WithRecursive(recursive bool) FileListOption {
 	return func(r *fileListRequest) { r.Recursive = recursive }
 }
 
-// --- Session Isolation & Skills Writable Options ---
+// --- Agent Workspace Options ---
 
-// WithFileReadDisableSessionIsolation disables session isolation for FileRead.
-func WithFileReadDisableSessionIsolation() FileReadOption {
-	return func(r *fileReadRequest) { r.DisableSessionIsolation = true }
+// WithFileReadAgentWorkspace enables agent workspace mode for FileRead.
+func WithFileReadAgentWorkspace() FileReadOption {
+	return func(r *fileReadRequest) { r.EnableAgentWorkspace = true }
 }
 
-// WithFileWriteDisableSessionIsolation disables session isolation for FileWrite.
-func WithFileWriteDisableSessionIsolation() FileWriteOption {
-	return func(r *fileWriteRequest) { r.DisableSessionIsolation = true }
-}
-
-// WithSkillsWritable enables writing to the skills directory.
-func WithSkillsWritable() FileWriteOption {
-	return func(r *fileWriteRequest) { r.SkillsWritable = true }
+// WithFileWriteAgentWorkspace enables agent workspace mode for FileWrite.
+func WithFileWriteAgentWorkspace() FileWriteOption {
+	return func(r *fileWriteRequest) { r.EnableAgentWorkspace = true }
 }
 
 // FileReplaceOption is a functional option for FileReplace.
 type FileReplaceOption func(*fileReplaceRequest)
 
-// WithFileReplaceDisableSessionIsolation disables session isolation for FileReplace.
-func WithFileReplaceDisableSessionIsolation() FileReplaceOption {
-	return func(r *fileReplaceRequest) { r.DisableSessionIsolation = true }
-}
-
-// WithReplaceSkillsWritable enables writing to the skills directory for FileReplace.
-func WithReplaceSkillsWritable() FileReplaceOption {
-	return func(r *fileReplaceRequest) { r.SkillsWritable = true }
+// WithFileReplaceAgentWorkspace enables agent workspace mode for FileReplace.
+func WithFileReplaceAgentWorkspace() FileReplaceOption {
+	return func(r *fileReplaceRequest) { r.EnableAgentWorkspace = true }
 }
 
 // FileSearchOption is a functional option for FileSearch.
 type FileSearchOption func(*fileSearchRequest)
 
-// WithFileSearchDisableSessionIsolation disables session isolation for FileSearch.
-func WithFileSearchDisableSessionIsolation() FileSearchOption {
-	return func(r *fileSearchRequest) { r.DisableSessionIsolation = true }
+// WithFileSearchAgentWorkspace enables agent workspace mode for FileSearch.
+func WithFileSearchAgentWorkspace() FileSearchOption {
+	return func(r *fileSearchRequest) { r.EnableAgentWorkspace = true }
 }
 
 // FileFindOption is a functional option for FileFind.
 type FileFindOption func(*fileFindRequest)
 
-// WithFileFindDisableSessionIsolation disables session isolation for FileFind.
-func WithFileFindDisableSessionIsolation() FileFindOption {
-	return func(r *fileFindRequest) { r.DisableSessionIsolation = true }
+// WithFileFindAgentWorkspace enables agent workspace mode for FileFind.
+func WithFileFindAgentWorkspace() FileFindOption {
+	return func(r *fileFindRequest) { r.EnableAgentWorkspace = true }
 }
 
-// WithGrepDisableSessionIsolation disables session isolation for FileGrep.
-func WithGrepDisableSessionIsolation() FileGrepOption {
-	return func(r *fileGrepRequest) { r.DisableSessionIsolation = true }
+// WithGrepAgentWorkspace enables agent workspace mode for FileGrep.
+func WithGrepAgentWorkspace() FileGrepOption {
+	return func(r *fileGrepRequest) { r.EnableAgentWorkspace = true }
 }
 
-// WithGlobDisableSessionIsolation disables session isolation for FileGlob.
-func WithGlobDisableSessionIsolation() FileGlobOption {
-	return func(r *fileGlobRequest) { r.DisableSessionIsolation = true }
+// WithGlobAgentWorkspace enables agent workspace mode for FileGlob.
+func WithGlobAgentWorkspace() FileGlobOption {
+	return func(r *fileGlobRequest) { r.EnableAgentWorkspace = true }
 }
 
-// WithListDisableSessionIsolation disables session isolation for FileList.
-func WithListDisableSessionIsolation() FileListOption {
-	return func(r *fileListRequest) { r.DisableSessionIsolation = true }
+// WithListAgentWorkspace enables agent workspace mode for FileList.
+func WithListAgentWorkspace() FileListOption {
+	return func(r *fileListRequest) { r.EnableAgentWorkspace = true }
 }
 
 // FileUploadOption is a functional option for FileUpload.
 type FileUploadOption func(*fileUploadOptions)
 
 type fileUploadOptions struct {
-	DisableSessionIsolation bool
-	SkillsWritable          bool
+	EnableAgentWorkspace bool
 }
 
-// WithUploadDisableSessionIsolation disables session isolation for FileUpload.
-func WithUploadDisableSessionIsolation() FileUploadOption {
-	return func(o *fileUploadOptions) { o.DisableSessionIsolation = true }
-}
-
-// WithUploadSkillsWritable enables writing to the skills directory for FileUpload.
-func WithUploadSkillsWritable() FileUploadOption {
-	return func(o *fileUploadOptions) { o.SkillsWritable = true }
+// WithUploadAgentWorkspace enables agent workspace mode for FileUpload.
+func WithUploadAgentWorkspace() FileUploadOption {
+	return func(o *fileUploadOptions) { o.EnableAgentWorkspace = true }
 }
 
 // FileDownloadOption is a functional option for FileDownload.
 type FileDownloadOption func(*fileDownloadOptions)
 
 type fileDownloadOptions struct {
-	DisableSessionIsolation bool
+	EnableAgentWorkspace bool
 }
 
-// WithDownloadDisableSessionIsolation disables session isolation for FileDownload.
-func WithDownloadDisableSessionIsolation() FileDownloadOption {
-	return func(o *fileDownloadOptions) { o.DisableSessionIsolation = true }
+// WithDownloadAgentWorkspace enables agent workspace mode for FileDownload.
+func WithDownloadAgentWorkspace() FileDownloadOption {
+	return func(o *fileDownloadOptions) { o.EnableAgentWorkspace = true }
 }

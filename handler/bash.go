@@ -111,7 +111,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 
 	// Determine working dir within session
 	var workingDir string
-	if req.DisableSessionIsolation {
+	if req.EnableAgentWorkspace {
 		h.mgr.TouchWorkspace(req.AgentID)
 		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
 	} else {
@@ -119,7 +119,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
 	}
 	if req.ExecDir != nil && *req.ExecDir != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.DisableSessionIsolation)
+		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
@@ -165,14 +165,14 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Determine working dir
 	var workingDir string
-	if req.DisableSessionIsolation {
+	if req.EnableAgentWorkspace {
 		h.mgr.TouchWorkspace(req.AgentID)
 		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
 	} else {
 		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
 	}
 	if req.ExecDir != nil && *req.ExecDir != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.DisableSessionIsolation)
+		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return

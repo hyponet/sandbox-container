@@ -333,17 +333,17 @@ func TestBashListSessions(t *testing.T) {
 	}
 }
 
-func TestBashExec_DisableSessionIsolation(t *testing.T) {
+func TestBashExec_AgentWorkspace(t *testing.T) {
 	r, mgr := setupBashRouter()
 
-	body := `{"agent_id": "a1", "session_id": "bash_dsi", "command": "pwd", "disable_session_isolation": true}`
+	body := `{"agent_id": "a1", "session_id": "bash_dsi", "command": "pwd", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("exec with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("exec with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]interface{}
@@ -357,15 +357,15 @@ func TestBashExec_DisableSessionIsolation(t *testing.T) {
 		t.Errorf("expected stdout to contain workspace path %q, got %q", wsRoot, stdout)
 	}
 	if strings.Contains(stdout, "sessions") {
-		t.Errorf("stdout should NOT contain 'sessions' when disable_session_isolation is true, got %q", stdout)
+		t.Errorf("stdout should NOT contain 'sessions' when enable_agent_workspace is true, got %q", stdout)
 	}
 }
 
-func TestBashExec_DisableSessionIsolation_Persistence(t *testing.T) {
+func TestBashExec_AgentWorkspace_Persistence(t *testing.T) {
 	r, _ := setupBashRouter()
 
 	// Create a file with session1 in workspace mode
-	body := `{"agent_id": "a1", "session_id": "ws_sess1", "command": "echo persistent-data > ws-persist.txt", "disable_session_isolation": true}`
+	body := `{"agent_id": "a1", "session_id": "ws_sess1", "command": "echo persistent-data > ws-persist.txt", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -376,7 +376,7 @@ func TestBashExec_DisableSessionIsolation_Persistence(t *testing.T) {
 	}
 
 	// Read the file with a different session (session2) in workspace mode
-	body = `{"agent_id": "a1", "session_id": "ws_sess2", "command": "cat ws-persist.txt", "disable_session_isolation": true}`
+	body = `{"agent_id": "a1", "session_id": "ws_sess2", "command": "cat ws-persist.txt", "enable_agent_workspace": true}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()

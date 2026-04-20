@@ -88,7 +88,7 @@ type BashExecRequest struct {
 	Timeout                *float64          `json:"timeout,omitempty"`
 	HardTimeout            *float64          `json:"hard_timeout,omitempty"`
 	MaxOutputLength        int               `json:"max_output_length"`
-	DisableSessionIsolation bool             `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool `json:"enable_agent_workspace"`
 }
 
 type BashExecResult struct {
@@ -140,7 +140,7 @@ type BashSessionCreateRequest struct {
 	SessionID               string  `json:"session_id" binding:"required"`
 	BashSID                 *string `json:"bash_session_id,omitempty"`
 	ExecDir                 *string `json:"exec_dir,omitempty"`
-	DisableSessionIsolation bool    `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
 }
 
 type BashSessionCloseRequest struct {
@@ -192,7 +192,7 @@ type FileReadRequest struct {
 	File                    string `json:"file" binding:"required"`
 	StartLine               *int   `json:"start_line,omitempty"`
 	EndLine                 *int   `json:"end_line,omitempty"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type FileReadResult struct {
@@ -209,8 +209,7 @@ type FileWriteRequest struct {
 	Append                  bool   `json:"append"`
 	LeadingNewline          bool   `json:"leading_newline"`
 	TrailingNewline         bool   `json:"trailing_newline"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
-	SkillsWritable          bool   `json:"skills_writable"`
+	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
 }
 
 type FileWriteResult struct {
@@ -224,8 +223,7 @@ type FileReplaceRequest struct {
 	File                    string `json:"file" binding:"required"`
 	OldStr                  string `json:"old_str" binding:"required"`
 	NewStr                  string `json:"new_str" binding:"required"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
-	SkillsWritable          bool   `json:"skills_writable"`
+	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
 }
 
 type FileReplaceResult struct {
@@ -238,7 +236,7 @@ type FileSearchRequest struct {
 	SessionID               string `json:"session_id" binding:"required"`
 	File                    string `json:"file" binding:"required"`
 	Regex                   string `json:"regex" binding:"required"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
 }
 
 type FileSearchResult struct {
@@ -252,7 +250,7 @@ type FileFindRequest struct {
 	SessionID               string `json:"session_id" binding:"required"`
 	Path                    string `json:"path" binding:"required"`
 	Glob                    string `json:"glob" binding:"required"`
-	DisableSessionIsolation bool   `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
 }
 
 type FileFindResult struct {
@@ -273,7 +271,7 @@ type FileGrepRequest struct {
 	ContextAfter            int      `json:"context_after"`
 	MaxResults              int      `json:"max_results"`
 	Recursive               *bool    `json:"recursive,omitempty"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
 }
 
 type FileGrepResult struct {
@@ -304,7 +302,7 @@ type FileGlobRequest struct {
 	FilesOnly               *bool    `json:"files_only,omitempty"`
 	IncludeMetadata         *bool    `json:"include_metadata,omitempty"`
 	MaxResults              int      `json:"max_results"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
 }
 
 type FileGlobResult struct {
@@ -333,7 +331,7 @@ type FileListRequest struct {
 	MaxDepth                *int     `json:"max_depth,omitempty"`
 	IncludeSize             *bool    `json:"include_size,omitempty"`
 	IncludePermissions      *bool    `json:"include_permissions,omitempty"`
-	DisableSessionIsolation bool     `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
 }
 
 type FileListResult struct {
@@ -377,7 +375,7 @@ type CodeExecuteRequest struct {
 	Code                    string  `json:"code" binding:"required"`
 	Timeout                 *int    `json:"timeout,omitempty"`
 	Cwd                     *string `json:"cwd,omitempty"`
-	DisableSessionIsolation bool    `json:"disable_session_isolation"`
+	EnableAgentWorkspace    bool    `json:"enable_agent_workspace"`
 }
 
 type CodeExecuteResponse struct {
@@ -574,7 +572,7 @@ type AgentSkillCacheDeleteResult struct {
 type AgentSkillRequest struct {
 	SkillIDs       []string `json:"skill_ids" binding:"required"`
 	Cleanup        bool     `json:"cleanup"`
-	SkillsWritable bool     `json:"skills_writable"`
+	EnableAgentWorkspace bool `json:"enable_agent_workspace"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.
@@ -598,6 +596,202 @@ type SkillContent struct {
 // AgentSkillLoadResult is the response for the agent load endpoint.
 type AgentSkillLoadResult struct {
 	Skills []SkillContent `json:"skills"`
+}
+
+// =============================================
+// Skill Registry APIs
+// =============================================
+
+// RegistryMetaJSON represents the _meta.json in /data/skill-registry/<skill-id>/_meta.json.
+type RegistryMetaJSON struct {
+	Name          string                `json:"name"`
+	Description   string                `json:"description"`
+	CreatedAt     int64                 `json:"created_at"`
+	UpdatedAt     int64                 `json:"updated_at"`
+	ActiveVersion string                `json:"active_version"`
+	Versions      []RegistryVersionEntry `json:"versions"`
+}
+
+// RegistryVersionEntry is metadata for a single version within the registry.
+type RegistryVersionEntry struct {
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	CreatedAt   int64  `json:"created_at"`
+	Source      string `json:"source"` // "manual" | "agent:<id>" | "import"
+}
+
+// --- Skill-level ---
+
+type RegistrySkillCreateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+type RegistrySkillCreateResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillGetRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+type RegistrySkillGetResult struct {
+	Skill       RegistryMetaJSON `json:"skill"`
+	Frontmatter string           `json:"frontmatter"`
+	Body        string           `json:"body"`
+}
+
+type RegistrySkillUpdateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+type RegistrySkillUpdateResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillDeleteRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+type RegistrySkillListResult struct {
+	Skills []RegistryMetaJSON `json:"skills"`
+}
+
+type RegistrySkillRenameRequest struct {
+	Name    string `json:"name" binding:"required"`
+	NewName string `json:"new_name" binding:"required"`
+}
+
+type RegistrySkillRenameResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillCopyRequest struct {
+	Name    string `json:"name" binding:"required"`
+	NewName string `json:"new_name" binding:"required"`
+}
+
+type RegistrySkillCopyResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+// --- Version-level ---
+
+type RegistryVersionCreateRequest struct {
+	Name           string `json:"name" binding:"required"`
+	Description    string `json:"description"`
+	CopyFromActive bool   `json:"copy_from_active"`
+}
+
+type RegistryVersionCreateResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+type RegistryVersionGetRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+}
+
+type RegistryVersionGetResult struct {
+	Version     RegistryVersionEntry `json:"version"`
+	Frontmatter string               `json:"frontmatter"`
+	Body        string               `json:"body"`
+}
+
+type RegistryVersionListRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+type RegistryVersionListResult struct {
+	Versions      []RegistryVersionEntry `json:"versions"`
+	ActiveVersion string                 `json:"active_version"`
+}
+
+type RegistryVersionDeleteRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+}
+
+type RegistryVersionTreeRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+}
+
+// --- Version file operations ---
+
+type RegistryVersionFileReadRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+}
+
+type RegistryVersionFileWriteRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+	Content string `json:"content"`
+}
+
+type RegistryVersionFileUpdateRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+	OldStr  string `json:"old_str" binding:"required"`
+	NewStr  string `json:"new_str" binding:"required"`
+}
+
+type RegistryVersionFileMkdirRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+}
+
+type RegistryVersionFileDeleteRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+	Path    string `json:"path" binding:"required"`
+}
+
+// --- Activate and Commit ---
+
+type RegistryActivateRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Version string `json:"version" binding:"required"`
+}
+
+type RegistryActivateResult struct {
+	Skill           RegistryMetaJSON     `json:"skill"`
+	ActivatedVersion RegistryVersionEntry `json:"activated_version"`
+}
+
+type RegistryCommitRequest struct {
+	Name        string `json:"name" binding:"required"`
+	AgentID     string `json:"agent_id" binding:"required"`
+	Description string `json:"description"`
+	Activate    bool   `json:"activate"`
+}
+
+type RegistryCommitResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+// --- Import/Export ---
+
+type RegistryImportRequest struct {
+	Name   string `json:"name" binding:"required"`
+	ZipURL string `json:"zip_url" binding:"required"`
+}
+
+type RegistryImportResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+type RegistryImportUploadResult struct {
+	Skills []RegistryImportResult `json:"skills"`
 }
 
 // =============================================

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,5 +188,30 @@ func TestCodeExecuteMissingLanguage(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing language, got %d", w.Code)
+	}
+}
+
+func TestCodeExecute_AgentWorkspace(t *testing.T) {
+	r, mgr := setupCodeRouter()
+
+	// Execute with enable_agent_workspace — working dir should be workspace root
+	body := `{"agent_id": "a1", "session_id": "code_ws", "language": "python", "code": "import os; print(os.getcwd())", "enable_agent_workspace": true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout, _ := data["stdout"].(string)
+
+	wsRoot := mgr.WorkspaceRoot("a1")
+	if !strings.Contains(stdout, filepath.Base(wsRoot)) {
+		t.Errorf("expected stdout to reference workspace dir, got %q", stdout)
 	}
 }

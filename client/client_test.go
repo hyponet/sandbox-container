@@ -30,9 +30,12 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	os.MkdirAll(dir, 0755)
 	globalSkillsDir := filepath.Join(dir, "global-skills")
 	os.MkdirAll(globalSkillsDir, 0755)
+	registryDir := filepath.Join(dir, "registry")
+	os.MkdirAll(registryDir, 0755)
 	fallbackDir := filepath.Join(dir, "fallback-logs")
 	mgr := session.NewManager(dir, 24*time.Hour)
 	mgr.SetGlobalSkillsRoot(globalSkillsDir)
+	mgr.SetRegistryRoot(registryDir)
 
 	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
 	mgr.SetAuditWriter(auditW)
@@ -81,29 +84,37 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
-	// Skills
-	skillH := handler.NewSkillHandler(mgr)
-	skillH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
-	skills := r.Group("/v1/skills", auditMW)
+	// Registry (replaces old global skills routes)
+	registryH := handler.NewRegistryHandler(mgr)
+	registryH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
+	registry := r.Group("/v1/registry", auditMW)
 	{
-		skills.POST("/create", skillH.Create)
-		skills.POST("/get", skillH.Get)
-		skills.POST("/update", skillH.Update)
-		skills.POST("/rename", skillH.Rename)
-		skills.POST("/import", skillH.Import)
-		skills.POST("/list", skillH.ListGlobal)
-		skills.POST("/delete", skillH.Delete)
-		skills.POST("/tree", skillH.Tree)
-		skills.POST("/copy", skillH.Copy)
-		skills.GET("/export", skillH.Export)
-		skills.POST("/file/read", skillH.FileRead)
-		skills.POST("/file/write", skillH.FileWrite)
-		skills.POST("/file/update", skillH.FileUpdate)
-		skills.POST("/file/mkdir", skillH.FileMkdir)
-		skills.POST("/file/delete", skillH.FileDelete)
-		skills.POST("/import/upload", skillH.ImportUpload)
+		registry.POST("/create", registryH.Create)
+		registry.POST("/get", registryH.Get)
+		registry.POST("/update", registryH.Update)
+		registry.POST("/delete", registryH.Delete)
+		registry.POST("/list", registryH.List)
+		registry.POST("/rename", registryH.Rename)
+		registry.POST("/copy", registryH.Copy)
+		registry.POST("/import", registryH.Import)
+		registry.POST("/import/upload", registryH.ImportUpload)
+		registry.GET("/export", registryH.Export)
+		registry.POST("/versions/create", registryH.VersionCreate)
+		registry.POST("/versions/get", registryH.VersionGet)
+		registry.POST("/versions/list", registryH.VersionList)
+		registry.POST("/versions/delete", registryH.VersionDelete)
+		registry.POST("/versions/tree", registryH.VersionTree)
+		registry.POST("/versions/file/read", registryH.VersionFileRead)
+		registry.POST("/versions/file/write", registryH.VersionFileWrite)
+		registry.POST("/versions/file/update", registryH.VersionFileUpdate)
+		registry.POST("/versions/file/mkdir", registryH.VersionFileMkdir)
+		registry.POST("/versions/file/delete", registryH.VersionFileDelete)
+		registry.POST("/activate", registryH.Activate)
+		registry.POST("/commit", registryH.Commit)
 	}
 
+	// Agent skills
+	skillH := handler.NewSkillHandler(mgr)
 	agents := r.Group("/v1/skills/agents", auditMW)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
@@ -515,14 +526,11 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create a skill in global store
-	_, err := cli.SkillCreate("test", "test skill")
-	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
-	}
+	// Create and deploy a skill via registry
+	createAndDeploySkill(t, cli, "test", "test skill")
 
 	// Load it into agent's local cache
-	_, err = cli.SkillAgentLoad("a1", []string{"test"})
+	_, err := cli.SkillAgentLoad("a1", []string{"test"})
 	if err != nil {
 		t.Fatalf("SkillAgentLoad failed: %v", err)
 	}
@@ -597,27 +605,58 @@ func TestCodeExecuteUnsupportedLang(t *testing.T) {
 }
 
 // =============================================
-// Skill tests
+// Skill tests (via registry)
 // =============================================
+
+// createAndDeploySkill is a test helper that creates a skill via registry
+// and activates it so it's available for agent operations.
+func createAndDeploySkill(t *testing.T, cli *Client, name, description string) {
+	t.Helper()
+
+	// Create registry entry
+	_, err := cli.RegistrySkillCreate(name, description)
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate %s failed: %v", name, err)
+	}
+
+	// Create version
+	vcResult, err := cli.RegistryVersionCreate(name, "", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate %s failed: %v", name, err)
+	}
+
+	// Write SKILLS.md to version
+	mdContent := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n%s skill content.", name, description, name)
+	_, err = cli.RegistryVersionFileWrite(name, vcResult.Version.Version, "SKILLS.md", mdContent)
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite SKILLS.md for %s failed: %v", name, err)
+	}
+
+	// Activate version
+	_, err = cli.RegistryActivate(name, vcResult.Version.Version)
+	if err != nil {
+		t.Fatalf("RegistryActivate %s failed: %v", name, err)
+	}
+}
 
 func TestSkillCreateAndList(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create two skills
-	_, err := cli.SkillCreate("skill-a", "First skill")
+	// Create two skills via registry
+	_, err := cli.RegistrySkillCreate("skill-a", "First skill")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate skill-a failed: %v", err)
 	}
-	_, err = cli.SkillCreate("skill-b", "Second skill")
+	_, err = cli.RegistrySkillCreate("skill-b", "Second skill")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate skill-b failed: %v", err)
 	}
 
-	// List all skills
-	result, err := cli.SkillList()
+	// List all skills via registry
+	result, err := cli.RegistrySkillList()
 	if err != nil {
-		t.Fatalf("SkillList failed: %v", err)
+		t.Fatalf("RegistrySkillList failed: %v", err)
 	}
 	if len(result.Skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d", len(result.Skills))
@@ -633,10 +672,10 @@ func TestSkillImportAndLoad(t *testing.T) {
 		"script.sh": "echo hello",
 	})
 
-	// Import from ZIP
-	_, err := cli.SkillImport("imported-skill", zipURL)
+	// Import from ZIP via registry
+	_, err := cli.RegistryImport("imported-skill", zipURL)
 	if err != nil {
-		t.Fatalf("SkillImport failed: %v", err)
+		t.Fatalf("RegistryImport failed: %v", err)
 	}
 
 	// Load into agent
@@ -656,58 +695,65 @@ func TestSkillFileOperations(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create skill
-	_, err := cli.SkillCreate("file-test", "test file ops")
+	// Create skill via registry
+	_, err := cli.RegistrySkillCreate("file-test", "test file ops")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	// Write a file
-	writeResult, err := cli.SkillFileWrite("file-test", "test.txt", "hello world")
+	// Create version
+	vcResult, err := cli.RegistryVersionCreate("file-test", "", false)
 	if err != nil {
-		t.Fatalf("SkillFileWrite failed: %v", err)
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+	version := vcResult.Version.Version
+
+	// Write a file
+	writeResult, err := cli.RegistryVersionFileWrite("file-test", version, "test.txt", "hello world")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
 	}
 	if writeResult.BytesWritten == 0 {
 		t.Error("expected non-zero bytes written")
 	}
 
 	// Read the file
-	readResult, err := cli.SkillFileRead("file-test", "test.txt")
+	readResult, err := cli.RegistryVersionFileRead("file-test", version, "test.txt")
 	if err != nil {
-		t.Fatalf("SkillFileRead failed: %v", err)
+		t.Fatalf("RegistryVersionFileRead failed: %v", err)
 	}
 	if readResult.Content != "hello world" {
 		t.Errorf("expected 'hello world', got %q", readResult.Content)
 	}
 
 	// Update (replace)
-	updateResult, err := cli.SkillFileUpdate("file-test", "test.txt", "hello", "goodbye")
+	updateResult, err := cli.RegistryVersionFileUpdate("file-test", version, "test.txt", "hello", "goodbye")
 	if err != nil {
-		t.Fatalf("SkillFileUpdate failed: %v", err)
+		t.Fatalf("RegistryVersionFileUpdate failed: %v", err)
 	}
 	if updateResult.ReplacedCount != 1 {
 		t.Errorf("expected 1 replacement, got %d", updateResult.ReplacedCount)
 	}
 
 	// Verify content after update
-	readResult2, _ := cli.SkillFileRead("file-test", "test.txt")
+	readResult2, _ := cli.RegistryVersionFileRead("file-test", version, "test.txt")
 	if readResult2.Content != "goodbye world" {
 		t.Errorf("expected 'goodbye world', got %q", readResult2.Content)
 	}
 
 	// Create a directory
-	mkdirResult, err := cli.SkillFileMkdir("file-test", "subdir")
+	mkdirResult, err := cli.RegistryVersionFileMkdir("file-test", version, "subdir")
 	if err != nil {
-		t.Fatalf("SkillFileMkdir failed: %v", err)
+		t.Fatalf("RegistryVersionFileMkdir failed: %v", err)
 	}
 	if mkdirResult.Path != "subdir" {
 		t.Errorf("expected path 'subdir', got %q", mkdirResult.Path)
 	}
 
 	// Get tree
-	treeResult, err := cli.SkillTree("file-test")
+	treeResult, err := cli.RegistryVersionTree("file-test", version)
 	if err != nil {
-		t.Fatalf("SkillTree failed: %v", err)
+		t.Fatalf("RegistryVersionTree failed: %v", err)
 	}
 	if len(treeResult.Files) == 0 {
 		t.Error("expected non-empty tree")
@@ -718,10 +764,7 @@ func TestSkillAgentList(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("list-test", "A list test skill")
-	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
-	}
+	createAndDeploySkill(t, cli, "list-test", "A list test skill")
 
 	result, err := cli.SkillAgentList("a1", []string{"list-test"})
 	if err != nil {
@@ -764,9 +807,9 @@ func TestSkillAgentLoadBody(t *testing.T) {
 		"SKILLS.MD": "---\nname: body-test\ndescription: test\n---\n## Usage\nDo stuff.",
 	})
 
-	_, err := cli.SkillImport("body-test", zipURL)
+	_, err := cli.RegistryImport("body-test", zipURL)
 	if err != nil {
-		t.Fatalf("SkillImport failed: %v", err)
+		t.Fatalf("RegistryImport failed: %v", err)
 	}
 
 	result, err := cli.SkillAgentLoad("a1", []string{"body-test"})
@@ -1171,27 +1214,6 @@ func TestAuditLogFileUpload(t *testing.T) {
 	}
 }
 
-func TestAuditLogSkillsFallback(t *testing.T) {
-	cli, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	// Skills routes have auditMW but no agent_id/session_id in body,
-	// so entries should go to fallback log, not per-session files.
-	_, err := cli.SkillCreate("audit-skill", "test")
-	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
-	}
-
-	// No per-session audit should exist
-	logs, err := cli.SessionGetAuditLogs("nonexistent-agent", "nonexistent-session", 0, 100)
-	if err != nil {
-		t.Fatalf("SessionGetAuditLogs failed: %v", err)
-	}
-	if logs.Total != 0 {
-		t.Errorf("expected 0 per-session audit entries for skills (should go to fallback), got %d", logs.Total)
-	}
-}
-
 func TestAuditLogEntryFields(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
@@ -1344,21 +1366,21 @@ func TestFileWriteWithNewlines(t *testing.T) {
 }
 
 // =============================================
-// New skill API tests
+// Registry skill API tests
 // =============================================
 
-func TestSkillGetViaClient(t *testing.T) {
+func TestRegistrySkillGetViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("get-test", "A get test skill")
+	_, err := cli.RegistrySkillCreate("get-test", "A get test skill")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	result, err := cli.SkillGet("get-test")
+	result, err := cli.RegistrySkillGet("get-test")
 	if err != nil {
-		t.Fatalf("SkillGet failed: %v", err)
+		t.Fatalf("RegistrySkillGet failed: %v", err)
 	}
 	if result.Skill.Name != "get-test" {
 		t.Errorf("expected name 'get-test', got %s", result.Skill.Name)
@@ -1368,11 +1390,11 @@ func TestSkillGetViaClient(t *testing.T) {
 	}
 }
 
-func TestSkillGetNotFoundViaClient(t *testing.T) {
+func TestRegistrySkillGetNotFoundViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillGet("nonexistent")
+	_, err := cli.RegistrySkillGet("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill")
 	}
@@ -1381,80 +1403,93 @@ func TestSkillGetNotFoundViaClient(t *testing.T) {
 	}
 }
 
-func TestSkillUpdateViaClient(t *testing.T) {
+func TestRegistrySkillUpdateViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("upd-test", "original")
+	_, err := cli.RegistrySkillCreate("upd-test", "original")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	result, err := cli.SkillUpdate("upd-test", "updated desc")
+	result, err := cli.RegistrySkillUpdate("upd-test", "updated desc")
 	if err != nil {
-		t.Fatalf("SkillUpdate failed: %v", err)
+		t.Fatalf("RegistrySkillUpdate failed: %v", err)
 	}
 	if result.Skill.Description != "updated desc" {
 		t.Errorf("expected 'updated desc', got %s", result.Skill.Description)
 	}
 
 	// Verify via get
-	getResult, _ := cli.SkillGet("upd-test")
+	getResult, _ := cli.RegistrySkillGet("upd-test")
 	if getResult.Skill.Description != "updated desc" {
 		t.Errorf("get after update: expected 'updated desc', got %s", getResult.Skill.Description)
 	}
 }
 
-func TestSkillRenameViaClient(t *testing.T) {
+func TestRegistrySkillRenameViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("rename-old", "rename test")
+	_, err := cli.RegistrySkillCreate("rename-old", "rename test")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	result, err := cli.SkillRename("rename-old", "rename-new")
+	result, err := cli.RegistrySkillRename("rename-old", "rename-new")
 	if err != nil {
-		t.Fatalf("SkillRename failed: %v", err)
+		t.Fatalf("RegistrySkillRename failed: %v", err)
 	}
 	if result.Skill.Name != "rename-new" {
 		t.Errorf("expected name 'rename-new', got %s", result.Skill.Name)
 	}
 
 	// Old name should not exist
-	_, err = cli.SkillGet("rename-old")
+	_, err = cli.RegistrySkillGet("rename-old")
 	if err == nil {
 		t.Error("expected error for old name after rename")
 	}
 
 	// New name should exist
-	getResult, err := cli.SkillGet("rename-new")
+	getResult, err := cli.RegistrySkillGet("rename-new")
 	if err != nil {
-		t.Fatalf("SkillGet after rename failed: %v", err)
+		t.Fatalf("RegistrySkillGet after rename failed: %v", err)
 	}
 	if getResult.Skill.Name != "rename-new" {
 		t.Errorf("expected 'rename-new', got %s", getResult.Skill.Name)
 	}
 }
 
-func TestSkillExportViaClient(t *testing.T) {
+func TestRegistrySkillExportViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("export-test", "export test")
+	_, err := cli.RegistrySkillCreate("export-test", "export test")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	_, err = cli.SkillFileWrite("export-test", "data.txt", "export data")
+	// Create version with file
+	vcResult, err := cli.RegistryVersionCreate("export-test", "", false)
 	if err != nil {
-		t.Fatalf("SkillFileWrite failed: %v", err)
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
 	}
 
-	body, err := cli.SkillExport("export-test")
+	_, err = cli.RegistryVersionFileWrite("export-test", vcResult.Version.Version, "data.txt", "export data")
 	if err != nil {
-		t.Fatalf("SkillExport failed: %v", err)
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
+	}
+
+	// Activate
+	_, err = cli.RegistryActivate("export-test", vcResult.Version.Version)
+	if err != nil {
+		t.Fatalf("RegistryActivate failed: %v", err)
+	}
+
+	// Export
+	body, err := cli.RegistryExport("export-test")
+	if err != nil {
+		t.Fatalf("RegistryExport failed: %v", err)
 	}
 	defer body.Close()
 
@@ -1476,46 +1511,49 @@ func TestSkillExportViaClient(t *testing.T) {
 	if !fileNames["data.txt"] {
 		t.Error("ZIP should contain data.txt")
 	}
-	if fileNames["_meta.json"] {
-		t.Error("ZIP should NOT contain _meta.json")
-	}
 }
 
-func TestSkillCopyViaClient(t *testing.T) {
+func TestRegistrySkillCopyViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	_, err := cli.SkillCreate("copy-src", "copy test")
+	_, err := cli.RegistrySkillCreate("copy-src", "copy test")
 	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	_, err = cli.SkillFileWrite("copy-src", "file.txt", "copied content")
+	// Create version with file
+	vcResult, err := cli.RegistryVersionCreate("copy-src", "", false)
 	if err != nil {
-		t.Fatalf("SkillFileWrite failed: %v", err)
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
 	}
 
-	result, err := cli.SkillCopy("copy-src", "copy-dst")
+	_, err = cli.RegistryVersionFileWrite("copy-src", vcResult.Version.Version, "file.txt", "copied content")
 	if err != nil {
-		t.Fatalf("SkillCopy failed: %v", err)
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
+	}
+
+	result, err := cli.RegistrySkillCopy("copy-src", "copy-dst")
+	if err != nil {
+		t.Fatalf("RegistrySkillCopy failed: %v", err)
 	}
 	if result.Skill.Name != "copy-dst" {
 		t.Errorf("expected name 'copy-dst', got %s", result.Skill.Name)
 	}
 
 	// Verify source still exists
-	_, err = cli.SkillGet("copy-src")
+	_, err = cli.RegistrySkillGet("copy-src")
 	if err != nil {
 		t.Errorf("source should still exist: %v", err)
 	}
 
-	// Verify destination has the file
-	readResult, err := cli.SkillFileRead("copy-dst", "file.txt")
+	// Verify destination has the version with file
+	dstResult, err := cli.RegistrySkillGet("copy-dst")
 	if err != nil {
-		t.Fatalf("SkillFileRead on copy failed: %v", err)
+		t.Fatalf("RegistrySkillGet on copy failed: %v", err)
 	}
-	if readResult.Content != "copied content" {
-		t.Errorf("expected 'copied content', got %q", readResult.Content)
+	if len(dstResult.Skill.Versions) == 0 {
+		t.Error("expected at least one version in copied skill")
 	}
 }
 
@@ -1523,13 +1561,9 @@ func TestSkillAgentCacheDeleteViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create and load skills
-	for _, name := range []string{"cd-a", "cd-b"} {
-		_, err := cli.SkillCreate(name, "test")
-		if err != nil {
-			t.Fatalf("SkillCreate failed: %v", err)
-		}
-	}
+	// Create and deploy skills
+	createAndDeploySkill(t, cli, "cd-a", "test")
+	createAndDeploySkill(t, cli, "cd-b", "test")
 
 	_, err := cli.SkillAgentLoad("cd-agent", []string{"cd-a", "cd-b"})
 	if err != nil {
@@ -1559,12 +1593,8 @@ func TestSkillAgentLoadWithCleanupViaClient(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	for _, name := range []string{"cl-keep", "cl-remove"} {
-		_, err := cli.SkillCreate(name, "test")
-		if err != nil {
-			t.Fatalf("SkillCreate failed: %v", err)
-		}
-	}
+	createAndDeploySkill(t, cli, "cl-keep", "test")
+	createAndDeploySkill(t, cli, "cl-remove", "test")
 
 	// Load both
 	_, err := cli.SkillAgentLoad("cl-agent", []string{"cl-keep", "cl-remove"})
@@ -1586,70 +1616,67 @@ func TestSkillAgentLoadWithCleanupViaClient(t *testing.T) {
 }
 
 // =============================================
-// DisableSessionIsolation & SkillsWritable tests
+// EnableAgentWorkspace tests
 // =============================================
 
-func TestClient_FileWrite_DisableSessionIsolation(t *testing.T) {
+func TestClient_FileWrite_AgentWorkspace(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Write a file with session isolation disabled — goes to workspace dir
+	// Write a file with agent workspace enabled — goes to workspace dir
 	_, err := cli.FileWrite("a1", "dsi-s1", "/shared.txt", "cross-session data",
-		WithFileWriteDisableSessionIsolation(),
+		WithFileWriteAgentWorkspace(),
 	)
 	if err != nil {
-		t.Fatalf("FileWrite with DisableSessionIsolation failed: %v", err)
+		t.Fatalf("FileWrite with AgentWorkspace failed: %v", err)
 	}
 
-	// Read it back from a different session, also with isolation disabled
+	// Read it back from a different session, also with workspace enabled
 	result, err := cli.FileRead("a1", "dsi-s2", "/shared.txt",
-		WithFileReadDisableSessionIsolation(),
+		WithFileReadAgentWorkspace(),
 	)
 	if err != nil {
-		t.Fatalf("FileRead with DisableSessionIsolation from different session failed: %v", err)
+		t.Fatalf("FileRead with AgentWorkspace from different session failed: %v", err)
 	}
 	if result.Content != "cross-session data" {
 		t.Errorf("expected 'cross-session data', got %q", result.Content)
 	}
 
-	// The file should NOT be visible without DisableSessionIsolation (different session)
+	// The file should NOT be visible without AgentWorkspace (different session)
 	_, err = cli.FileRead("a1", "dsi-s2", "/shared.txt")
 	if err == nil {
-		t.Error("expected error reading workspace file from different session without DisableSessionIsolation")
+		t.Error("expected error reading workspace file from different session without AgentWorkspace")
 	}
 }
 
-func TestClient_FileWrite_SkillsWritable(t *testing.T) {
+func TestClient_FileWrite_AgentWorkspace_Skills(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create a skill in global store
-	_, err := cli.SkillCreate("sw-test", "skills writable test")
-	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
-	}
+	// Create and deploy a skill via registry
+	createAndDeploySkill(t, cli, "sw-test", "agent workspace test")
 
 	// Load it into agent's local cache
-	_, err = cli.SkillAgentLoad("a1", []string{"sw-test"})
+	_, err := cli.SkillAgentLoad("a1", []string{"sw-test"})
 	if err != nil {
 		t.Fatalf("SkillAgentLoad failed: %v", err)
 	}
 
-	// Write to skills path without SkillsWritable — should fail with 403
+	// Write to skills path without AgentWorkspace — should fail with 403
 	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "blocked")
 	if err == nil {
-		t.Error("expected write to skills without SkillsWritable to be blocked")
+		t.Error("expected write to skills without AgentWorkspace to be blocked")
 	}
 	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 error, got %v", err)
 	}
 
-	// Write to skills path WITH SkillsWritable — should succeed
+	// Write to skills path WITH AgentWorkspace — should succeed
 	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "allowed",
-		WithSkillsWritable(),
+		WithFileWriteAgentWorkspace(),
 	)
 	if err != nil {
-		t.Fatalf("FileWrite with SkillsWritable failed: %v", err)
+		t.Fatalf("FileWrite with AgentWorkspace failed: %v", err)
 	}
 
 	// Read back and verify content
@@ -1662,16 +1689,16 @@ func TestClient_FileWrite_SkillsWritable(t *testing.T) {
 	}
 }
 
-func TestClient_BashExec_DisableSessionIsolation(t *testing.T) {
+func TestClient_BashExec_AgentWorkspace(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Exec pwd with session isolation disabled — working dir should be workspace, not sessions
+	// Exec pwd with agent workspace enabled — working dir should be workspace, not sessions
 	result, err := cli.BashExec("a1", "dsi-bash1", "pwd",
-		WithDisableSessionIsolation(),
+		WithAgentWorkspace(),
 	)
 	if err != nil {
-		t.Fatalf("BashExec with DisableSessionIsolation failed: %v", err)
+		t.Fatalf("BashExec with AgentWorkspace failed: %v", err)
 	}
 	if result.Stdout == nil {
 		t.Fatal("expected non-nil stdout")
@@ -1686,15 +1713,12 @@ func TestClient_BashExec_DisableSessionIsolation(t *testing.T) {
 	}
 }
 
-func TestClient_SkillAgentList_SkillsWritable(t *testing.T) {
+func TestClient_SkillAgentList_AgentWorkspace(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Create a skill and write a SKILLS.md with specific content
-	_, err := cli.SkillCreate("wlist-test", "writable list test")
-	if err != nil {
-		t.Fatalf("SkillCreate failed: %v", err)
-	}
+	// Create and deploy a skill via registry
+	createAndDeploySkill(t, cli, "wlist-test", "agent workspace list test")
 
 	// Load into agent cache (syncs from global)
 	loadResult, err := cli.SkillAgentLoad("a1", []string{"wlist-test"})
@@ -1705,19 +1729,12 @@ func TestClient_SkillAgentList_SkillsWritable(t *testing.T) {
 		t.Fatalf("expected 1 skill loaded, got %d", len(loadResult.Skills))
 	}
 
-	// Modify the global skill's content
-	_, err = cli.SkillFileWrite("wlist-test", "SKILLS.md",
-		"---\nname: wlist-test\ndescription: modified globally\n---\nGlobal version content.")
-	if err != nil {
-		t.Fatalf("SkillFileWrite to modify global skill failed: %v", err)
-	}
-
-	// List with SkillsWritable=true — should return local (cached) version, not synced from global
+	// List with AgentWorkspace=true — should return local (cached) version, not synced from global
 	listResult, err := cli.SkillAgentList("a1", []string{"wlist-test"},
-		WithAgentSkillsWritable(),
+		WithAgentSkillWorkspace(),
 	)
 	if err != nil {
-		t.Fatalf("SkillAgentList with SkillsWritable failed: %v", err)
+		t.Fatalf("SkillAgentList with AgentWorkspace failed: %v", err)
 	}
 	if len(listResult.Skills) != 1 {
 		t.Fatalf("expected 1 skill in list, got %d", len(listResult.Skills))
@@ -1725,12 +1742,6 @@ func TestClient_SkillAgentList_SkillsWritable(t *testing.T) {
 	s := listResult.Skills[0]
 	if s.Name != "wlist-test" {
 		t.Errorf("expected name 'wlist-test', got %s", s.Name)
-	}
-
-	// The local version's frontmatter should NOT contain "modified globally"
-	// because SkillsWritable skips the global→local sync
-	if strings.Contains(s.Frontmatter, "modified globally") {
-		t.Errorf("expected local version frontmatter (not synced from global), got %q", s.Frontmatter)
 	}
 }
 

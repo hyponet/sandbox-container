@@ -33,7 +33,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	}
 
 	var workingDir string
-	if req.DisableSessionIsolation {
+	if req.EnableAgentWorkspace {
 		h.mgr.TouchWorkspace(req.AgentID)
 		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
 	} else {
@@ -41,7 +41,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
 	}
 	if req.Cwd != nil && *req.Cwd != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.DisableSessionIsolation)
+		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.EnableAgentWorkspace)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return

@@ -622,18 +622,18 @@ func TestFileWriteMissingRequired(t *testing.T) {
 	}
 }
 
-func TestFileWrite_DisableSessionIsolation(t *testing.T) {
+func TestFileWrite_AgentWorkspace(t *testing.T) {
 	r, mgr := setupRouter()
 
-	// Write with disable_session_isolation=true
-	body := `{"agent_id": "a1", "session_id": "test_dsi", "file": "/workspace-file.txt", "content": "in workspace", "disable_session_isolation": true}`
+	// Write with enable_agent_workspace=true
+	body := `{"agent_id": "a1", "session_id": "test_dsi", "file": "/workspace-file.txt", "content": "in workspace", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("write with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("write with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	// Verify the file exists in the workspace directory, not the session directory
@@ -650,11 +650,11 @@ func TestFileWrite_DisableSessionIsolation(t *testing.T) {
 	sessionRoot := mgr.SessionRoot("a1", "test_dsi")
 	_, err = os.Stat(filepath.Join(sessionRoot, "workspace-file.txt"))
 	if err == nil {
-		t.Error("file should NOT exist in session directory when disable_sessionIsolation is true")
+		t.Error("file should NOT exist in session directory when enable_agent_workspace is true")
 	}
 }
 
-func TestFileRead_DisableSessionIsolation(t *testing.T) {
+func TestFileRead_AgentWorkspace(t *testing.T) {
 	r, mgr := setupRouter()
 
 	// Pre-create a file in the workspace directory
@@ -662,15 +662,15 @@ func TestFileRead_DisableSessionIsolation(t *testing.T) {
 	os.MkdirAll(wsRoot, 0755)
 	os.WriteFile(filepath.Join(wsRoot, "ws-read-test.txt"), []byte("workspace content"), 0644)
 
-	// Read with disable_session_isolation=true
-	body := `{"agent_id": "a1", "session_id": "test_dsi_read", "file": "/ws-read-test.txt", "disable_session_isolation": true}`
+	// Read with enable_agent_workspace=true
+	body := `{"agent_id": "a1", "session_id": "test_dsi_read", "file": "/ws-read-test.txt", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("read with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("read with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]interface{}
@@ -681,22 +681,22 @@ func TestFileRead_DisableSessionIsolation(t *testing.T) {
 	}
 }
 
-func TestFileWrite_SkillsWritable(t *testing.T) {
+func TestFileWrite_AgentWorkspace_Skills(t *testing.T) {
 	r, mgr := setupRouter()
 
 	// Pre-create the skills directory with a skill
 	skillsDir := mgr.SkillsRoot("a1")
 	os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0755)
 
-	// Write to skills path with skills_writable=true
-	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/skills/my-skill/new-file.txt", "content": "skill data", "skills_writable": true}`
+	// Write to skills path with enable_agent_workspace=true
+	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/skills/my-skill/new-file.txt", "content": "skill data", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("write to skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("write to skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	// Verify the file was created in the skills directory
@@ -709,7 +709,7 @@ func TestFileWrite_SkillsWritable(t *testing.T) {
 	}
 }
 
-func TestFileReplace_SkillsWritable(t *testing.T) {
+func TestFileReplace_AgentWorkspace_Skills(t *testing.T) {
 	r, mgr := setupRouter()
 
 	// Pre-create a skill file in the skills directory
@@ -717,15 +717,15 @@ func TestFileReplace_SkillsWritable(t *testing.T) {
 	os.MkdirAll(filepath.Join(skillsDir, "replace-skill"), 0755)
 	os.WriteFile(filepath.Join(skillsDir, "replace-skill", "config.txt"), []byte("foo bar foo"), 0644)
 
-	// Replace in skills path with skills_writable=true
-	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "skills_writable": true}`
+	// Replace in skills path with enable_agent_workspace=true
+	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("replace in skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("replace in skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]interface{}
@@ -745,7 +745,7 @@ func TestFileReplace_SkillsWritable(t *testing.T) {
 	}
 }
 
-func TestFileUpload_DisableSessionIsolation(t *testing.T) {
+func TestFileUpload_AgentWorkspace(t *testing.T) {
 	r, mgr := setupRouter()
 
 	var buf bytes.Buffer
@@ -753,7 +753,7 @@ func TestFileUpload_DisableSessionIsolation(t *testing.T) {
 	writer.WriteField("agent_id", "a1")
 	writer.WriteField("session_id", "test_dsi_upload")
 	writer.WriteField("path", "/upload-ws.txt")
-	writer.WriteField("disable_session_isolation", "true")
+	writer.WriteField("enable_agent_workspace", "true")
 	part, _ := writer.CreateFormFile("file", "test.txt")
 	part.Write([]byte("uploaded in workspace mode"))
 	writer.Close()
@@ -764,7 +764,7 @@ func TestFileUpload_DisableSessionIsolation(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("upload with disable_session_isolation failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("upload with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	// Verify the file landed in the workspace directory
@@ -778,7 +778,7 @@ func TestFileUpload_DisableSessionIsolation(t *testing.T) {
 	}
 }
 
-func TestFileUpload_SkillsWritable(t *testing.T) {
+func TestFileUpload_AgentWorkspace_Skills(t *testing.T) {
 	r, mgr := setupRouter()
 
 	// Pre-create skills directory
@@ -790,7 +790,7 @@ func TestFileUpload_SkillsWritable(t *testing.T) {
 	writer.WriteField("agent_id", "a1")
 	writer.WriteField("session_id", "test_sw_upload")
 	writer.WriteField("path", "/skills/upload-skill/uploaded.txt")
-	writer.WriteField("skills_writable", "true")
+	writer.WriteField("enable_agent_workspace", "true")
 	part, _ := writer.CreateFormFile("file", "test.txt")
 	part.Write([]byte("uploaded to skills"))
 	writer.Close()
@@ -801,7 +801,7 @@ func TestFileUpload_SkillsWritable(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("upload to skills with skills_writable failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("upload to skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	// Verify the file was created in the skills directory
@@ -814,25 +814,26 @@ func TestFileUpload_SkillsWritable(t *testing.T) {
 	}
 }
 
-func TestFileWrite_BothFlags(t *testing.T) {
+// TestFileWrite_AgentWorkspace_SkillsAndWorkspace verifies that enable_agent_workspace=true
+// enables both skills writing and workspace-mode path resolution in a single flag.
+func TestFileWrite_AgentWorkspace_SkillsAndWorkspace(t *testing.T) {
 	r, mgr := setupRouter()
 
 	// Pre-create skills directory
 	skillsDir := mgr.SkillsRoot("a1")
 	os.MkdirAll(filepath.Join(skillsDir, "both-skill"), 0755)
 
-	// Write with both disable_session_isolation and skills_writable enabled
-	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/skills/both-skill/combined.txt", "content": "both flags", "disable_session_isolation": true, "skills_writable": true}`
+	// Write to skills path with enable_agent_workspace — should allow skills write
+	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/skills/both-skill/combined.txt", "content": "both flags", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("write with both flags failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("write skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
-	// Verify the file was created in the skills directory
 	data, err := os.ReadFile(filepath.Join(skillsDir, "both-skill", "combined.txt"))
 	if err != nil {
 		t.Fatalf("file not found in skills dir: %v", err)
@@ -841,15 +842,15 @@ func TestFileWrite_BothFlags(t *testing.T) {
 		t.Errorf("expected 'both flags', got %q", string(data))
 	}
 
-	// Also verify workspace mode works for a non-skills path with both flags
-	body = `{"agent_id": "a1", "session_id": "test_both", "file": "/workspace-both.txt", "content": "ws with both", "disable_session_isolation": true, "skills_writable": true}`
+	// Write to a non-skills path — should resolve to workspace dir, not session dir
+	body = `{"agent_id": "a1", "session_id": "test_both", "file": "/workspace-both.txt", "content": "ws with both", "enable_agent_workspace": true}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("write workspace file with both flags failed: %d %s", w.Code, w.Body.String())
+		t.Fatalf("write workspace file with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
 	}
 
 	wsRoot := mgr.WorkspaceRoot("a1")
@@ -859,5 +860,46 @@ func TestFileWrite_BothFlags(t *testing.T) {
 	}
 	if string(data) != "ws with both" {
 		t.Errorf("expected 'ws with both', got %q", string(data))
+	}
+}
+
+// TestFileDownload_AgentWorkspace verifies download from workspace dir with enable_agent_workspace.
+func TestFileDownload_AgentWorkspace(t *testing.T) {
+	r, mgr := setupRouter()
+
+	// Pre-create a file in the workspace directory
+	wsRoot := mgr.WorkspaceRoot("a1")
+	os.MkdirAll(wsRoot, 0755)
+	os.WriteFile(filepath.Join(wsRoot, "dl-test.txt"), []byte("download me"), 0644)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/file/download?agent_id=a1&session_id=dl_ws&path=/dl-test.txt&enable_agent_workspace=true", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("download with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "download me" {
+		t.Errorf("expected 'download me', got %q", w.Body.String())
+	}
+}
+
+// TestFileWrite_SkillsReadOnly_Default verifies skills are read-only when enable_agent_workspace is false.
+func TestFileWrite_SkillsReadOnly_Default(t *testing.T) {
+	r, mgr := setupRouter()
+
+	skillsDir := mgr.SkillsRoot("a1")
+	os.MkdirAll(filepath.Join(skillsDir, "ro-skill"), 0755)
+
+	// Write to skills path WITHOUT enable_agent_workspace — should be blocked
+	body := `{"agent_id": "a1", "session_id": "test_ro", "file": "/skills/ro-skill/blocked.txt", "content": "nope"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for skills write without enable_agent_workspace, got %d", w.Code)
 	}
 }

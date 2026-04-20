@@ -209,28 +209,30 @@ RUN pip3 install --no-cache-dir \
 RUN npm cache clean --force
 
 # ---------------------------------------------------------------------------
-# 8. Create non-root user (gem) for sandbox operations
+# 8. Create non-root user (sbox) for sandbox operations
 # ---------------------------------------------------------------------------
-RUN groupadd -r gem && \
-    useradd -r -m -d /home/gem -s /bin/bash -g gem gem && \
-    echo "gem ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN groupadd -r sbox && \
+    useradd -r -m -d /home/sbox -s /bin/bash -g sbox sbox && \
+    echo "sbox ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # ---------------------------------------------------------------------------
 # 9. Create required directories
 # ---------------------------------------------------------------------------
 RUN mkdir -p /data/agents \
     && mkdir -p /data/skills \
+    && mkdir -p /data/skill-registry \
     && mkdir -p /var/log/sandbox \
-    && mkdir -p /home/gem/.local/bin \
-    && mkdir -p /home/gem/.npm-global \
-    && chown -R gem:gem /data/agents \
-    && chown -R gem:gem /data/skills \
-    && chown -R gem:gem /var/log/sandbox \
-    && chown -R gem:gem /home/gem
+    && mkdir -p /home/sbox/.local/bin \
+    && mkdir -p /home/sbox/.npm-global \
+    && chown -R sbox:sbox /data/agents \
+    && chown -R sbox:sbox /data/skills \
+    && chown -R sbox:sbox /data/skill-registry \
+    && chown -R sbox:sbox /var/log/sandbox \
+    && chown -R sbox:sbox /home/sbox
 
-# npm global prefix for gem user
-ENV NPM_CONFIG_PREFIX=/home/gem/.npm-global
-ENV PATH="/home/gem/.npm-global/bin:/home/gem/.local/bin:/usr/local/bin:${PATH}"
+# npm global prefix for sbox user
+ENV NPM_CONFIG_PREFIX=/home/sbox/.npm-global
+ENV PATH="/home/sbox/.npm-global/bin:/home/sbox/.local/bin:/usr/local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
 # 10. Copy Go binary from builder stage
@@ -241,8 +243,8 @@ RUN chmod +x /usr/local/bin/sandbox-server
 # ---------------------------------------------------------------------------
 # 11. Runtime configuration
 # ---------------------------------------------------------------------------
-USER gem
-WORKDIR /home/gem
+USER sbox
+WORKDIR /home/sbox
 
 EXPOSE 9090
 

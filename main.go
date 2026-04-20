@@ -71,26 +71,44 @@ func main() {
 	if err := os.MkdirAll(session.DefaultGlobalSkills, 0755); err != nil {
 		log.Fatalf("Failed to create global skills directory %s: %v", session.DefaultGlobalSkills, err)
 	}
+	if err := os.MkdirAll(session.DefaultRegistryRoot, 0755); err != nil {
+		log.Fatalf("Failed to create skill registry directory %s: %v", session.DefaultRegistryRoot, err)
+	}
 	skillH := handler.NewSkillHandler(mgr)
-	skills := r.Group("/v1/skills", auth, auditMW)
+
+	// Skill Registry APIs
+	registryH := handler.NewRegistryHandler(mgr)
+	registry := r.Group("/v1/registry", auth, auditMW)
 	{
-		// Global skill management
-		skills.POST("/create", skillH.Create)
-		skills.POST("/get", skillH.Get)
-		skills.POST("/update", skillH.Update)
-		skills.POST("/rename", skillH.Rename)
-		skills.POST("/import", skillH.Import)
-		skills.POST("/list", skillH.ListGlobal)
-		skills.POST("/delete", skillH.Delete)
-		skills.POST("/tree", skillH.Tree)
-		skills.POST("/copy", skillH.Copy)
-		skills.GET("/export", skillH.Export)
-		skills.POST("/file/read", skillH.FileRead)
-		skills.POST("/file/write", skillH.FileWrite)
-		skills.POST("/file/update", skillH.FileUpdate)
-		skills.POST("/file/mkdir", skillH.FileMkdir)
-		skills.POST("/file/delete", skillH.FileDelete)
-		skills.POST("/import/upload", skillH.ImportUpload)
+		// Skill-level management
+		registry.POST("/create", registryH.Create)
+		registry.POST("/get", registryH.Get)
+		registry.POST("/update", registryH.Update)
+		registry.POST("/delete", registryH.Delete)
+		registry.POST("/list", registryH.List)
+		registry.POST("/rename", registryH.Rename)
+		registry.POST("/copy", registryH.Copy)
+		registry.POST("/import", registryH.Import)
+		registry.POST("/import/upload", registryH.ImportUpload)
+		registry.GET("/export", registryH.Export)
+
+		// Version management
+		registry.POST("/versions/create", registryH.VersionCreate)
+		registry.POST("/versions/get", registryH.VersionGet)
+		registry.POST("/versions/list", registryH.VersionList)
+		registry.POST("/versions/delete", registryH.VersionDelete)
+		registry.POST("/versions/tree", registryH.VersionTree)
+
+		// Version file operations
+		registry.POST("/versions/file/read", registryH.VersionFileRead)
+		registry.POST("/versions/file/write", registryH.VersionFileWrite)
+		registry.POST("/versions/file/update", registryH.VersionFileUpdate)
+		registry.POST("/versions/file/mkdir", registryH.VersionFileMkdir)
+		registry.POST("/versions/file/delete", registryH.VersionFileDelete)
+
+		// Activate and commit
+		registry.POST("/activate", registryH.Activate)
+		registry.POST("/commit", registryH.Commit)
 	}
 
 	// Agent skill APIs

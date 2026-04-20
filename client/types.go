@@ -361,6 +361,87 @@ type AgentSkillLoadResult struct {
 }
 
 // =============================================
+// Skill Registry types
+// =============================================
+
+type RegistryMetaJSON struct {
+	Name          string                `json:"name"`
+	Description   string                `json:"description"`
+	CreatedAt     int64                 `json:"created_at"`
+	UpdatedAt     int64                 `json:"updated_at"`
+	ActiveVersion string                `json:"active_version"`
+	Versions      []RegistryVersionEntry `json:"versions"`
+}
+
+type RegistryVersionEntry struct {
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	CreatedAt   int64  `json:"created_at"`
+	Source      string `json:"source"`
+}
+
+type RegistrySkillCreateResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillGetResult struct {
+	Skill       RegistryMetaJSON `json:"skill"`
+	Frontmatter string           `json:"frontmatter"`
+	Body        string           `json:"body"`
+}
+
+type RegistrySkillUpdateResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillListResult struct {
+	Skills []RegistryMetaJSON `json:"skills"`
+}
+
+type RegistrySkillRenameResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistrySkillCopyResult struct {
+	Skill RegistryMetaJSON `json:"skill"`
+}
+
+type RegistryVersionCreateResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+type RegistryVersionGetResult struct {
+	Version     RegistryVersionEntry `json:"version"`
+	Frontmatter string               `json:"frontmatter"`
+	Body        string               `json:"body"`
+}
+
+type RegistryVersionListResult struct {
+	Versions      []RegistryVersionEntry `json:"versions"`
+	ActiveVersion string                 `json:"active_version"`
+}
+
+type RegistryActivateResult struct {
+	Skill            RegistryMetaJSON     `json:"skill"`
+	ActivatedVersion RegistryVersionEntry `json:"activated_version"`
+}
+
+type RegistryCommitResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+type RegistryImportResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
+type RegistryImportUploadResult struct {
+	Skills []RegistryImportResult `json:"skills"`
+}
+
+// =============================================
 // Session management types
 // =============================================
 

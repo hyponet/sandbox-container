@@ -6,27 +6,76 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const maxResponseBody = 64 * 1024 * 1024 // 64MB
+
+const defaultAgentListCacheTTL = 5 * time.Minute
+
+type agentListCacheEntry struct {
+	result    *AgentSkillListResult
+	expiresAt time.Time
+}
 
 // Client is an HTTP client for the sandbox-container API.
 type Client struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+
+	agentListTTL    time.Duration
+	agentListMu     sync.Mutex
+	agentListCache  map[string]*agentListCacheEntry
+	agentListFlight singleflight.Group
+}
+
+// ClientOption configures optional Client behaviour.
+type ClientOption func(*Client)
+
+// WithAgentListCacheTTL overrides the default 5-minute TTL for SkillAgentList cache.
+func WithAgentListCacheTTL(d time.Duration) ClientOption {
+	return func(c *Client) { c.agentListTTL = d }
 }
 
 // NewClient creates a new Client pointing at the given base URL (e.g. "http://localhost:9090").
-func NewClient(baseURL string) *Client {
-	return &Client{
+func NewClient(baseURL string, opts ...ClientOption) *Client {
+	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		agentListTTL:   defaultAgentListCacheTTL,
+		agentListCache: make(map[string]*agentListCacheEntry),
 	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+// agentListCacheKey builds a cache key from the request parameters.
+func agentListCacheKey(agentID string, req *agentSkillRequest) string {
+	ids := make([]string, len(req.SkillIDs))
+	copy(ids, req.SkillIDs)
+	sort.Strings(ids)
+
+	var b strings.Builder
+	b.WriteString(agentID)
+	b.WriteByte('\x00')
+	b.WriteString(strings.Join(ids, "\x00"))
+	if req.Cleanup {
+		b.WriteString("\x00cleanup")
+	}
+	if req.EnableAgentWorkspace {
+		b.WriteString("\x00workspace")
+	}
+	return b.String()
 }
 
 // WithAPIKey sets the API key for authentication.
@@ -113,6 +162,29 @@ func (c *Client) post(path string, body interface{}, result interface{}) error {
 // get is a convenience wrapper for GET requests.
 func (c *Client) get(path string, result interface{}) error {
 	return c.doJSON(http.MethodGet, path, nil, result)
+}
+
+// evictExpiredAgentListCacheLocked removes expired entries from the cache.
+// Must be called with agentListMu held.
+func (c *Client) evictExpiredAgentListCacheLocked() {
+	now := time.Now()
+	for key, entry := range c.agentListCache {
+		if now.After(entry.expiresAt) {
+			delete(c.agentListCache, key)
+		}
+	}
+}
+
+// invalidateAgentListCache removes all cached SkillAgentList entries for the given agent.
+func (c *Client) invalidateAgentListCache(agentID string) {
+	prefix := agentID + "\x00"
+	c.agentListMu.Lock()
+	for key := range c.agentListCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.agentListCache, key)
+		}
+	}
+	c.agentListMu.Unlock()
 }
 
 // nullableString returns a pointer to s if non-empty, nil otherwise.

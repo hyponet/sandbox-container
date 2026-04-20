@@ -51,6 +51,7 @@ func setupRegistryRouter() (*gin.Engine, *session.Manager) {
 		registry.POST("/versions/get", registryH.VersionGet)
 		registry.POST("/versions/list", registryH.VersionList)
 		registry.POST("/versions/delete", registryH.VersionDelete)
+		registry.POST("/versions/clone", registryH.VersionClone)
 		registry.POST("/versions/tree", registryH.VersionTree)
 		registry.POST("/versions/file/read", registryH.VersionFileRead)
 		registry.POST("/versions/file/write", registryH.VersionFileWrite)
@@ -386,6 +387,177 @@ func TestRegistryVersionList(t *testing.T) {
 
 	if len(result.Versions) != 2 {
 		t.Errorf("expected 2 versions, got %d", len(result.Versions))
+	}
+}
+
+func TestRegistryVersionClone(t *testing.T) {
+	r, _ := setupRegistryRouter()
+
+	// Create skill
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "clone-skill"}`)
+
+	// Create a version
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "clone-skill", "description": "original"}`)
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var vc model.RegistryVersionCreateResult
+	json.Unmarshal(data, &vc)
+	srcVersion := vc.Version.Version
+
+	// Write a file to the source version
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "clone-skill", "version": "%s", "path": "test.txt", "content": "clone me"}`, srcVersion))
+
+	// Clone the version
+	w = doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		fmt.Sprintf(`{"name": "clone-skill", "version": "%s", "description": "cloned version"}`, srcVersion))
+	if w.Code != http.StatusOK {
+		t.Fatalf("version clone failed: %d %s", w.Code, w.Body.String())
+	}
+
+	resp = parseResponse(t, w)
+	data, _ = json.Marshal(resp.Data)
+	var cloneResult model.RegistryVersionCloneResult
+	json.Unmarshal(data, &cloneResult)
+
+	if cloneResult.Version.Version == "" {
+		t.Error("expected non-empty version")
+	}
+	if cloneResult.Version.Version == srcVersion {
+		t.Error("cloned version should differ from source")
+	}
+	if cloneResult.Version.Source != "clone:"+srcVersion {
+		t.Errorf("expected source 'clone:%s', got %s", srcVersion, cloneResult.Version.Source)
+	}
+	if cloneResult.Version.Description != "cloned version" {
+		t.Errorf("expected description 'cloned version', got %s", cloneResult.Version.Description)
+	}
+
+	// Verify the cloned file content
+	w = doRequest(t, r, "POST", "/v1/registry/versions/file/read",
+		fmt.Sprintf(`{"name": "clone-skill", "version": "%s", "path": "test.txt"}`, cloneResult.Version.Version))
+	if w.Code != http.StatusOK {
+		t.Fatalf("file read failed: %d %s", w.Code, w.Body.String())
+	}
+	fileResp := parseResponse(t, w)
+	fileData, _ := json.Marshal(fileResp.Data)
+	var fileResult model.SkillFileReadResult
+	json.Unmarshal(fileData, &fileResult)
+	if fileResult.Content != "clone me" {
+		t.Errorf("expected 'clone me', got %s", fileResult.Content)
+	}
+
+	// Verify skill now has 2 versions
+	if len(cloneResult.Skill.Versions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(cloneResult.Skill.Versions))
+	}
+}
+
+func TestRegistryVersionCloneWithTargetVersion(t *testing.T) {
+	r, _ := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "clone-target-skill"}`)
+
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "clone-target-skill", "description": "original"}`)
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var vc model.RegistryVersionCreateResult
+	json.Unmarshal(data, &vc)
+	srcVersion := vc.Version.Version
+
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "clone-target-skill", "version": "%s", "path": "test.txt", "content": "copy me"}`, srcVersion))
+
+	targetVersion := fmt.Sprintf("v%d-deadbeef", time.Now().UnixNano())
+	w = doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		fmt.Sprintf(`{"name": "clone-target-skill", "version": "%s", "new_version": "%s", "description": "cloned version"}`, srcVersion, targetVersion))
+	if w.Code != http.StatusOK {
+		t.Fatalf("version clone failed: %d %s", w.Code, w.Body.String())
+	}
+
+	resp = parseResponse(t, w)
+	data, _ = json.Marshal(resp.Data)
+	var cloneResult model.RegistryVersionCloneResult
+	json.Unmarshal(data, &cloneResult)
+
+	if cloneResult.Version.Version != targetVersion {
+		t.Fatalf("expected version %s, got %s", targetVersion, cloneResult.Version.Version)
+	}
+	if cloneResult.Version.Source != "clone:"+srcVersion {
+		t.Fatalf("expected source clone:%s, got %s", srcVersion, cloneResult.Version.Source)
+	}
+}
+
+func TestRegistryVersionCloneNotFound(t *testing.T) {
+	r, _ := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "clone-nf-skill"}`)
+
+	w := doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		`{"name": "clone-nf-skill", "version": "v1-aabbccdd"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRegistryVersionCloneMissingSourceDirectory(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "clone-missing-dir-skill"}`)
+
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "clone-missing-dir-skill", "description": "original"}`)
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var vc model.RegistryVersionCreateResult
+	json.Unmarshal(data, &vc)
+	srcVersion := vc.Version.Version
+
+	srcVersionDir := filepath.Join(mgr.RegistrySkillPath("clone-missing-dir-skill"), srcVersion)
+	if err := os.RemoveAll(srcVersionDir); err != nil {
+		t.Fatalf("failed to remove source version dir: %v", err)
+	}
+
+	w = doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		fmt.Sprintf(`{"name": "clone-missing-dir-skill", "version": "%s"}`, srcVersion))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "version directory not found") {
+		t.Fatalf("expected missing source directory error, got %s", w.Body.String())
+	}
+}
+
+func TestRegistryVersionCloneTargetVersionExists(t *testing.T) {
+	r, _ := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "clone-conflict-skill"}`)
+
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "clone-conflict-skill", "description": "source"}`)
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var sourceResult model.RegistryVersionCreateResult
+	json.Unmarshal(data, &sourceResult)
+
+	w = doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "clone-conflict-skill", "description": "target"}`)
+	resp = parseResponse(t, w)
+	data, _ = json.Marshal(resp.Data)
+	var targetResult model.RegistryVersionCreateResult
+	json.Unmarshal(data, &targetResult)
+
+	w = doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		fmt.Sprintf(`{"name": "clone-conflict-skill", "version": "%s", "new_version": "%s"}`, sourceResult.Version.Version, targetResult.Version.Version))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRegistryVersionCloneSkillNotFound(t *testing.T) {
+	r, _ := setupRegistryRouter()
+
+	w := doRequest(t, r, "POST", "/v1/registry/versions/clone",
+		`{"name": "no-such-skill", "version": "v1-aabbccdd"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d %s", w.Code, w.Body.String())
 	}
 }
 

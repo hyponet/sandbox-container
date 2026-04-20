@@ -411,6 +411,11 @@ type RegistryVersionCreateResult struct {
 	Skill   RegistryMetaJSON     `json:"skill"`
 }
 
+type RegistryVersionCloneResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
 type RegistryVersionGetResult struct {
 	Version     RegistryVersionEntry `json:"version"`
 	Frontmatter string               `json:"frontmatter"`

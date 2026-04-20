@@ -103,6 +103,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 		registry.POST("/versions/get", registryH.VersionGet)
 		registry.POST("/versions/list", registryH.VersionList)
 		registry.POST("/versions/delete", registryH.VersionDelete)
+		registry.POST("/versions/clone", registryH.VersionClone)
 		registry.POST("/versions/tree", registryH.VersionTree)
 		registry.POST("/versions/file/read", registryH.VersionFileRead)
 		registry.POST("/versions/file/write", registryH.VersionFileWrite)
@@ -1626,6 +1627,82 @@ func TestRegistrySkillCopyViaClient(t *testing.T) {
 	}
 	if len(dstResult.Skill.Versions) == 0 {
 		t.Error("expected at least one version in copied skill")
+	}
+}
+
+func TestRegistryVersionCloneViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.RegistrySkillCreate("clone-skill", "clone test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
+	}
+
+	// Create version with a file
+	vcResult, err := cli.RegistryVersionCreate("clone-skill", "original", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+	srcVersion := vcResult.Version.Version
+
+	_, err = cli.RegistryVersionFileWrite("clone-skill", srcVersion, "data.txt", "cloned content")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
+	}
+
+	// Clone the version
+	cloneResult, err := cli.RegistryVersionClone("clone-skill", srcVersion, "cloned version")
+	if err != nil {
+		t.Fatalf("RegistryVersionClone failed: %v", err)
+	}
+
+	if cloneResult.Version.Version == "" || cloneResult.Version.Version == srcVersion {
+		t.Errorf("expected new version different from source, got %s", cloneResult.Version.Version)
+	}
+	if cloneResult.Version.Source != "clone:"+srcVersion {
+		t.Errorf("expected source 'clone:%s', got %s", srcVersion, cloneResult.Version.Source)
+	}
+	if len(cloneResult.Skill.Versions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(cloneResult.Skill.Versions))
+	}
+
+	// Verify cloned file content
+	fileResult, err := cli.RegistryVersionFileRead("clone-skill", cloneResult.Version.Version, "data.txt")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileRead failed: %v", err)
+	}
+	if fileResult.Content != "cloned content" {
+		t.Errorf("expected 'cloned content', got %s", fileResult.Content)
+	}
+}
+
+func TestRegistryVersionCloneWithTargetViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.RegistrySkillCreate("clone-target-skill", "clone test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
+	}
+
+	vcResult, err := cli.RegistryVersionCreate("clone-target-skill", "original", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+	srcVersion := vcResult.Version.Version
+
+	targetVersion := fmt.Sprintf("v%d-deadbeef", time.Now().UnixNano())
+	cloneResult, err := cli.RegistryVersionCloneWithTarget("clone-target-skill", srcVersion, targetVersion, "cloned version")
+	if err != nil {
+		t.Fatalf("RegistryVersionCloneWithTarget failed: %v", err)
+	}
+
+	if cloneResult.Version.Version != targetVersion {
+		t.Fatalf("expected target version %s, got %s", targetVersion, cloneResult.Version.Version)
+	}
+	if cloneResult.Version.Source != "clone:"+srcVersion {
+		t.Errorf("expected source 'clone:%s', got %s", srcVersion, cloneResult.Version.Source)
 	}
 }
 

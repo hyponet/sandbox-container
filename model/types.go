@@ -37,8 +37,8 @@ type SandboxResponse struct {
 }
 
 type SandboxDetail struct {
-	System  SystemEnv    `json:"system"`
-	Runtime RuntimeEnv   `json:"runtime"`
+	System  SystemEnv      `json:"system"`
+	Runtime RuntimeEnv     `json:"runtime"`
 	Utils   []ToolCategory `json:"utils"`
 }
 
@@ -65,7 +65,7 @@ type ToolSpec struct {
 }
 
 type ToolCategory struct {
-	Category string         `json:"category"`
+	Category string          `json:"category"`
 	Tools    []AvailableTool `json:"tools"`
 }
 
@@ -79,28 +79,28 @@ type AvailableTool struct {
 // =============================================
 
 type BashExecRequest struct {
-	AgentID                string            `json:"agent_id" binding:"required"`
-	SessionID              string            `json:"session_id" binding:"required"`
-	Command                string            `json:"command" binding:"required"`
-	ExecDir                *string           `json:"exec_dir,omitempty"`
-	Env                    map[string]string `json:"env,omitempty"`
-	AsyncMode              bool              `json:"async_mode"`
-	Timeout                *float64          `json:"timeout,omitempty"`
-	HardTimeout            *float64          `json:"hard_timeout,omitempty"`
-	MaxOutputLength        int               `json:"max_output_length"`
-	EnableAgentWorkspace bool `json:"enable_agent_workspace"`
+	AgentID              string            `json:"agent_id" binding:"required"`
+	SessionID            string            `json:"session_id" binding:"required"`
+	Command              string            `json:"command" binding:"required"`
+	ExecDir              *string           `json:"exec_dir,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	AsyncMode            bool              `json:"async_mode"`
+	Timeout              *float64          `json:"timeout,omitempty"`
+	HardTimeout          *float64          `json:"hard_timeout,omitempty"`
+	MaxOutputLength      int               `json:"max_output_length"`
+	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
 }
 
 type BashExecResult struct {
-	SessionID    string         `json:"session_id"`
-	CommandID    string         `json:"command_id"`
-	Command      string         `json:"command"`
-	Status       CommandStatus  `json:"status"`
-	Stdout       *string        `json:"stdout,omitempty"`
-	Stderr       *string        `json:"stderr,omitempty"`
-	ExitCode     *int           `json:"exit_code,omitempty"`
-	Offset       int            `json:"offset"`
-	StderrOffset int            `json:"stderr_offset"`
+	SessionID    string        `json:"session_id"`
+	CommandID    string        `json:"command_id"`
+	Command      string        `json:"command"`
+	Status       CommandStatus `json:"status"`
+	Stdout       *string       `json:"stdout,omitempty"`
+	Stderr       *string       `json:"stderr,omitempty"`
+	ExitCode     *int          `json:"exit_code,omitempty"`
+	Offset       int           `json:"offset"`
+	StderrOffset int           `json:"stderr_offset"`
 }
 
 type BashOutputRequest struct {
@@ -114,11 +114,11 @@ type BashOutputRequest struct {
 }
 
 type BashOutputResult struct {
-	SessionID    string          `json:"session_id"`
-	Stdout       string          `json:"stdout"`
-	Stderr       string          `json:"stderr"`
-	Offset       int             `json:"offset"`
-	StderrOffset int             `json:"stderr_offset"`
+	SessionID    string           `json:"session_id"`
+	Stdout       string           `json:"stdout"`
+	Stderr       string           `json:"stderr"`
+	Offset       int              `json:"offset"`
+	StderrOffset int              `json:"stderr_offset"`
 	Command      *BashCommandInfo `json:"command,omitempty"`
 }
 
@@ -136,10 +136,10 @@ type BashKillRequest struct {
 }
 
 type BashSessionCreateRequest struct {
-	AgentID                 string  `json:"agent_id" binding:"required"`
-	SessionID               string  `json:"session_id" binding:"required"`
-	BashSID                 *string `json:"bash_session_id,omitempty"`
-	ExecDir                 *string `json:"exec_dir,omitempty"`
+	AgentID              string  `json:"agent_id" binding:"required"`
+	SessionID            string  `json:"session_id" binding:"required"`
+	BashSID              *string `json:"bash_session_id,omitempty"`
+	ExecDir              *string `json:"exec_dir,omitempty"`
 	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
 }
 
@@ -187,11 +187,11 @@ const (
 // =============================================
 
 type FileReadRequest struct {
-	AgentID                 string `json:"agent_id" binding:"required"`
-	SessionID               string `json:"session_id" binding:"required"`
-	File                    string `json:"file" binding:"required"`
-	StartLine               *int   `json:"start_line,omitempty"`
-	EndLine                 *int   `json:"end_line,omitempty"`
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	File                 string `json:"file" binding:"required"`
+	StartLine            *int   `json:"start_line,omitempty"`
+	EndLine              *int   `json:"end_line,omitempty"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
@@ -201,29 +201,29 @@ type FileReadResult struct {
 }
 
 type FileWriteRequest struct {
-	AgentID                 string `json:"agent_id" binding:"required"`
-	SessionID               string `json:"session_id" binding:"required"`
-	File                    string `json:"file" binding:"required"`
-	Content                 string `json:"content" binding:"required"`
-	Encoding                string `json:"encoding,omitempty"`
-	Append                  bool   `json:"append"`
-	LeadingNewline          bool   `json:"leading_newline"`
-	TrailingNewline         bool   `json:"trailing_newline"`
-	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	File                 string `json:"file" binding:"required"`
+	Content              string `json:"content" binding:"required"`
+	Encoding             string `json:"encoding,omitempty"`
+	Append               bool   `json:"append"`
+	LeadingNewline       bool   `json:"leading_newline"`
+	TrailingNewline      bool   `json:"trailing_newline"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type FileWriteResult struct {
-	File        string `json:"file"`
-	BytesWritten *int  `json:"bytes_written,omitempty"`
+	File         string `json:"file"`
+	BytesWritten *int   `json:"bytes_written,omitempty"`
 }
 
 type FileReplaceRequest struct {
-	AgentID                 string `json:"agent_id" binding:"required"`
-	SessionID               string `json:"session_id" binding:"required"`
-	File                    string `json:"file" binding:"required"`
-	OldStr                  string `json:"old_str" binding:"required"`
-	NewStr                  string `json:"new_str" binding:"required"`
-	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	File                 string `json:"file" binding:"required"`
+	OldStr               string `json:"old_str" binding:"required"`
+	NewStr               string `json:"new_str" binding:"required"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type FileReplaceResult struct {
@@ -232,11 +232,11 @@ type FileReplaceResult struct {
 }
 
 type FileSearchRequest struct {
-	AgentID                 string `json:"agent_id" binding:"required"`
-	SessionID               string `json:"session_id" binding:"required"`
-	File                    string `json:"file" binding:"required"`
-	Regex                   string `json:"regex" binding:"required"`
-	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	File                 string `json:"file" binding:"required"`
+	Regex                string `json:"regex" binding:"required"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type FileSearchResult struct {
@@ -246,11 +246,11 @@ type FileSearchResult struct {
 }
 
 type FileFindRequest struct {
-	AgentID                 string `json:"agent_id" binding:"required"`
-	SessionID               string `json:"session_id" binding:"required"`
-	Path                    string `json:"path" binding:"required"`
-	Glob                    string `json:"glob" binding:"required"`
-	EnableAgentWorkspace    bool   `json:"enable_agent_workspace"`
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	Path                 string `json:"path" binding:"required"`
+	Glob                 string `json:"glob" binding:"required"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
 }
 
 type FileFindResult struct {
@@ -259,29 +259,29 @@ type FileFindResult struct {
 }
 
 type FileGrepRequest struct {
-	AgentID                 string   `json:"agent_id" binding:"required"`
-	SessionID               string   `json:"session_id" binding:"required"`
-	Path                    string   `json:"path" binding:"required"`
-	Pattern                 string   `json:"pattern" binding:"required"`
-	Include                 []string `json:"include,omitempty"`
-	Exclude                 []string `json:"exclude,omitempty"`
-	CaseInsensitive         bool     `json:"case_insensitive"`
-	FixedStrings            bool     `json:"fixed_strings"`
-	ContextBefore           int      `json:"context_before"`
-	ContextAfter            int      `json:"context_after"`
-	MaxResults              int      `json:"max_results"`
-	Recursive               *bool    `json:"recursive,omitempty"`
-	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
+	AgentID              string   `json:"agent_id" binding:"required"`
+	SessionID            string   `json:"session_id" binding:"required"`
+	Path                 string   `json:"path" binding:"required"`
+	Pattern              string   `json:"pattern" binding:"required"`
+	Include              []string `json:"include,omitempty"`
+	Exclude              []string `json:"exclude,omitempty"`
+	CaseInsensitive      bool     `json:"case_insensitive"`
+	FixedStrings         bool     `json:"fixed_strings"`
+	ContextBefore        int      `json:"context_before"`
+	ContextAfter         int      `json:"context_after"`
+	MaxResults           int      `json:"max_results"`
+	Recursive            *bool    `json:"recursive,omitempty"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 type FileGrepResult struct {
-	Path          string       `json:"path"`
-	Pattern       string       `json:"pattern"`
-	Matches       []GrepMatch  `json:"matches"`
-	MatchCount    int          `json:"match_count"`
-	FilesSearched *int         `json:"files_searched,omitempty"`
-	FilesMatched  *int         `json:"files_matched,omitempty"`
-	Truncated     bool         `json:"truncated"`
+	Path          string      `json:"path"`
+	Pattern       string      `json:"pattern"`
+	Matches       []GrepMatch `json:"matches"`
+	MatchCount    int         `json:"match_count"`
+	FilesSearched *int        `json:"files_searched,omitempty"`
+	FilesMatched  *int        `json:"files_matched,omitempty"`
+	Truncated     bool        `json:"truncated"`
 }
 
 type GrepMatch struct {
@@ -293,24 +293,24 @@ type GrepMatch struct {
 }
 
 type FileGlobRequest struct {
-	AgentID                 string   `json:"agent_id" binding:"required"`
-	SessionID               string   `json:"session_id" binding:"required"`
-	Path                    string   `json:"path" binding:"required"`
-	Pattern                 string   `json:"pattern" binding:"required"`
-	Exclude                 []string `json:"exclude,omitempty"`
-	IncludeHidden           bool     `json:"include_hidden"`
-	FilesOnly               *bool    `json:"files_only,omitempty"`
-	IncludeMetadata         *bool    `json:"include_metadata,omitempty"`
-	MaxResults              int      `json:"max_results"`
-	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
+	AgentID              string   `json:"agent_id" binding:"required"`
+	SessionID            string   `json:"session_id" binding:"required"`
+	Path                 string   `json:"path" binding:"required"`
+	Pattern              string   `json:"pattern" binding:"required"`
+	Exclude              []string `json:"exclude,omitempty"`
+	IncludeHidden        bool     `json:"include_hidden"`
+	FilesOnly            *bool    `json:"files_only,omitempty"`
+	IncludeMetadata      *bool    `json:"include_metadata,omitempty"`
+	MaxResults           int      `json:"max_results"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 type FileGlobResult struct {
-	Path        string         `json:"path"`
-	Pattern     string         `json:"pattern"`
-	Files       []GlobFileInfo `json:"files"`
-	TotalCount  int            `json:"total_count"`
-	Truncated   bool           `json:"truncated"`
+	Path       string         `json:"path"`
+	Pattern    string         `json:"pattern"`
+	Files      []GlobFileInfo `json:"files"`
+	TotalCount int            `json:"total_count"`
+	Truncated  bool           `json:"truncated"`
 }
 
 type GlobFileInfo struct {
@@ -322,24 +322,24 @@ type GlobFileInfo struct {
 }
 
 type FileListRequest struct {
-	AgentID                 string   `json:"agent_id" binding:"required"`
-	SessionID               string   `json:"session_id" binding:"required"`
-	Path                    string   `json:"path" binding:"required"`
-	Recursive               bool     `json:"recursive"`
-	ShowHidden              *bool    `json:"show_hidden,omitempty"`
-	FileTypes               []string `json:"file_types,omitempty"`
-	MaxDepth                *int     `json:"max_depth,omitempty"`
-	IncludeSize             *bool    `json:"include_size,omitempty"`
-	IncludePermissions      *bool    `json:"include_permissions,omitempty"`
-	EnableAgentWorkspace    bool     `json:"enable_agent_workspace"`
+	AgentID              string   `json:"agent_id" binding:"required"`
+	SessionID            string   `json:"session_id" binding:"required"`
+	Path                 string   `json:"path" binding:"required"`
+	Recursive            bool     `json:"recursive"`
+	ShowHidden           *bool    `json:"show_hidden,omitempty"`
+	FileTypes            []string `json:"file_types,omitempty"`
+	MaxDepth             *int     `json:"max_depth,omitempty"`
+	IncludeSize          *bool    `json:"include_size,omitempty"`
+	IncludePermissions   *bool    `json:"include_permissions,omitempty"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 type FileListResult struct {
-	Path           string    `json:"path"`
+	Path           string     `json:"path"`
 	Files          []FileInfo `json:"files"`
-	TotalCount     int       `json:"total_count"`
-	DirectoryCount int       `json:"directory_count"`
-	FileCount      int       `json:"file_count"`
+	TotalCount     int        `json:"total_count"`
+	DirectoryCount int        `json:"directory_count"`
+	FileCount      int        `json:"file_count"`
 }
 
 type FileInfo struct {
@@ -369,14 +369,14 @@ type FileUploadResult struct {
 // =============================================
 
 type CodeExecuteRequest struct {
-	AgentID                 string  `json:"agent_id" binding:"required"`
-	SessionID               string  `json:"session_id" binding:"required"`
-	Language                string  `json:"language" binding:"required"`
-	Code                    string  `json:"code" binding:"required"`
-	Timeout                 *int    `json:"timeout,omitempty"`
-	Cwd                     *string `json:"cwd,omitempty"`
-	EnableAgentWorkspace    bool              `json:"enable_agent_workspace"`
-	Env                     map[string]string `json:"env,omitempty"`
+	AgentID              string            `json:"agent_id" binding:"required"`
+	SessionID            string            `json:"session_id" binding:"required"`
+	Language             string            `json:"language" binding:"required"`
+	Code                 string            `json:"code" binding:"required"`
+	Timeout              *int              `json:"timeout,omitempty"`
+	Cwd                  *string           `json:"cwd,omitempty"`
+	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
+	Env                  map[string]string `json:"env,omitempty"`
 }
 
 type CodeExecuteResponse struct {
@@ -571,9 +571,9 @@ type AgentSkillCacheDeleteResult struct {
 // AgentSkillRequest is the body for agent skill list/load endpoints.
 // agent_id comes from the URL path parameter.
 type AgentSkillRequest struct {
-	SkillIDs       []string `json:"skill_ids" binding:"required"`
-	Cleanup        bool     `json:"cleanup"`
-	EnableAgentWorkspace bool `json:"enable_agent_workspace"`
+	SkillIDs             []string `json:"skill_ids" binding:"required"`
+	Cleanup              bool     `json:"cleanup"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.
@@ -605,11 +605,11 @@ type AgentSkillLoadResult struct {
 
 // RegistryMetaJSON represents the _meta.json in /data/skill-registry/<skill-id>/_meta.json.
 type RegistryMetaJSON struct {
-	Name          string                `json:"name"`
-	Description   string                `json:"description"`
-	CreatedAt     int64                 `json:"created_at"`
-	UpdatedAt     int64                 `json:"updated_at"`
-	ActiveVersion string                `json:"active_version"`
+	Name          string                 `json:"name"`
+	Description   string                 `json:"description"`
+	CreatedAt     int64                  `json:"created_at"`
+	UpdatedAt     int64                  `json:"updated_at"`
+	ActiveVersion string                 `json:"active_version"`
 	Versions      []RegistryVersionEntry `json:"versions"`
 }
 
@@ -618,7 +618,7 @@ type RegistryVersionEntry struct {
 	Version     string `json:"version"`
 	Description string `json:"description"`
 	CreatedAt   int64  `json:"created_at"`
-	Source      string `json:"source"` // "manual" | "agent:<id>" | "import"
+	Source      string `json:"source"` // "manual" | "clone:<version>" | "agent:<id>" | "import"
 }
 
 // --- Skill-level ---
@@ -710,6 +710,18 @@ type RegistryVersionListResult struct {
 	ActiveVersion string                 `json:"active_version"`
 }
 
+type RegistryVersionCloneRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Version     string `json:"version" binding:"required"`
+	NewVersion  string `json:"new_version"`
+	Description string `json:"description"`
+}
+
+type RegistryVersionCloneResult struct {
+	Version RegistryVersionEntry `json:"version"`
+	Skill   RegistryMetaJSON     `json:"skill"`
+}
+
 type RegistryVersionDeleteRequest struct {
 	Name    string `json:"name" binding:"required"`
 	Version string `json:"version" binding:"required"`
@@ -763,7 +775,7 @@ type RegistryActivateRequest struct {
 }
 
 type RegistryActivateResult struct {
-	Skill           RegistryMetaJSON     `json:"skill"`
+	Skill            RegistryMetaJSON     `json:"skill"`
 	ActivatedVersion RegistryVersionEntry `json:"activated_version"`
 }
 

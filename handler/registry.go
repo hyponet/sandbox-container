@@ -566,6 +566,120 @@ func (h *RegistryHandler) VersionCreate(c *gin.Context) {
 	}))
 }
 
+// VersionClone clones an existing version's content into a new version.
+func (h *RegistryHandler) VersionClone(c *gin.Context) {
+	var req model.RegistryVersionCloneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	if err := validateSkillID(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+	if err := validateVersionID(req.Version); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+	if req.NewVersion != "" {
+		if err := validateVersionID(req.NewVersion); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse("new_version: "+err.Error()))
+			return
+		}
+		if req.NewVersion == req.Version {
+			c.JSON(http.StatusBadRequest, model.ErrResponse("new_version must differ from source version"))
+			return
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	skillDir := h.mgr.RegistrySkillPath(req.Name)
+	meta, err := readRegistryMeta(skillDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
+			return
+		}
+		log.Printf("[ERROR] Registry VersionClone: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read skill metadata: "+err.Error()))
+		return
+	}
+
+	// Verify source version exists
+	if _, found := findVersionEntry(meta, req.Version); !found {
+		c.JSON(http.StatusNotFound, model.ErrResponse("version not found: "+req.Version))
+		return
+	}
+
+	srcVersionDir := filepath.Join(skillDir, req.Version)
+	if _, err := os.Stat(srcVersionDir); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, model.ErrResponse("version directory not found: "+req.Version))
+			return
+		}
+		log.Printf("[ERROR] Registry VersionClone: stat source version: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to stat source version: "+err.Error()))
+		return
+	}
+
+	newVersion := req.NewVersion
+	if newVersion == "" {
+		newVersion = allocateVersion()
+	}
+	if _, found := findVersionEntry(meta, newVersion); found {
+		c.JSON(http.StatusConflict, model.ErrResponse("target version already exists: "+newVersion))
+		return
+	}
+	newVersionDir := filepath.Join(skillDir, newVersion)
+	if _, err := os.Stat(newVersionDir); err == nil {
+		c.JSON(http.StatusConflict, model.ErrResponse("target version already exists: "+newVersion))
+		return
+	} else if !os.IsNotExist(err) {
+		log.Printf("[ERROR] Registry VersionClone: stat target version: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to stat target version: "+err.Error()))
+		return
+	}
+
+	if err := os.MkdirAll(newVersionDir, 0755); err != nil {
+		log.Printf("[ERROR] Registry VersionClone: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create version directory: "+err.Error()))
+		return
+	}
+
+	if err := copyDir(srcVersionDir, newVersionDir); err != nil {
+		os.RemoveAll(newVersionDir)
+		log.Printf("[ERROR] Registry VersionClone: copy from source: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to copy from source version: "+err.Error()))
+		return
+	}
+
+	now := time.Now().UnixNano()
+	versionEntry := model.RegistryVersionEntry{
+		Version:     newVersion,
+		Description: req.Description,
+		CreatedAt:   now,
+		Source:      "clone:" + req.Version,
+	}
+
+	meta.Versions = append(meta.Versions, versionEntry)
+	meta.UpdatedAt = now
+
+	if err := writeRegistryMeta(skillDir, meta); err != nil {
+		os.RemoveAll(newVersionDir)
+		log.Printf("[ERROR] Registry VersionClone: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write skill metadata: "+err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.RegistryVersionCloneResult{
+		Version: versionEntry,
+		Skill:   *meta,
+	}))
+}
+
 // VersionGet retrieves a specific version's metadata and SKILLS.md content.
 func (h *RegistryHandler) VersionGet(c *gin.Context) {
 	var req model.RegistryVersionGetRequest

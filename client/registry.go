@@ -133,6 +133,33 @@ func (c *Client) RegistryVersionCreate(name, description string, copyFromActive 
 	return &result, nil
 }
 
+// RegistryVersionClone clones an existing version's content into a new version.
+func (c *Client) RegistryVersionClone(name, version, description string) (*RegistryVersionCloneResult, error) {
+	return c.RegistryVersionCloneWithTarget(name, version, "", description)
+}
+
+// RegistryVersionCloneWithTarget clones an existing version's content into a new version.
+// If newVersion is empty, the server allocates one using the default timestamp+random rule.
+func (c *Client) RegistryVersionCloneWithTarget(name, version, newVersion, description string) (*RegistryVersionCloneResult, error) {
+	req := struct {
+		Name        string `json:"name"`
+		Version     string `json:"version"`
+		NewVersion  string `json:"new_version,omitempty"`
+		Description string `json:"description"`
+	}{
+		Name:        name,
+		Version:     version,
+		NewVersion:  newVersion,
+		Description: description,
+	}
+
+	var result RegistryVersionCloneResult
+	if err := c.post("/v1/registry/versions/clone", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // RegistryVersionGet retrieves a specific version's metadata and SKILLS.md content.
 func (c *Client) RegistryVersionGet(name, version string) (*RegistryVersionGetResult, error) {
 	req := struct {

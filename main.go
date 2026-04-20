@@ -97,6 +97,7 @@ func main() {
 		registry.POST("/versions/get", registryH.VersionGet)
 		registry.POST("/versions/list", registryH.VersionList)
 		registry.POST("/versions/delete", registryH.VersionDelete)
+		registry.POST("/versions/clone", registryH.VersionClone)
 		registry.POST("/versions/tree", registryH.VersionTree)
 
 		// Version file operations

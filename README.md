@@ -79,7 +79,8 @@ POST /v1/bash/exec
 | `timeout` | float | No | Command timeout in seconds |
 | `hard_timeout` | float | No | Hard kill timeout in seconds |
 | `max_output_length` | int | No | Maximum output length |
-| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
+| `env` | map | No | Environment variables for the runtime process |
+| `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
 
 ### File Operations
 
@@ -144,7 +145,8 @@ POST /v1/code/execute
 | `code` | string | Yes | Source code to execute |
 | `timeout` | int | No | Execution timeout in seconds |
 | `cwd` | string | No | Working directory for execution |
-| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
+| `env` | map | No | Environment variables for the runtime process |
+| `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
 
 ### Skills Management
 
@@ -263,7 +265,9 @@ result, _ := c.BashExec("agent-1", "session-1", "ls -la",
 
 // Execute code
 result, _ := c.CodeExecute("agent-1", "session-1", "python",
-    "print('hello')", client.WithCodeTimeout(30))
+    "print('hello')",
+    client.WithCodeTimeout(30),
+    client.WithCodeEnv(map[string]string{"GREETING": "hello"}))
 
 // File operations
 content, _ := c.FileRead("agent-1", "session-1", "/workspace/main.go",

@@ -215,6 +215,46 @@ func TestAuditSensitiveHeaderRedaction(t *testing.T) {
 	}
 }
 
+func TestAuditRequestBodyEnvRedaction(t *testing.T) {
+	r, w, dir := setupAuditRouter(t)
+	defer w.Close()
+
+	body := `{"agent_id":"a1","session_id":"s1","code":"print(1)","env":{"API_KEY":"secret","HOME":"/tmp/custom"}}`
+	req := httptest.NewRequest(http.MethodPost, "/audited", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	w.SyncSession("a1", "s1")
+	entries := readAuditEntries(t, dir, "a1", "s1")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	reqBody, ok := entries[0].RequestBody.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected request body map, got %T", entries[0].RequestBody)
+	}
+	if reqBody["code"] != "print(1)" {
+		t.Errorf("expected code to remain visible, got %#v", reqBody["code"])
+	}
+
+	env, ok := reqBody["env"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected env map, got %T", reqBody["env"])
+	}
+	if env["API_KEY"] != redactedValue {
+		t.Errorf("expected API_KEY to be redacted, got %#v", env["API_KEY"])
+	}
+	if env["HOME"] != redactedValue {
+		t.Errorf("expected HOME to be redacted, got %#v", env["HOME"])
+	}
+}
+
 // TestAuditResponseBodyCapped verifies that the response body buffer is capped.
 func TestAuditResponseBodyCapped(t *testing.T) {
 	r, w, dir := setupAuditRouter(t)
@@ -296,8 +336,8 @@ func TestAuditNoEntryForUnauditedRoute(t *testing.T) {
 // TestExtractIDs verifies the extractIDs helper.
 func TestExtractIDs(t *testing.T) {
 	tests := []struct {
-		name              string
-		data              string
+		name                string
+		data                string
 		wantAgent, wantSess string
 	}{
 		{"valid", `{"agent_id":"a1","session_id":"s1"}`, "a1", "s1"},

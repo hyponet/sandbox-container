@@ -215,3 +215,25 @@ func TestCodeExecute_AgentWorkspace(t *testing.T) {
 		t.Errorf("expected stdout to reference workspace dir, got %q", stdout)
 	}
 }
+
+func TestCodeExecutePWDMatchesWorkingDir(t *testing.T) {
+	r, _ := setupCodeRouter()
+
+	body := `{"agent_id": "a1", "session_id": "code_pwd", "language": "python", "code": "import os; print('match' if os.getcwd() == os.environ.get('PWD') else 'mismatch')", "cwd": "/subdir"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "match\n" {
+		t.Errorf("expected PWD to match cwd, got %q", stdout)
+	}
+}

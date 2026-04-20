@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/hyponet/sandbox-container/audit"
 	"github.com/hyponet/sandbox-container/model"
-	"github.com/gin-gonic/gin"
 )
 
 // sensitiveHeaders are redacted from audit logs (keys stored in lowercase).
@@ -21,6 +21,13 @@ var sensitiveHeaders = map[string]bool{
 	"set-cookie":    true,
 	"x-api-key":     true,
 }
+
+// sensitiveRequestFields are redacted from audit request bodies.
+var sensitiveRequestFields = map[string]bool{
+	"env": true,
+}
+
+const redactedValue = "[REDACTED]"
 
 // maxAuditBodySize limits how much of the request body is stored in the audit record.
 const maxAuditBodySize = 512 * 1024 // 512KB
@@ -100,6 +107,48 @@ func extractIDs(data []byte) (agentID, sessionID string) {
 	return
 }
 
+func redactSensitiveRequestBody(v interface{}) interface{} {
+	switch body := v.(type) {
+	case map[string]interface{}:
+		redacted := make(map[string]interface{}, len(body))
+		for k, child := range body {
+			if sensitiveRequestFields[strings.ToLower(k)] {
+				redacted[k] = redactSensitiveValue(child)
+				continue
+			}
+			redacted[k] = redactSensitiveRequestBody(child)
+		}
+		return redacted
+	case []interface{}:
+		redacted := make([]interface{}, len(body))
+		for i, child := range body {
+			redacted[i] = redactSensitiveRequestBody(child)
+		}
+		return redacted
+	default:
+		return v
+	}
+}
+
+func redactSensitiveValue(v interface{}) interface{} {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		redacted := make(map[string]interface{}, len(value))
+		for k := range value {
+			redacted[k] = redactedValue
+		}
+		return redacted
+	case []interface{}:
+		redacted := make([]interface{}, len(value))
+		for i := range value {
+			redacted[i] = redactedValue
+		}
+		return redacted
+	default:
+		return redactedValue
+	}
+}
+
 // AuditLogger records full request/response for audit purposes,
 // routing entries to per-session JSONL files via the audit writer.
 func AuditLogger(w *audit.Writer) gin.HandlerFunc {
@@ -126,6 +175,7 @@ func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 			auditBody = auditBody[:maxAuditBodySize]
 		}
 		json.Unmarshal(auditBody, &reqBody)
+		reqBody = redactSensitiveRequestBody(reqBody)
 
 		// Fallback to multipart form fields (e.g. file upload)
 		if agentID == "" {
@@ -154,7 +204,7 @@ func AuditLogger(w *audit.Writer) gin.HandlerFunc {
 		for k, v := range c.Request.Header {
 			if len(v) > 0 {
 				if sensitiveHeaders[strings.ToLower(k)] {
-					headers[k] = "[REDACTED]"
+					headers[k] = redactedValue
 				} else {
 					headers[k] = v[0]
 				}

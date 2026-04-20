@@ -114,6 +114,28 @@ func TestBashExecEnv(t *testing.T) {
 	}
 }
 
+func TestBashExecPWDMatchesWorkingDir(t *testing.T) {
+	r, _ := setupBashRouter()
+
+	body := `{"agent_id": "a1", "session_id": "bash_pwd", "command": "if [ \"$PWD\" = \"$(pwd)\" ]; then echo match; else echo mismatch; fi", "exec_dir": "/subdir"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("exec failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "match\n" {
+		t.Errorf("expected PWD to match pwd, got %q", stdout)
+	}
+}
+
 func TestBashExecAsync(t *testing.T) {
 	r, _ := setupBashRouter()
 

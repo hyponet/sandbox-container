@@ -375,7 +375,8 @@ type CodeExecuteRequest struct {
 	Code                    string  `json:"code" binding:"required"`
 	Timeout                 *int    `json:"timeout,omitempty"`
 	Cwd                     *string `json:"cwd,omitempty"`
-	EnableAgentWorkspace    bool    `json:"enable_agent_workspace"`
+	EnableAgentWorkspace    bool              `json:"enable_agent_workspace"`
+	Env                     map[string]string `json:"env,omitempty"`
 }
 
 type CodeExecuteResponse struct {

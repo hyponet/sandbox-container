@@ -230,6 +230,9 @@ func TestAuditPath(t *testing.T) {
 // TestGetOrCreateReadOnlyDir verifies that getOrCreate returns an error
 // when the audit directory cannot be created (e.g. read-only parent).
 func TestGetOrCreateReadOnlyDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping: root bypasses file permissions, test cannot enforce read-only dir")
+	}
 	dir := t.TempDir()
 	w := NewWriter(dir, time.Minute)
 	defer w.Close()

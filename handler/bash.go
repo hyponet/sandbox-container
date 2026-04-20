@@ -26,26 +26,26 @@ type BashHandler struct {
 }
 
 type bashSession struct {
-	sandboxSID  string
-	bashSID     string
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stdoutBuf   *threadSafeBuffer
-	stderrBuf   *threadSafeBuffer
-	workingDir  string
-	createdAt   time.Time
-	lastUsedAt  time.Time
-	status     model.CommandStatus
-	exitCode    *int
-	commandID   string
-	command     string
-	cancel      context.CancelFunc
+	sandboxSID   string
+	bashSID      string
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdoutBuf    *threadSafeBuffer
+	stderrBuf    *threadSafeBuffer
+	workingDir   string
+	createdAt    time.Time
+	lastUsedAt   time.Time
+	status       model.CommandStatus
+	exitCode     *int
+	commandID    string
+	command      string
+	cancel       context.CancelFunc
 	commandCount int
 }
 
 type threadSafeBuffer struct {
-	mu   sync.RWMutex
-	buf  bytes.Buffer
+	mu  sync.RWMutex
+	buf bytes.Buffer
 }
 
 func (b *threadSafeBuffer) Write(p []byte) (int, error) {
@@ -200,10 +200,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 	cmd.Dir = workingDir
 
 	// Set environment
-	cmd.Env = os.Environ()
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = buildIsolatedEnv(cmd.Environ(), workingDir, req.Env)
 
 	stdoutBuf := &threadSafeBuffer{}
 	stderrBuf := &threadSafeBuffer{}
@@ -226,19 +223,19 @@ func (h *BashHandler) Exec(c *gin.Context) {
 	}
 
 	bs := &bashSession{
-		sandboxSID:  req.SessionID,
-		bashSID:     bashSID,
-		cmd:         cmd,
-		stdin:       stdinPipe,
-		stdoutBuf:   stdoutBuf,
-		stderrBuf:   stderrBuf,
-		workingDir:  workingDir,
-		createdAt:   time.Now(),
-		lastUsedAt:  time.Now(),
-		status:      model.StatusRunning,
-		commandID:   cmdID,
-		command:     req.Command,
-		cancel:      cancel,
+		sandboxSID: req.SessionID,
+		bashSID:    bashSID,
+		cmd:        cmd,
+		stdin:      stdinPipe,
+		stdoutBuf:  stdoutBuf,
+		stderrBuf:  stderrBuf,
+		workingDir: workingDir,
+		createdAt:  time.Now(),
+		lastUsedAt: time.Now(),
+		status:     model.StatusRunning,
+		commandID:  cmdID,
+		command:    req.Command,
+		cancel:     cancel,
 	}
 
 	h.mu.Lock()

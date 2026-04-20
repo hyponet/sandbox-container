@@ -581,6 +581,57 @@ func TestCodeExecuteJavaScript(t *testing.T) {
 	}
 }
 
+func TestCodeExecuteEnvAndAuditRedaction(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.CodeExecute(
+		"a1",
+		"code-env",
+		"python",
+		"import os; print(os.environ.get('API_TOKEN'))",
+		WithCodeEnv(map[string]string{"API_TOKEN": "top-secret"}),
+	)
+	if err != nil {
+		t.Fatalf("CodeExecute with env failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "top-secret\n" {
+		t.Fatalf("expected stdout 'top-secret\\n', got %v", result.Stdout)
+	}
+
+	logs, err := cli.SessionGetAuditLogs("a1", "code-env", 0, 100)
+	if err != nil {
+		t.Fatalf("SessionGetAuditLogs failed: %v", err)
+	}
+
+	found := false
+	for _, entry := range logs.Entries {
+		if entry.Path != "/v1/code/execute" || entry.Method != "POST" {
+			continue
+		}
+
+		reqBody, ok := entry.RequestBody.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected request body map, got %T", entry.RequestBody)
+		}
+
+		env, ok := reqBody["env"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected env map, got %T", reqBody["env"])
+		}
+		if env["API_TOKEN"] != "[REDACTED]" {
+			t.Fatalf("expected API_TOKEN to be redacted, got %#v", env["API_TOKEN"])
+		}
+
+		found = true
+		break
+	}
+
+	if !found {
+		t.Fatal("audit log entry for /v1/code/execute not found")
+	}
+}
+
 func TestCodeInfo(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
@@ -1341,6 +1392,27 @@ func TestCodeExecuteWithCwd(t *testing.T) {
 	}
 	if result.Stdout == nil || *result.Stdout != "mydir\n" {
 		t.Errorf("expected stdout 'mydir\\n', got %v", result.Stdout)
+	}
+}
+
+func TestCodeExecuteWithCwdUpdatesPWD(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	cli.FileWrite("a1", "cwdpwd1", "/mydir/placeholder.txt", "x")
+
+	result, err := cli.CodeExecute(
+		"a1",
+		"cwdpwd1",
+		"python",
+		"import os; print('match' if os.getcwd() == os.environ.get('PWD') else 'mismatch')",
+		WithCwd("/mydir"),
+	)
+	if err != nil {
+		t.Fatalf("CodeExecute with Cwd failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "match\n" {
+		t.Errorf("expected stdout 'match\\n', got %v", result.Stdout)
 	}
 }
 

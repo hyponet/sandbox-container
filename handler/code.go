@@ -77,6 +77,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	defer cancel()
 	cmd = exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
 	cmd.Dir = workingDir
+	cmd.Env = buildIsolatedEnv(cmd.Environ(), workingDir, req.Env)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

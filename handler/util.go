@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -59,4 +61,37 @@ func getInstalledPackages(cmd string) (interface{}, error) {
 	var result interface{}
 	json.Unmarshal(out, &result)
 	return result, nil
+}
+
+// buildIsolatedEnv constructs an environment variable slice with session isolation.
+// Layering order: baseEnv -> isolation overrides -> user overrides.
+func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]string) []string {
+	if baseEnv == nil {
+		baseEnv = os.Environ()
+	}
+
+	env := append([]string(nil), baseEnv...)
+	pwdDir := workingDir
+	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
+		pwdDir = resolved
+	} else if absDir, err := filepath.Abs(workingDir); err == nil {
+		pwdDir = absDir
+	}
+
+	isolation := []string{
+		"HOME=" + workingDir,
+		"PWD=" + pwdDir,
+		"XDG_CACHE_HOME=" + filepath.Join(workingDir, ".cache"),
+		"XDG_CONFIG_HOME=" + filepath.Join(workingDir, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(workingDir, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(workingDir, ".local", "state"),
+		"PYTHONDONTWRITEBYTECODE=1",
+	}
+	env = append(env, isolation...)
+
+	for k, v := range userEnv {
+		env = append(env, k+"="+v)
+	}
+
+	return env
 }

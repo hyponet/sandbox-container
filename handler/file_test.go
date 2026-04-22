@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
@@ -24,7 +25,7 @@ func setupRouter() (*gin.Engine, *session.Manager) {
 
 	r := gin.New()
 
-	fileH := NewFileHandler(mgr)
+	fileH := NewFileHandler(mgr, &executor.DirectFileOperator{})
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -203,6 +204,48 @@ func TestFileList(t *testing.T) {
 	}
 	if !names["a.txt"] || !names["b.txt"] || !names["sub"] {
 		t.Errorf("expected a.txt, b.txt, sub in listing, got %v", names)
+	}
+}
+
+func TestFileGlobRecursiveRespectsHiddenFlag(t *testing.T) {
+	r, _ := setupRouter()
+
+	for _, f := range []string{"/root.go", "/nested/code.go", "/nested/.hidden.go", "/.hidden-root.go"} {
+		body := fmt.Sprintf(`{"agent_id": "a1", "session_id": "glob_recursive", "file": "%s", "content": "package main"}`, f)
+		req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("write %s failed: %d %s", f, w.Code, w.Body.String())
+		}
+	}
+
+	body := `{"agent_id": "a1", "session_id": "glob_recursive", "path": "/", "pattern": "**/*.go"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/glob", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("glob failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	files := data["files"].([]interface{})
+	if len(files) != 2 {
+		t.Fatalf("expected 2 visible matches, got %d: %v", len(files), files)
+	}
+
+	names := map[string]bool{}
+	for _, f := range files {
+		fi := f.(map[string]interface{})
+		names[fi["path"].(string)] = true
+	}
+	if !names["/root.go"] || !names["/nested/code.go"] {
+		t.Fatalf("unexpected glob paths: %v", names)
 	}
 }
 
@@ -901,5 +944,56 @@ func TestFileWrite_SkillsReadOnly_Default(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for skills write without enable_agent_workspace, got %d", w.Code)
+	}
+}
+
+func TestFileWrite_SkillsAliasReadOnly_Default(t *testing.T) {
+	r, mgr := setupRouter()
+
+	mgr.Touch("a1", "alias_ro")
+	sessionRoot := mgr.SessionRoot("a1", "alias_ro")
+	skillsDir := mgr.SkillsRoot("a1")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "aliased-skill"), 0755); err != nil {
+		t.Fatalf("MkdirAll skills dir: %v", err)
+	}
+	if err := os.Symlink("skills/aliased-skill", filepath.Join(sessionRoot, "alias")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	body := `{"agent_id": "a1", "session_id": "alias_ro", "file": "/alias/blocked.txt", "content": "nope"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for aliased skills write, got %d %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "aliased-skill", "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected no file created via skills alias, stat err=%v", err)
+	}
+}
+
+func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
+	_, mgr := setupRouter()
+	h := NewFileHandler(mgr, &executor.DirectFileOperator{})
+
+	sessionOpts := h.fileOpOpts("a1", "s1", false)
+	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0] != mgr.SessionRoot("a1", "s1") {
+		t.Fatalf("session RWBinds = %v", sessionOpts.RWBinds)
+	}
+	if len(sessionOpts.ROBinds) != 1 || sessionOpts.ROBinds[0] != mgr.SkillsRoot("a1") {
+		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
+	}
+
+	workspaceOpts := h.fileOpOpts("a1", "s1", true)
+	if len(workspaceOpts.RWBinds) != 2 {
+		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
+	}
+	if workspaceOpts.RWBinds[0] != mgr.WorkspaceRoot("a1") || workspaceOpts.RWBinds[1] != mgr.SkillsRoot("a1") {
+		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
+	}
+	if len(workspaceOpts.ROBinds) != 0 {
+		t.Fatalf("workspace ROBinds = %v", workspaceOpts.ROBinds)
 	}
 }

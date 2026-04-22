@@ -1,11 +1,10 @@
 package handler
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
 
@@ -24,11 +24,31 @@ import (
 )
 
 type FileHandler struct {
-	mgr *session.Manager
+	mgr    *session.Manager
+	fileOp executor.FileOperator
 }
 
-func NewFileHandler(mgr *session.Manager) *FileHandler {
-	return &FileHandler{mgr: mgr}
+var (
+	errSkillsReadOnly       = errors.New("skills directory is read-only")
+	errPathOutsideWriteRoot = errors.New("path escapes writable root")
+	errGlobLimitReached     = errors.New("max results reached")
+)
+
+func NewFileHandler(mgr *session.Manager, fileOp executor.FileOperator) *FileHandler {
+	return &FileHandler{mgr: mgr, fileOp: fileOp}
+}
+
+// fileOpOpts builds FileOpOptions from the resolved paths for a request.
+func (h *FileHandler) fileOpOpts(agentID, sessionID string, agentWorkspace bool) executor.FileOpOptions {
+	var opts executor.FileOpOptions
+	if agentWorkspace {
+		opts.RWBinds = append(opts.RWBinds, h.mgr.WorkspaceRoot(agentID))
+		opts.RWBinds = append(opts.RWBinds, h.mgr.SkillsRoot(agentID))
+	} else {
+		opts.RWBinds = append(opts.RWBinds, h.mgr.SessionRoot(agentID, sessionID))
+		opts.ROBinds = append(opts.ROBinds, h.mgr.SkillsRoot(agentID))
+	}
+	return opts
 }
 
 // baseRootForDisplay returns the base directory for computing relative display paths.
@@ -37,6 +57,84 @@ func (h *FileHandler) baseRootForDisplay(agentID, sessionID string, agentWorkspa
 		return filepath.Clean(h.mgr.WorkspaceRoot(agentID))
 	}
 	return filepath.Clean(h.mgr.SessionRoot(agentID, sessionID))
+}
+
+func (h *FileHandler) validateWritablePath(agentID, sessionID, realPath string, agentWorkspace bool) error {
+	resolved, err := resolvePathThroughExistingSymlinks(realPath)
+	if err != nil {
+		return err
+	}
+
+	if !agentWorkspace && pathWithinRoots(resolved, h.mgr.SkillsRoot(agentID)) {
+		return errSkillsReadOnly
+	}
+
+	allowedRoots := []string{filepath.Clean(h.mgr.SessionRoot(agentID, sessionID))}
+	if agentWorkspace {
+		allowedRoots = []string{
+			filepath.Clean(h.mgr.WorkspaceRoot(agentID)),
+			filepath.Clean(h.mgr.SkillsRoot(agentID)),
+		}
+	}
+	if !pathWithinRoots(resolved, allowedRoots...) {
+		return fmt.Errorf("%w: %s", errPathOutsideWriteRoot, realPath)
+	}
+	return nil
+}
+
+func resolvePathThroughExistingSymlinks(path string) (string, error) {
+	cleanPath := filepath.Clean(path)
+	current := cleanPath
+	var suffix []string
+
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("path has no existing parent: %s", path)
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathWithinRoots(path string, roots ...string) bool {
+	cleanPath := filepath.Clean(path)
+	if resolvedPath, err := resolvePathThroughExistingSymlinks(path); err == nil {
+		cleanPath = filepath.Clean(resolvedPath)
+	}
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		if resolvedRoot, err := resolvePathThroughExistingSymlinks(root); err == nil {
+			cleanRoot = filepath.Clean(resolvedRoot)
+		}
+		if cleanPath == cleanRoot || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func writePathStatus(err error) int {
+	if errors.Is(err, errSkillsReadOnly) {
+		return http.StatusForbidden
+	}
+	if errors.Is(err, errPathOutsideWriteRoot) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 // ---- Read ----
@@ -54,7 +152,8 @@ func (h *FileHandler) Read(c *gin.Context) {
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, realPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -93,15 +192,17 @@ func (h *FileHandler) Write(c *gin.Context) {
 		return
 	}
 
-	// Ensure parent directory exists
-	if err := h.mgr.EnsureParentDirEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace); err != nil {
-		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
-		return
-	}
-
 	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+	if err := h.validateWritablePath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace); err != nil {
+		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(realPath), 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create parent directory: "+err.Error()))
 		return
 	}
 
@@ -123,16 +224,12 @@ func (h *FileHandler) Write(c *gin.Context) {
 		}
 	}
 
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	ctx := c.Request.Context()
+
 	var written int
 	if req.Append {
-		f, err := os.OpenFile(realPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			log.Printf("[ERROR] Write: %v", err)
-			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to open file: "+err.Error()))
-			return
-		}
-		defer f.Close()
-		n, err := f.Write(content)
+		n, err := h.fileOp.AppendFile(ctx, opts, realPath, content, 0644)
 		if err != nil {
 			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write: "+err.Error()))
@@ -140,7 +237,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 		}
 		written = n
 	} else {
-		err = os.WriteFile(realPath, content, 0644)
+		err = h.fileOp.WriteFile(ctx, opts, realPath, content, 0644)
 		if err != nil {
 			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
@@ -150,7 +247,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, model.OkResponse(model.FileWriteResult{
-		File:        req.File,
+		File:         req.File,
 		BytesWritten: &written,
 	}))
 }
@@ -174,8 +271,15 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
+	if err := h.validateWritablePath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace); err != nil {
+		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
+		return
+	}
 
-	data, err := os.ReadFile(realPath)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	ctx := c.Request.Context()
+
+	data, err := h.fileOp.ReadFile(ctx, opts, realPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -192,7 +296,11 @@ func (h *FileHandler) Replace(c *gin.Context) {
 	}
 
 	newContent := strings.ReplaceAll(content, req.OldStr, req.NewStr)
-	os.WriteFile(realPath, []byte(newContent), 0644)
+	if err := h.fileOp.WriteFile(ctx, opts, realPath, []byte(newContent), 0644); err != nil {
+		log.Printf("[ERROR] Replace: %v", err)
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
+		return
+	}
 
 	c.JSON(http.StatusOK, model.OkResponse(model.FileReplaceResult{
 		File:          req.File,
@@ -221,7 +329,8 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, realPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -266,12 +375,13 @@ func (h *FileHandler) Find(c *gin.Context) {
 		return
 	}
 
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	var files []string
-	filepath.Walk(realPath, func(path string, info os.FileInfo, err error) error {
+	h.fileOp.Walk(c.Request.Context(), opts, realPath, func(path string, info executor.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
-		matched, _ := filepath.Match(req.Glob, info.Name())
+		matched, _ := filepath.Match(req.Glob, filepath.Base(info.Name))
 		if matched {
 			rel, _ := filepath.Rel(realPath, path)
 			files = append(files, filepath.Join(req.Path, rel))
@@ -336,8 +446,11 @@ func (h *FileHandler) Grep(c *gin.Context) {
 		baseRoot = skillsRoot
 	}
 
-	filepath.Walk(realPath, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil || info.IsDir() {
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	ctx := c.Request.Context()
+
+	h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
+		if walkErr != nil || info.IsDir {
 			return nil
 		}
 
@@ -346,7 +459,7 @@ func (h *FileHandler) Grep(c *gin.Context) {
 			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		data, err := h.fileOp.ReadFile(ctx, opts, path)
 		if err != nil {
 			return nil
 		}
@@ -434,13 +547,6 @@ func (h *FileHandler) Glob(c *gin.Context) {
 	var files []model.GlobFileInfo
 	truncated := false
 
-	pattern := filepath.Join(realPath, req.Pattern)
-	matches, _ := filepath.Glob(pattern)
-
-	if len(matches) == 0 && strings.Contains(req.Pattern, "**") {
-		matches = globWalk(realPath, req.Pattern, req.IncludeHidden)
-	}
-
 	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
@@ -449,38 +555,60 @@ func (h *FileHandler) Glob(c *gin.Context) {
 		baseRoot = skillsRoot
 	}
 
-	for _, m := range matches {
-		info, err := os.Stat(m)
-		if err != nil {
-			continue
-		}
-		if filesOnly && info.IsDir() {
-			continue
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	ctx := c.Request.Context()
+	pattern := normalizeGlobPattern(req.Pattern)
+
+	walkErr := h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
+		if walkErr != nil || path == realPath {
+			return nil
 		}
 
-		relPath, _ := filepath.Rel(baseRoot, m)
-		displayPath := "/" + relPath
+		relPath, err := filepath.Rel(realPath, path)
+		if err != nil {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+		if !req.IncludeHidden && hasHiddenPathSegment(relPath) {
+			return nil
+		}
+		if !matchGlobPattern(pattern, relPath) {
+			return nil
+		}
+		if filesOnly && info.IsDir {
+			return nil
+		}
+
+		displayRelPath, err := filepath.Rel(baseRoot, path)
+		if err != nil {
+			return nil
+		}
+		displayPath := "/" + displayRelPath
 		if isSkillsSearch {
-			displayPath = "/skills/" + relPath
+			displayPath = "/skills/" + displayRelPath
 		}
 
 		gfi := model.GlobFileInfo{
 			Path:        displayPath,
-			Name:        info.Name(),
-			IsDirectory: info.IsDir(),
+			Name:        info.Name,
+			IsDirectory: info.IsDir,
 		}
 		if includeMeta {
-			size := info.Size()
-			modTime := info.ModTime().Format(time.RFC3339)
+			size := info.Size
+			modTime := info.ModTime.Format(time.RFC3339)
 			gfi.Size = &size
 			gfi.ModifiedTime = &modTime
 		}
 		files = append(files, gfi)
-
 		if len(files) >= maxResults {
 			truncated = true
-			break
+			return errGlobLimitReached
 		}
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, errGlobLimitReached) {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to glob files: "+walkErr.Error()))
+		return
 	}
 
 	if files == nil {
@@ -528,14 +656,17 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	if err := h.mgr.EnsureParentDirEx(agentID, sessionID, targetPath, agentWorkspace); err != nil {
-		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
-		return
-	}
-
 	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, targetPath, agentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
+	if err := h.validateWritablePath(agentID, sessionID, realPath, agentWorkspace); err != nil {
+		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(realPath), 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create parent directory: "+err.Error()))
 		return
 	}
 
@@ -547,18 +678,11 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 	defer src.Close()
 
-	dst, err := os.Create(realPath)
+	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
+	written, err := h.fileOp.CreateFile(c.Request.Context(), opts, realPath, src)
 	if err != nil {
 		log.Printf("[ERROR] Upload: %v", err)
-		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create file"))
-		return
-	}
-	defer dst.Close()
-
-	written, err := ioCopyBuffer(dst, src)
-	if err != nil {
-		log.Printf("[ERROR] Upload: %v", err)
-		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file"))
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
 		return
 	}
 
@@ -596,19 +720,29 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	info, err := os.Stat(realPath)
+	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
+	ctx := c.Request.Context()
+
+	info, err := h.fileOp.Stat(ctx, opts, realPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found"))
 		return
 	}
 
-	if info.IsDir() {
+	if info.IsDir {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("path is a directory"))
 		return
 	}
 
+	localPath, cleanup, err := h.fileOp.ServeFile(ctx, opts, realPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read file: "+err.Error()))
+		return
+	}
+	defer cleanup()
+
 	c.Header("Content-Disposition", "attachment; filename="+filepath.Base(realPath))
-	c.File(realPath)
+	c.File(localPath)
 }
 
 // ---- List ----
@@ -652,8 +786,11 @@ func (h *FileHandler) List(c *gin.Context) {
 		baseRoot = skillsRoot
 	}
 
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	ctx := c.Request.Context()
+
 	if req.Recursive {
-		filepath.Walk(realPath, func(path string, info fs.FileInfo, walkErr error) error {
+		h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				return nil
 			}
@@ -661,22 +798,22 @@ func (h *FileHandler) List(c *gin.Context) {
 				return nil
 			}
 
-			name := info.Name()
+			name := filepath.Base(info.Name)
 			if !showHidden && strings.HasPrefix(name, ".") {
 				return nil
 			}
 
 			// Skip the skills symlink itself (it's handled as a virtual path)
-			if name == "skills" && isSymlink(path) {
+			if name == "skills" && info.Mode&os.ModeSymlink != 0 {
 				return nil
 			}
 
 			// Check file type filter
-			if len(req.FileTypes) > 0 && !info.IsDir() {
+			if len(req.FileTypes) > 0 && !info.IsDir {
 				ext := strings.ToLower(filepath.Ext(name))
 				matched := false
 				for _, ft := range req.FileTypes {
-					if strings.ToLower(ft) == ext || strings.ToLower(ft) == ext[1:] {
+					if strings.ToLower(ft) == ext || (len(ext) > 0 && strings.ToLower(ft) == ext[1:]) {
 						matched = true
 						break
 					}
@@ -695,19 +832,19 @@ func (h *FileHandler) List(c *gin.Context) {
 			fi := model.FileInfo{
 				Name:        name,
 				Path:        displayPath,
-				IsDirectory: info.IsDir(),
+				IsDirectory: info.IsDir,
 			}
 			if includeSize {
-				size := info.Size()
+				size := info.Size
 				fi.Size = &size
 			}
 			if includePerms {
-				perm := info.Mode().String()
+				perm := info.Mode.String()
 				fi.Permissions = &perm
 			}
-			modTime := info.ModTime().Format(time.RFC3339)
+			modTime := info.ModTime.Format(time.RFC3339)
 			fi.ModifiedTime = &modTime
-			if !info.IsDir() {
+			if !info.IsDir {
 				ext := filepath.Ext(name)
 				if ext != "" {
 					fi.Extension = &ext
@@ -715,7 +852,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			}
 
 			files = append(files, fi)
-			if info.IsDir() {
+			if info.IsDir {
 				dirCount++
 			} else {
 				fileCount++
@@ -723,7 +860,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			return nil
 		})
 	} else {
-		entries, err := os.ReadDir(realPath)
+		entries, err := h.fileOp.ReadDir(ctx, opts, realPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				c.JSON(http.StatusOK, model.OkResponse(model.FileListResult{
@@ -738,25 +875,25 @@ func (h *FileHandler) List(c *gin.Context) {
 		}
 
 		for _, entry := range entries {
-			name := entry.Name()
+			name := entry.Name
 			if !showHidden && strings.HasPrefix(name, ".") {
 				continue
 			}
 
-			// Follow symlinks: use os.Stat to resolve link targets
-		 fullPath := filepath.Join(realPath, name)
-			info, err := os.Stat(fullPath)
+			// Follow symlinks: use Stat to resolve link targets
+			fullPath := filepath.Join(realPath, name)
+			info, err := h.fileOp.Stat(ctx, opts, fullPath)
 			if err != nil {
 				continue
 			}
-			isDir := info.IsDir()
+			isDir := info.IsDir
 
 			// Check file type filter
 			if len(req.FileTypes) > 0 && !isDir {
 				ext := strings.ToLower(filepath.Ext(name))
 				matched := false
 				for _, ft := range req.FileTypes {
-					if strings.ToLower(ft) == ext || strings.ToLower(ft) == ext[1:] {
+					if strings.ToLower(ft) == ext || (len(ext) > 0 && strings.ToLower(ft) == ext[1:]) {
 						matched = true
 						break
 					}
@@ -778,14 +915,14 @@ func (h *FileHandler) List(c *gin.Context) {
 				IsDirectory: isDir,
 			}
 			if includeSize {
-				size := info.Size()
+				size := info.Size
 				fi.Size = &size
 			}
 			if includePerms {
-				perm := info.Mode().String()
+				perm := info.Mode.String()
 				fi.Permissions = &perm
 			}
-			modTime := info.ModTime().Format(time.RFC3339)
+			modTime := info.ModTime.Format(time.RFC3339)
 			fi.ModifiedTime = &modTime
 			if !isDir {
 				ext := filepath.Ext(name)
@@ -818,14 +955,6 @@ func (h *FileHandler) List(c *gin.Context) {
 
 // ---- Helpers ----
 
-func isSymlink(path string) bool {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeSymlink != 0
-}
-
 func matchGlobFilters(path string, include, exclude []string) bool {
 	if len(exclude) > 0 {
 		for _, ex := range exclude {
@@ -847,67 +976,51 @@ func matchGlobFilters(path string, include, exclude []string) bool {
 	return true
 }
 
-// globWalk does a recursive walk to match ** patterns.
-func globWalk(root, pattern string, includeHidden bool) []string {
-	var results []string
-	suffix := strings.TrimPrefix(pattern, "**/")
-	if suffix == "" {
-		suffix = "*"
+// normalizeGlobPattern canonicalizes the API glob pattern to slash-separated form.
+func normalizeGlobPattern(pattern string) string {
+	clean := filepath.ToSlash(strings.TrimSpace(pattern))
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "" || clean == "." {
+		return "*"
 	}
-
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !includeHidden && strings.HasPrefix(info.Name(), ".") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if suffix != "" {
-			matched, _ := filepath.Match(suffix, info.Name())
-			if matched {
-				results = append(results, path)
-			}
-		}
-		return nil
-	})
-
-	return results
+	return clean
 }
 
-func ioCopyBuffer(dst *os.File, src multipartFile) (int64, error) {
-	return copyBuffer(dst, bufio.NewReader(src))
-}
-
-type multipartFile interface {
-	Read(p []byte) (int, error)
-}
-
-func copyBuffer(dst *os.File, src *bufio.Reader) (int64, error) {
-	var written int64
-	buf := make([]byte, 32*1024)
-	for {
-		nr, err := src.Read(buf)
-		if nr > 0 {
-			nw, err := dst.Write(buf[:nr])
-			if err != nil {
-				return written, err
-			}
-			written += int64(nw)
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return written, err
+func hasHiddenPathSegment(relPath string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(relPath), "/") {
+		if strings.HasPrefix(segment, ".") && segment != "." && segment != ".." {
+			return true
 		}
 	}
-	return written, nil
+	return false
+}
+
+func matchGlobPattern(pattern, relPath string) bool {
+	patternSegments := strings.Split(filepath.ToSlash(pattern), "/")
+	pathSegments := strings.Split(filepath.ToSlash(relPath), "/")
+	return matchGlobSegments(patternSegments, pathSegments)
+}
+
+func matchGlobSegments(patternSegments, pathSegments []string) bool {
+	if len(patternSegments) == 0 {
+		return len(pathSegments) == 0
+	}
+	if patternSegments[0] == "**" {
+		for i := 0; i <= len(pathSegments); i++ {
+			if matchGlobSegments(patternSegments[1:], pathSegments[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(pathSegments) == 0 {
+		return false
+	}
+	matched, err := filepath.Match(patternSegments[0], pathSegments[0])
+	if err != nil || !matched {
+		return false
+	}
+	return matchGlobSegments(patternSegments[1:], pathSegments[1:])
 }
 
 // used for testing

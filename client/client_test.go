@@ -66,7 +66,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// File
-	fileH := handler.NewFileHandler(mgr)
+	fileH := handler.NewFileHandler(mgr, &executor.DirectFileOperator{})
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)

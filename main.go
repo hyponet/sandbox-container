@@ -128,7 +128,8 @@ func main() {
 	}
 
 	// File APIs
-	fileH := handler.NewFileHandler(mgr)
+	fileOp := executor.NewFileOperator(cmdExec)
+	fileH := handler.NewFileHandler(mgr, fileOp)
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)

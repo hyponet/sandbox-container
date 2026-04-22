@@ -1,18 +1,98 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"os"
 
 	"github.com/hyponet/sandbox-container/audit"
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )
+
+const (
+	isolationModeNone    = "none"
+	isolationModeBwrap   = "bwrap"
+	bwrapNetworkHost     = "host"
+	bwrapNetworkIsolated = "isolated"
+)
+
+func newCommandExecutor() executor.CommandExecutor {
+	mode, err := parseIsolationMode(os.Getenv("SANDBOX_ISOLATION_MODE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	switch mode {
+	case isolationModeBwrap:
+		networkMode, err := parseBwrapNetworkMode(os.Getenv("SANDBOX_BWRAP_NETWORK"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		cfg := executor.BwrapConfig{
+			NetworkMode:      networkMode,
+			ExtraROBinds:     splitCommaEnv("SANDBOX_BWRAP_EXTRA_RO_BINDS"),
+			ProcBindFallback: os.Getenv("SANDBOX_BWRAP_PROC_BIND") != "",
+		}
+		bwrapExec, err := executor.NewBwrapExecutor(cfg)
+		if err != nil {
+			log.Fatalf("Failed to initialize bwrap executor: %v", err)
+		}
+		log.Println("Isolation mode: bwrap")
+		return bwrapExec
+	default:
+		log.Println("Isolation mode: none (direct execution)")
+		return &executor.DirectExecutor{}
+	}
+}
+
+func parseIsolationMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return isolationModeNone, nil
+	}
+	switch mode {
+	case isolationModeNone, isolationModeBwrap:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid SANDBOX_ISOLATION_MODE %q: expected one of [%s, %s]", raw, isolationModeNone, isolationModeBwrap)
+	}
+}
+
+func parseBwrapNetworkMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return bwrapNetworkHost, nil
+	}
+	switch mode {
+	case bwrapNetworkHost, bwrapNetworkIsolated:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid SANDBOX_BWRAP_NETWORK %q: expected one of [%s, %s]", raw, bwrapNetworkHost, bwrapNetworkIsolated)
+	}
+}
+
+func splitCommaEnv(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var result []string
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
+}
 
 func main() {
 	auditW := audit.NewWriter("/data/agents", 5*time.Minute)
@@ -34,7 +114,8 @@ func main() {
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 
 	// Bash APIs
-	bashH := handler.NewBashHandler(mgr)
+	cmdExec := newCommandExecutor()
+	bashH := handler.NewBashHandler(mgr, cmdExec)
 	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -63,7 +144,7 @@ func main() {
 	}
 
 	// Code APIs
-	codeH := handler.NewCodeHandler(mgr)
+	codeH := handler.NewCodeHandler(mgr, cmdExec)
 	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 

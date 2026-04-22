@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
 
@@ -21,6 +22,7 @@ import (
 
 type BashHandler struct {
 	mgr      *session.Manager
+	exec     executor.CommandExecutor
 	sessions map[string]*bashSession // key: "sandboxSID:bashSID"
 	mu       sync.RWMutex
 }
@@ -70,9 +72,10 @@ func (b *threadSafeBuffer) Len() int {
 	return b.buf.Len()
 }
 
-func NewBashHandler(mgr *session.Manager) *BashHandler {
+func NewBashHandler(mgr *session.Manager, exec executor.CommandExecutor) *BashHandler {
 	return &BashHandler{
 		mgr:      mgr,
+		exec:     exec,
 		sessions: make(map[string]*bashSession),
 	}
 }
@@ -165,11 +168,14 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Determine working dir
 	var workingDir string
+	var writableRoot string
 	if req.EnableAgentWorkspace {
 		h.mgr.TouchWorkspace(req.AgentID)
 		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
+		writableRoot = workingDir
 	} else {
 		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+		writableRoot = workingDir
 	}
 	if req.ExecDir != nil && *req.ExecDir != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
@@ -196,11 +202,14 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Build command
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
-	cmd := exec.CommandContext(ctx, "bash", "-c", req.Command)
-	cmd.Dir = workingDir
-
-	// Set environment
-	cmd.Env = buildIsolatedEnv(cmd.Environ(), workingDir, req.Env)
+	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace)
+	cmd := h.exec.Prepare(executor.ExecOptions{
+		Ctx:        ctx,
+		WorkingDir: workingDir,
+		Env:        buildIsolatedEnv(os.Environ(), workingDir, req.Env),
+		RWBinds:    rwBinds,
+		ROBinds:    roBinds,
+	}, "bash", "-c", req.Command)
 
 	stdoutBuf := &threadSafeBuffer{}
 	stderrBuf := &threadSafeBuffer{}

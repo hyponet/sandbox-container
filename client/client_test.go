@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/audit"
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
@@ -51,7 +52,8 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 
 	// Bash
-	bashH := handler.NewBashHandler(mgr)
+	cmdExec := &executor.DirectExecutor{}
+	bashH := handler.NewBashHandler(mgr, cmdExec)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -80,7 +82,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Code
-	codeH := handler.NewCodeHandler(mgr)
+	codeH := handler.NewCodeHandler(mgr, cmdExec)
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 

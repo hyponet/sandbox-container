@@ -7,10 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
 
@@ -18,11 +18,12 @@ import (
 )
 
 type CodeHandler struct {
-	mgr *session.Manager
+	mgr  *session.Manager
+	exec executor.CommandExecutor
 }
 
-func NewCodeHandler(mgr *session.Manager) *CodeHandler {
-	return &CodeHandler{mgr: mgr}
+func NewCodeHandler(mgr *session.Manager, exec executor.CommandExecutor) *CodeHandler {
+	return &CodeHandler{mgr: mgr, exec: exec}
 }
 
 func (h *CodeHandler) Execute(c *gin.Context) {
@@ -33,12 +34,15 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	}
 
 	var workingDir string
+	var writableRoot string
 	if req.EnableAgentWorkspace {
 		h.mgr.TouchWorkspace(req.AgentID)
 		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
+		writableRoot = workingDir
 	} else {
 		h.mgr.Touch(req.AgentID, req.SessionID)
 		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+		writableRoot = workingDir
 	}
 	if req.Cwd != nil && *req.Cwd != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.EnableAgentWorkspace)
@@ -60,24 +64,29 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		timeout = 300
 	}
 
-	var cmd *exec.Cmd
+	var name string
+	var args []string
 	switch strings.ToLower(req.Language) {
 	case "python":
-		cmd = exec.Command("python3", "-c", req.Code)
+		name, args = "python3", []string{"-c", req.Code}
 	case "javascript", "js":
-		cmd = exec.Command("node", "-e", req.Code)
+		name, args = "node", []string{"-e", req.Code}
 	default:
 		c.JSON(http.StatusBadRequest, model.ErrResponse("unsupported language: "+req.Language))
 		return
 	}
 
-	cmd.Dir = workingDir
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	cmd = exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
-	cmd.Dir = workingDir
-	cmd.Env = buildIsolatedEnv(cmd.Environ(), workingDir, req.Env)
+
+	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace)
+	cmd := h.exec.Prepare(executor.ExecOptions{
+		Ctx:        ctx,
+		WorkingDir: workingDir,
+		Env:        buildIsolatedEnv(os.Environ(), workingDir, req.Env),
+		RWBinds:    rwBinds,
+		ROBinds:    roBinds,
+	}, name, args...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

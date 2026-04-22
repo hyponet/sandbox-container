@@ -645,6 +645,15 @@ func TestExtractZipNestedDirsWithoutDirFlag(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
+	// SKILLS.md at root (flat layout)
+	f, err := w.Create("SKILLS.md")
+	if err != nil {
+		t.Fatalf("Create SKILLS.md: %v", err)
+	}
+	if _, err := f.Write([]byte("---\nname: test\n---\n")); err != nil {
+		t.Fatalf("Write SKILLS.md: %v", err)
+	}
+
 	// Create directory entry WITHOUT setting ModeDir — only the trailing "/" identifies it
 	fh := &zip.FileHeader{Name: "scripts/", Method: zip.Deflate}
 	fh.SetMode(0644) // regular file mode, NOT a directory
@@ -653,7 +662,7 @@ func TestExtractZipNestedDirsWithoutDirFlag(t *testing.T) {
 	}
 
 	// File inside that directory
-	f, err := w.Create("scripts/run_bioinfor.py")
+	f, err = w.Create("scripts/run_bioinfor.py")
 	if err != nil {
 		t.Fatalf("Create scripts/run_bioinfor.py: %v", err)
 	}
@@ -702,6 +711,7 @@ func TestExtractZipNestedDirsWithoutDirFlag(t *testing.T) {
 
 	// Verify files were extracted correctly
 	for _, path := range []string{
+		"SKILLS.md",
 		"scripts/run_bioinfor.py",
 		"scripts/sub/deep.txt",
 	} {
@@ -726,6 +736,10 @@ func TestExtractZipPermissionMasking(t *testing.T) {
 	// preventing setuid/setgid/sticky bits or overly permissive modes.
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
+
+	// SKILLS.md required
+	f, _ := w.Create("SKILLS.md")
+	f.Write([]byte("---\nname: test\n---\n"))
 
 	// Create a file with setuid + 0777 permissions
 	fh := &zip.FileHeader{Name: "dangerous.sh", Method: zip.Deflate}
@@ -780,8 +794,11 @@ func TestExtractZipPathTraversal(t *testing.T) {
 	// Create a ZIP with a path traversal entry
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
+	// SKILLS.md required
+	f, _ := w.Create("SKILLS.md")
+	f.Write([]byte("---\nname: test\n---\n"))
 	// Normal file
-	f, _ := w.Create("normal.txt")
+	f, _ = w.Create("normal.txt")
 	f.Write([]byte("safe"))
 	// Path traversal file (should be skipped)
 	f2, _ := w.Create("../escape.txt")
@@ -809,6 +826,111 @@ func TestExtractZipPathTraversal(t *testing.T) {
 	// ../escape.txt should NOT have been extracted outside destDir
 	if _, err := os.Stat(filepath.Join(destDir, "..", "escape.txt")); err == nil {
 		t.Error("path traversal file should not have been extracted outside destDir")
+	}
+}
+
+func TestExtractZipMissingSkillsMD(t *testing.T) {
+	// ZIP without SKILLS.md should return an error.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, _ := w.Create("readme.txt")
+	f.Write([]byte("no skills here"))
+	w.Close()
+
+	tmpZip, _ := os.CreateTemp("", "noskills-*.zip")
+	tmpZip.Write(buf.Bytes())
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	destDir, _ := os.MkdirTemp("", "extract-dest-*")
+	defer os.RemoveAll(destDir)
+
+	err := extractZip(tmpZip.Name(), destDir)
+	if err == nil {
+		t.Fatal("expected error when ZIP has no SKILLS.md")
+	}
+	if !strings.Contains(err.Error(), "SKILLS.md") {
+		t.Errorf("error should mention SKILLS.md, got: %v", err)
+	}
+}
+
+func TestExtractZipWrappedLayout(t *testing.T) {
+	// ZIP with a single wrapping folder: my-skill/SKILLS.md, my-skill/scripts/run.sh
+	// Should extract SKILLS.md and scripts/run.sh to the root.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	fh := &zip.FileHeader{Name: "my-skill/"}
+	fh.SetMode(os.ModeDir | 0755)
+	w.CreateHeader(fh)
+
+	f, _ := w.Create("my-skill/SKILLS.md")
+	f.Write([]byte("---\nname: wrapped\n---\nhello"))
+
+	f2, _ := w.Create("my-skill/scripts/run.sh")
+	f2.Write([]byte("#!/bin/sh\necho hi\n"))
+
+	w.Close()
+
+	tmpZip, _ := os.CreateTemp("", "wrapped-*.zip")
+	tmpZip.Write(buf.Bytes())
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	destDir, _ := os.MkdirTemp("", "extract-dest-*")
+	defer os.RemoveAll(destDir)
+
+	if err := extractZip(tmpZip.Name(), destDir); err != nil {
+		t.Fatalf("extractZip failed: %v", err)
+	}
+
+	// Files should be at the root, not under my-skill/
+	for _, path := range []string{"SKILLS.md", "scripts/run.sh"} {
+		fullPath := filepath.Join(destDir, path)
+		if _, err := os.Stat(fullPath); err != nil {
+			t.Errorf("%s should exist at root level: %v", path, err)
+		}
+	}
+
+	// my-skill/ should NOT exist as a directory
+	if _, err := os.Stat(filepath.Join(destDir, "my-skill")); err == nil {
+		t.Error("my-skill/ should not exist — wrapper should have been stripped")
+	}
+}
+
+func TestExtractZipRejectsNestedSkillsMD(t *testing.T) {
+	// ZIP with nested: my-skill/sub/SKILLS.md should be rejected because
+	// the import pipeline expects SKILLS.md at the root after any wrapper is stripped.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	fh := &zip.FileHeader{Name: "my-skill/"}
+	fh.SetMode(os.ModeDir | 0755)
+	w.CreateHeader(fh)
+
+	fh2 := &zip.FileHeader{Name: "my-skill/sub/"}
+	fh2.SetMode(os.ModeDir | 0755)
+	w.CreateHeader(fh2)
+
+	f, _ := w.Create("my-skill/sub/SKILLS.md")
+	f.Write([]byte("---\nname: nested\n---\n"))
+
+	w.Close()
+
+	tmpZip, _ := os.CreateTemp("", "nested-wrap-*.zip")
+	tmpZip.Write(buf.Bytes())
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	destDir, _ := os.MkdirTemp("", "extract-dest-*")
+	defer os.RemoveAll(destDir)
+
+	err := extractZip(tmpZip.Name(), destDir)
+	if err == nil {
+		t.Fatal("expected nested SKILLS.md layout to be rejected")
+	}
+	if !strings.Contains(err.Error(), "SKILLS.md") {
+		t.Fatalf("expected error to mention SKILLS.md layout, got %v", err)
 	}
 }
 

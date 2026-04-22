@@ -71,6 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # --- misc ---
         tree \
         sudo \
+        bubblewrap \
         ca-certificates \
         gnupg \
         software-properties-common \

@@ -12,19 +12,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )
 
 func setupBashRouter() (*gin.Engine, *session.Manager) {
+	return setupBashRouterWithExecutor(&executor.DirectExecutor{})
+}
+
+func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
 	gin.SetMode(gin.TestMode)
 	dir := filepath.Join(os.TempDir(), "sandbox-bash-test-"+time.Now().Format("20060102150405"))
 	os.MkdirAll(dir, 0755)
 	mgr := session.NewManager(dir, 24*time.Hour)
 
 	r := gin.New()
-	bashH := NewBashHandler(mgr)
+	bashH := NewBashHandler(mgr, cmdExec)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", bashH.Exec)
@@ -111,6 +116,30 @@ func TestBashExecEnv(t *testing.T) {
 	stdout := data["stdout"].(string)
 	if stdout != "test_value\n" {
 		t.Errorf("expected 'test_value\\n', got %q", stdout)
+	}
+}
+
+func TestBashExecDoesNotExposeSandboxAPIKey(t *testing.T) {
+	t.Setenv("SANDBOX_API_KEY", "super-secret")
+
+	r, _ := setupBashRouter()
+
+	body := `{"agent_id": "a1", "session_id": "bash_env_hidden", "command": "printf %s \"$SANDBOX_API_KEY\""}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("exec failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	stdout := data["stdout"].(string)
+	if stdout != "" {
+		t.Fatalf("expected SANDBOX_API_KEY to be hidden, got %q", stdout)
 	}
 }
 

@@ -7,7 +7,40 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/hyponet/sandbox-container/session"
 )
+
+const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+var sensitiveExecEnvKeys = map[string]struct{}{
+	"ANTHROPIC_API_KEY":     {},
+	"AWS_ACCESS_KEY_ID":     {},
+	"AWS_SECRET_ACCESS_KEY": {},
+	"AWS_SESSION_TOKEN":     {},
+	"AZURE_OPENAI_API_KEY":  {},
+	"GITHUB_TOKEN":          {},
+	"GITLAB_TOKEN":          {},
+	"GH_TOKEN":              {},
+	"HF_TOKEN":              {},
+	"HUGGINGFACE_HUB_TOKEN": {},
+	"NPM_TOKEN":             {},
+	"OPENAI_API_KEY":        {},
+	"PYPI_TOKEN":            {},
+	"SANDBOX_API_KEY":       {},
+	"TWINE_PASSWORD":        {},
+}
+
+var sensitiveExecEnvSuffixes = []string{
+	"_ACCESS_TOKEN",
+	"_API_KEY",
+	"_PASSWORD",
+	"_PRIVATE_KEY",
+	"_SECRET",
+	"_SECRET_ACCESS_KEY",
+	"_SECRET_KEY",
+	"_TOKEN",
+}
 
 func strPtr(s string) *string { return &s }
 
@@ -66,11 +99,7 @@ func getInstalledPackages(cmd string) (interface{}, error) {
 // buildIsolatedEnv constructs an environment variable slice with session isolation.
 // Layering order: baseEnv -> isolation overrides -> user overrides.
 func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]string) []string {
-	if baseEnv == nil {
-		baseEnv = os.Environ()
-	}
-
-	env := append([]string(nil), baseEnv...)
+	env := filteredBaseEnv(baseEnv)
 	pwdDir := workingDir
 	if resolved, err := filepath.EvalSymlinks(workingDir); err == nil {
 		pwdDir = resolved
@@ -94,4 +123,69 @@ func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]st
 	}
 
 	return env
+}
+
+func commandExecBinds(mgr *session.Manager, agentID, writableRoot string, agentWorkspace bool) (rwBinds []string, roBinds []string) {
+	rwBinds = appendUniqueExecPath(rwBinds, writableRoot)
+
+	skillsRoot := mgr.SkillsRoot(agentID)
+	if agentWorkspace {
+		rwBinds = appendUniqueExecPath(rwBinds, skillsRoot)
+		return rwBinds, nil
+	}
+
+	roBinds = appendUniqueExecPath(roBinds, skillsRoot)
+	return rwBinds, roBinds
+}
+
+func filteredBaseEnv(baseEnv []string) []string {
+	if baseEnv == nil {
+		baseEnv = os.Environ()
+	}
+
+	env := make([]string, 0, len(baseEnv)+1)
+	hasPath := false
+	for _, entry := range baseEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || isSensitiveExecEnvKey(key) {
+			continue
+		}
+		if key == "PATH" && strings.TrimSpace(value) != "" {
+			hasPath = true
+		}
+		env = append(env, entry)
+	}
+	if !hasPath {
+		env = append(env, "PATH="+defaultExecPath)
+	}
+	return env
+}
+
+func isSensitiveExecEnvKey(key string) bool {
+	upper := strings.ToUpper(key)
+	if _, ok := sensitiveExecEnvKeys[upper]; ok {
+		return true
+	}
+	if strings.HasPrefix(upper, "BASH_FUNC_") {
+		return true
+	}
+	for _, suffix := range sensitiveExecEnvSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUniqueExecPath(paths []string, path string) []string {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "." || cleanPath == "" {
+		return paths
+	}
+	for _, existing := range paths {
+		if filepath.Clean(existing) == cleanPath {
+			return paths
+		}
+	}
+	return append(paths, cleanPath)
 }

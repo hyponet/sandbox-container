@@ -36,7 +36,8 @@ Go 1.25, module `github.com/hyponet/sandbox-container`. Uses **gin-gonic/gin** (
 main.go → gin router with middleware chain
   ├── middleware/  - Audit logging (→ /var/log/sandbox/audit.log), API key auth (SANDBOX_API_KEY env)
   ├── session/     - Manager creates/cleans up session dirs; TTL cleanup goroutine (24h default, 10min interval)
-  ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager)
+  ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager + executor.CommandExecutor)
+  ├── executor/    - Command execution abstraction: DirectExecutor (default) or BwrapExecutor (bubblewrap sandbox)
   ├── model/       - Shared request/response structs
   └── client/      - Go SDK for consuming the API (httptest-based integration tests)
 ```
@@ -50,6 +51,11 @@ main.go → gin router with middleware chain
 ## Environment Variables
 
 - `SANDBOX_API_KEY` - Comma-separated API keys for Bearer token auth. If unset, auth is disabled.
+- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `none` (default, direct execution) or `bwrap` (bubblewrap sandbox). Bwrap mode requires the `bwrap` binary installed (intended for VM deployments, not Docker).
+- `SANDBOX_BWRAP_NETWORK` - Network policy in bwrap mode: `host` (default, allows network access) or `isolated` (unshares network namespace).
+- `SANDBOX_BWRAP_EXTRA_RO_BINDS` - Comma-separated list of additional read-only bind mount paths in bwrap mode.
+- `SANDBOX_BWRAP_PROC_BIND` - When set (any value), uses `--bind /proc /proc` instead of `--proc /proc` in bwrap mode. Use this on systems where new procfs mounts are restricted (e.g., "Operation not permitted" errors with `--proc`).
+- `SANDBOX_SSRF_PROTECTION` - Enable SSRF protection for skill import URLs (default: enabled).
 
 ## API Routes
 

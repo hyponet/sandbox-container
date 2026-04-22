@@ -11,19 +11,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )
 
 func setupCodeRouter() (*gin.Engine, *session.Manager) {
+	return setupCodeRouterWithExecutor(&executor.DirectExecutor{})
+}
+
+func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
 	gin.SetMode(gin.TestMode)
 	dir := filepath.Join(os.TempDir(), "sandbox-code-test-"+time.Now().Format("20060102150405"))
 	os.MkdirAll(dir, 0755)
 	mgr := session.NewManager(dir, 24*time.Hour)
 
 	r := gin.New()
-	codeH := NewCodeHandler(mgr)
+	codeH := NewCodeHandler(mgr, cmdExec)
 	r.POST("/v1/code/execute", codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 

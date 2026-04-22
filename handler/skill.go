@@ -23,7 +23,7 @@ import (
 const (
 	maxZipSize        = 100 * 1024 * 1024 // 100MB download limit
 	maxExtractedSize  = 500 * 1024 * 1024 // 500MB total extracted size
-	maxUploadFiles    = 20                 // max files per upload request
+	maxUploadFiles    = 20                // max files per upload request
 	skillHTTPTimeout  = 60 * time.Second
 	metaFile          = "_meta.json"
 	ssrfProtectionEnv = "SANDBOX_SSRF_PROTECTION"
@@ -148,6 +148,12 @@ func copyDir(src, dst string) error {
 }
 
 // extractZip extracts a ZIP archive to the target directory with size limits.
+// It handles two layouts:
+//   - flat: SKILLS.md at the root of the ZIP
+//   - wrapped: a single folder wrapping the content (e.g. my-skill/SKILLS.md)
+//
+// If the ZIP has a wrapped layout, the wrapper folder is promoted to the root.
+// Returns an error if no SKILLS.md (case-insensitive) is found anywhere in the ZIP.
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -155,26 +161,41 @@ func extractZip(zipPath, destDir string) error {
 	}
 	defer r.Close()
 
+	// First pass: find the prefix (if any) to strip, and validate SKILLS.md exists.
+	stripPrefix, err := detectZipStripPrefix(r.File)
+	if err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("create destination directory %s: %w", destDir, err)
 	}
 
 	var totalSize int64
-
 	cleanDestDir := filepath.Clean(destDir)
 
 	for _, f := range r.File {
-		if strings.Contains(f.Name, "..") {
+		// Strip the detected prefix.
+		name := f.Name
+		if stripPrefix != "" {
+			name = strings.TrimPrefix(name, stripPrefix)
+			if name == "" {
+				// This is the wrapper directory entry itself; skip.
+				continue
+			}
+		}
+
+		if strings.Contains(name, "..") {
 			continue
 		}
 
-		fpath := filepath.Join(destDir, f.Name)
+		fpath := filepath.Join(destDir, name)
 		if !strings.HasPrefix(filepath.Clean(fpath)+string(os.PathSeparator), cleanDestDir+string(os.PathSeparator)) &&
 			filepath.Clean(fpath) != cleanDestDir {
 			continue
 		}
 
-		if f.FileInfo().IsDir() || strings.HasSuffix(f.Name, "/") {
+		if f.FileInfo().IsDir() || strings.HasSuffix(name, "/") {
 			if err := os.MkdirAll(fpath, 0755); err != nil {
 				return fmt.Errorf("create directory %s: %w", fpath, err)
 			}
@@ -210,6 +231,69 @@ func extractZip(zipPath, destDir string) error {
 	}
 
 	return nil
+}
+
+// detectZipStripPrefix examines ZIP entries and returns a prefix to strip if
+// the content is wrapped in a single folder. Only two layouts are accepted:
+//   - flat: SKILLS.md at the archive root
+//   - wrapped: <skill-dir>/SKILLS.md with every entry under the same wrapper dir
+func detectZipStripPrefix(files []*zip.File) (string, error) {
+	var wrappedPrefix string
+	hasRootFiles := false
+	hasRootSkillsMD := false
+
+	for _, f := range files {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		name := filepath.ToSlash(f.Name)
+		if !strings.Contains(name, "/") {
+			hasRootFiles = true
+		}
+
+		if !isSkillsMDFileName(filepath.Base(name)) {
+			continue
+		}
+
+		switch strings.Count(name, "/") {
+		case 0:
+			hasRootSkillsMD = true
+		case 1:
+			if wrappedPrefix == "" {
+				wrappedPrefix = strings.Split(name, "/")[0]
+			}
+		default:
+			return "", fmt.Errorf("ZIP must place SKILLS.md at archive root or inside a single wrapping directory")
+		}
+	}
+
+	if hasRootSkillsMD {
+		return "", nil
+	}
+	if wrappedPrefix == "" {
+		return "", fmt.Errorf("ZIP does not contain SKILLS.md: skill package is invalid")
+	}
+
+	if hasRootFiles {
+		return "", fmt.Errorf("ZIP must place SKILLS.md at archive root when other files exist at the archive root")
+	}
+
+	for _, f := range files {
+		name := filepath.ToSlash(f.Name)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, wrappedPrefix+"/") || name == wrappedPrefix || name == wrappedPrefix+"/" {
+			continue
+		}
+		return "", fmt.Errorf("ZIP contains entries outside the wrapping directory %q", wrappedPrefix)
+	}
+
+	return wrappedPrefix + "/", nil
+}
+
+func isSkillsMDFileName(name string) bool {
+	return strings.EqualFold(name, "SKILLS.md") || strings.EqualFold(name, "SKILL.md")
 }
 
 // splitFrontmatter splits SKILLS.md content into frontmatter (YAML between --- delimiters)

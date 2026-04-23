@@ -9,6 +9,7 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Code Execution** — Run Python and JavaScript code with timeout control and pre-installed scientific computing and web development libraries
 - **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
+- **Bwrap Sandbox** — Optional bubblewrap-based isolation with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
 - **Audit Logging** — Full request/response logging
 
 ## Quick Start
@@ -329,6 +330,45 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
 - Default TTL: 24 hours
 - Cleanup interval: 10 minutes
 - Path traversal protection: paths containing `..` are rejected
+
+## Bwrap Isolation
+
+When `SANDBOX_ISOLATION_MODE=bwrap` is set, all command execution and file operations run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes. This provides OS-level isolation on top of the session directory isolation.
+
+### Security Features
+
+- **Namespace isolation** — PID, UTS, IPC namespaces are always unshared; network namespace optionally unshared via `SANDBOX_BWRAP_NETWORK=isolated`
+- **Read-only system mounts** — `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc` are mounted read-only
+- **Sandboxed file operations** — File reads/writes go through `BwrapFileOperator`, which executes all file I/O inside bwrap using base64-encoded stdin/stdout, preventing symlink escape attacks
+- **Ephemeral `/tmp`** — Each command gets a fresh tmpfs `/tmp`
+- **Skills read-only** — Skills directories are mounted read-only inside the sandbox
+- **Process safety** — `--die-with-parent` and `--new-session` prevent orphaned processes
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SANDBOX_ISOLATION_MODE` | Set to `bwrap` to enable bubblewrap isolation | `none` |
+| `SANDBOX_BWRAP_NETWORK` | `host` (allow network) or `isolated` (no network) | `host` |
+| `SANDBOX_BWRAP_EXTRA_RO_BINDS` | Comma-separated additional read-only bind mount paths | — |
+| `SANDBOX_BWRAP_PROC_BIND` | Set any value to use `--bind /proc /proc` instead of `--proc /proc` (for restricted systems) | — |
+
+### Example
+
+```bash
+docker run -d \
+  -p 9090:9090 \
+  -e SANDBOX_ISOLATION_MODE=bwrap \
+  -e SANDBOX_BWRAP_NETWORK=isolated \
+  -v sandbox-data:/data/agents \
+  -v sandbox-skills:/data/skills \
+  -v sandbox-logs:/var/log/sandbox \
+  sandbox-container
+```
+
+### Runtime Path Resolution
+
+Bwrap mode automatically detects and mounts runtime paths needed by commands. Paths under `/usr/local`, `/opt`, `/run/current-system`, and `/nix/store` are auto-mounted read-only when a command binary resides there.
 
 ## Workspace Mode
 

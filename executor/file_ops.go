@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"io"
+	"log"
 	"os"
 	"time"
 )
@@ -45,7 +46,9 @@ type FileOperator interface {
 // otherwise a DirectFileOperator.
 func NewFileOperator(cmdExec CommandExecutor) FileOperator {
 	if bwrap, ok := cmdExec.(*BwrapExecutor); ok {
+		log.Println("File operator: bwrap")
 		return &BwrapFileOperator{exec: bwrap}
 	}
+	log.Println("File operator: direct")
 	return &DirectFileOperator{}
 }

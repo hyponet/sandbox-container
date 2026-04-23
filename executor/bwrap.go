@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,8 @@ func (b *BwrapExecutor) Prepare(opts ExecOptions, name string, args ...string) *
 	bwrapArgs = append(bwrapArgs, "--")
 	bwrapArgs = append(bwrapArgs, resolvedName)
 	bwrapArgs = append(bwrapArgs, args...)
+
+	log.Printf("[bwrap] %s %s", b.path, strings.Join(bwrapArgs, " "))
 
 	cmd := exec.CommandContext(opts.Ctx, b.path, bwrapArgs...)
 	cmd.Dir = opts.WorkingDir

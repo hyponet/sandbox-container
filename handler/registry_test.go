@@ -955,6 +955,159 @@ func TestRegistryExport_SpecificVersion(t *testing.T) {
 	}
 }
 
+// ——— Auto-sync active version ———
+
+func TestRegistryAutoSync_FileWrite(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "sync-skill"}`)
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "sync-skill"}`)
+	resp := parseResponse(t, w)
+	var vc model.RegistryVersionCreateResult
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc)
+	version := vc.Version.Version
+
+	// Write initial file and activate
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "sync-skill", "version": "%s", "path": "test.txt", "content": "initial"}`, version))
+	doRequest(t, r, "POST", "/v1/registry/activate",
+		fmt.Sprintf(`{"name": "sync-skill", "version": "%s"}`, version))
+
+	// Verify initial content in deployed dir
+	deployedFile := filepath.Join(mgr.GlobalSkillPath("sync-skill"), "test.txt")
+	b, _ := os.ReadFile(deployedFile)
+	if string(b) != "initial" {
+		t.Fatalf("expected 'initial', got %q", string(b))
+	}
+
+	// Modify file in registry version — should auto-sync
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "sync-skill", "version": "%s", "path": "test.txt", "content": "updated"}`, version))
+
+	b, _ = os.ReadFile(deployedFile)
+	if string(b) != "updated" {
+		t.Errorf("auto-sync: expected 'updated', got %q", string(b))
+	}
+}
+
+func TestRegistryAutoSync_FileUpdate(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "sync-update-skill"}`)
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "sync-update-skill"}`)
+	resp := parseResponse(t, w)
+	var vc model.RegistryVersionCreateResult
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc)
+	version := vc.Version.Version
+
+	// Write file and activate
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "sync-update-skill", "version": "%s", "path": "hello.txt", "content": "hello world"}`, version))
+	doRequest(t, r, "POST", "/v1/registry/activate",
+		fmt.Sprintf(`{"name": "sync-update-skill", "version": "%s"}`, version))
+
+	// Update file content — should auto-sync
+	doRequest(t, r, "POST", "/v1/registry/versions/file/update",
+		fmt.Sprintf(`{"name": "sync-update-skill", "version": "%s", "path": "hello.txt", "old_str": "world", "new_str": "golang"}`, version))
+
+	deployedFile := filepath.Join(mgr.GlobalSkillPath("sync-update-skill"), "hello.txt")
+	b, _ := os.ReadFile(deployedFile)
+	if string(b) != "hello golang" {
+		t.Errorf("auto-sync: expected 'hello golang', got %q", string(b))
+	}
+}
+
+func TestRegistryAutoSync_FileDelete(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "sync-del-skill"}`)
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "sync-del-skill"}`)
+	resp := parseResponse(t, w)
+	var vc model.RegistryVersionCreateResult
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc)
+	version := vc.Version.Version
+
+	// Write file and activate
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "sync-del-skill", "version": "%s", "path": "todelete.txt", "content": "bye"}`, version))
+	doRequest(t, r, "POST", "/v1/registry/activate",
+		fmt.Sprintf(`{"name": "sync-del-skill", "version": "%s"}`, version))
+
+	// Delete file from version — should auto-sync
+	doRequest(t, r, "POST", "/v1/registry/versions/file/delete",
+		fmt.Sprintf(`{"name": "sync-del-skill", "version": "%s", "path": "todelete.txt"}`, version))
+
+	deployedFile := filepath.Join(mgr.GlobalSkillPath("sync-del-skill"), "todelete.txt")
+	if _, err := os.Stat(deployedFile); err == nil {
+		t.Error("auto-sync: file should be deleted from deployed dir")
+	}
+}
+
+func TestRegistryAutoSync_FileMkdir(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "sync-mkdir-skill"}`)
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "sync-mkdir-skill"}`)
+	resp := parseResponse(t, w)
+	var vc model.RegistryVersionCreateResult
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc)
+	version := vc.Version.Version
+
+	// Activate empty version
+	doRequest(t, r, "POST", "/v1/registry/activate",
+		fmt.Sprintf(`{"name": "sync-mkdir-skill", "version": "%s"}`, version))
+
+	// Create directory — should auto-sync
+	doRequest(t, r, "POST", "/v1/registry/versions/file/mkdir",
+		fmt.Sprintf(`{"name": "sync-mkdir-skill", "version": "%s", "path": "subdir"}`, version))
+
+	deployedDir := filepath.Join(mgr.GlobalSkillPath("sync-mkdir-skill"), "subdir")
+	if info, err := os.Stat(deployedDir); err != nil || !info.IsDir() {
+		t.Errorf("auto-sync: subdir should exist in deployed dir")
+	}
+}
+
+func TestRegistryAutoSync_NonActiveVersion_NoSync(t *testing.T) {
+	r, mgr := setupRegistryRouter()
+
+	doRequest(t, r, "POST", "/v1/registry/create", `{"name": "nosync-skill"}`)
+	// Create two versions
+	w := doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "nosync-skill"}`)
+	resp := parseResponse(t, w)
+	var vc1 model.RegistryVersionCreateResult
+	data, _ := json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc1)
+
+	w = doRequest(t, r, "POST", "/v1/registry/versions/create", `{"name": "nosync-skill"}`)
+	resp = parseResponse(t, w)
+	var vc2 model.RegistryVersionCreateResult
+	data, _ = json.Marshal(resp.Data)
+	json.Unmarshal(data, &vc2)
+
+	// Activate v1 and write a file
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "nosync-skill", "version": "%s", "path": "a.txt", "content": "from-v1"}`, vc1.Version.Version))
+	doRequest(t, r, "POST", "/v1/registry/activate",
+		fmt.Sprintf(`{"name": "nosync-skill", "version": "%s"}`, vc1.Version.Version))
+
+	// Write to v2 (non-active) — should NOT sync
+	doRequest(t, r, "POST", "/v1/registry/versions/file/write",
+		fmt.Sprintf(`{"name": "nosync-skill", "version": "%s", "path": "b.txt", "content": "from-v2"}`, vc2.Version.Version))
+
+	deployedDir := mgr.GlobalSkillPath("nosync-skill")
+	if _, err := os.Stat(filepath.Join(deployedDir, "b.txt")); err == nil {
+		t.Error("non-active version should NOT sync to deployed dir")
+	}
+	// a.txt should still be there
+	if _, err := os.Stat(filepath.Join(deployedDir, "a.txt")); err != nil {
+		t.Error("active version file should still exist in deployed dir")
+	}
+}
+
 func TestRegistryExport_NonExistentVersion(t *testing.T) {
 	r, _ := setupRegistryRouter()
 

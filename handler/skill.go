@@ -263,7 +263,7 @@ func detectZipStripPrefix(files []*zip.File) (string, error) {
 				wrappedPrefix = strings.Split(name, "/")[0]
 			}
 		default:
-			return "", fmt.Errorf("ZIP must place SKILLS.md at archive root or inside a single wrapping directory")
+			// Deeper SKILLS.md files are part of the skill content, not the root marker.
 		}
 	}
 

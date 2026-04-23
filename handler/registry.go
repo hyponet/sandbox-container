@@ -919,6 +919,26 @@ func (h *RegistryHandler) resolveVersionPath(name, version, relPath string) (str
 	return resolveSkillFilePath(versionDir, relPath)
 }
 
+// syncIfActive checks if the modified version is the active version.
+// If so, it redeploys to /data/skills/ automatically.
+// Must be called with h.mu held.
+func (h *RegistryHandler) syncIfActive(name, version string) {
+	skillDir := h.mgr.RegistrySkillPath(name)
+	meta, err := readRegistryMeta(skillDir)
+	if err != nil || meta.ActiveVersion != version {
+		return
+	}
+	versionEntry, found := findVersionEntry(meta, version)
+	if !found {
+		return
+	}
+	if err := h.deployVersionToSkills(skillDir, meta, versionEntry); err != nil {
+		log.Printf("[WARN] Registry: auto-sync active version %s/%s failed: %v", name, version, err)
+	}
+}
+
+// ——— Version file operations ———
+
 // VersionFileRead reads a file within a specific version.
 func (h *RegistryHandler) VersionFileRead(c *gin.Context) {
 	var req model.RegistryVersionFileReadRequest
@@ -991,6 +1011,8 @@ func (h *RegistryHandler) VersionFileWrite(c *gin.Context) {
 		return
 	}
 
+	h.syncIfActive(req.Name, req.Version)
+
 	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileWriteResult{
 		Path:         req.Path,
 		BytesWritten: len(data),
@@ -1039,6 +1061,8 @@ func (h *RegistryHandler) VersionFileUpdate(c *gin.Context) {
 		}
 	}
 
+	h.syncIfActive(req.Name, req.Version)
+
 	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileUpdateResult{
 		Path:          req.Path,
 		ReplacedCount: replacedCount,
@@ -1071,6 +1095,8 @@ func (h *RegistryHandler) VersionFileMkdir(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to create directory: "+err.Error()))
 		return
 	}
+
+	h.syncIfActive(req.Name, req.Version)
 
 	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileMkdirResult{Path: req.Path}))
 }
@@ -1117,6 +1143,8 @@ func (h *RegistryHandler) VersionFileDelete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to delete: "+err.Error()))
 		return
 	}
+
+	h.syncIfActive(req.Name, req.Version)
 
 	c.JSON(http.StatusOK, model.OkResponse(model.SkillFileDeleteResult{Path: req.Path}))
 }

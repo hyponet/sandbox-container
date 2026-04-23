@@ -244,8 +244,8 @@ RUN chmod +x /usr/local/bin/sandbox-server
 # ---------------------------------------------------------------------------
 # 11. Runtime configuration
 # ---------------------------------------------------------------------------
-USER sbox
-WORKDIR /home/sbox
+USER root
+WORKDIR /root
 
 EXPOSE 9090
 
@@ -256,8 +256,5 @@ ENV SANDBOX_API_KEY=""
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:9090/v1/sandbox || exit 1
-
-# Volume for persistent agent data
-VOLUME ["/data/agents", "/var/log/sandbox"]
 
 ENTRYPOINT ["sandbox-server"]

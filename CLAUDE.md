@@ -37,21 +37,35 @@ main.go → gin router with middleware chain
   ├── middleware/  - Audit logging (→ /var/log/sandbox/audit.log), API key auth (SANDBOX_API_KEY env)
   ├── session/     - Manager creates/cleans up session dirs; TTL cleanup goroutine (24h default, 10min interval)
   ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager + executor.CommandExecutor)
-  ├── executor/    - Command execution abstraction: DirectExecutor (default) or BwrapExecutor (bubblewrap sandbox)
+  ├── executor/    - Command execution & file operation abstraction
+  │     ├── executor.go         - CommandExecutor interface
+  │     ├── direct.go           - DirectExecutor (no sandbox)
+  │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox for commands)
+  │     ├── file_ops.go         - FileOperator interface + factory (auto-selects Direct or Bwrap)
+  │     ├── file_ops_direct.go  - DirectFileOperator (os.* calls)
+  │     └── file_ops_bwrap.go   - BwrapFileOperator (file ops inside bwrap sandbox)
   ├── model/       - Shared request/response structs
   └── client/      - Go SDK for consuming the API (httptest-based integration tests)
 ```
 
-**Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → Response
+**Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → Executor (Direct or Bwrap) → Response
 
 **Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. Skills are accessed via symlink `sessions/<sid>/skills → ../../skills`.
+
+**Bwrap isolation:** When `SANDBOX_ISOLATION_MODE=bwrap`, both command execution and file operations run inside bubblewrap sandboxes. `NewFileOperator()` auto-detects the executor type and returns `BwrapFileOperator` (sandboxed) or `DirectFileOperator` accordingly. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks.
+
+**Bwrap security features:**
+- Namespace isolation: PID (`--unshare-pid`), UTS (`--unshare-uts`), IPC (`--unshare-ipc`), optional network (`--unshare-net`)
+- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session dirs read-write; skills dirs read-only
+- Process: `--die-with-parent`, `--new-session`
+- Runtime path resolution: auto-mounts `/usr/local`, `/opt`, `/run/current-system`, `/nix/store` as needed
 
 **Async bash:** Commands run in async mode write output to thread-safe buffers; output is read incrementally via offset.
 
 ## Environment Variables
 
 - `SANDBOX_API_KEY` - Comma-separated API keys for Bearer token auth. If unset, auth is disabled.
-- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `none` (default, direct execution) or `bwrap` (bubblewrap sandbox). Bwrap mode requires the `bwrap` binary installed (intended for VM deployments, not Docker).
+- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `none` (default, direct execution) or `bwrap` (bubblewrap sandbox). In bwrap mode, both command execution and file operations run inside bubblewrap sandboxes with namespace isolation and filesystem restrictions.
 - `SANDBOX_BWRAP_NETWORK` - Network policy in bwrap mode: `host` (default, allows network access) or `isolated` (unshares network namespace).
 - `SANDBOX_BWRAP_EXTRA_RO_BINDS` - Comma-separated list of additional read-only bind mount paths in bwrap mode.
 - `SANDBOX_BWRAP_PROC_BIND` - When set (any value), uses `--bind /proc /proc` instead of `--proc /proc` in bwrap mode. Use this on systems where new procfs mounts are restricted (e.g., "Operation not permitted" errors with `--proc`).

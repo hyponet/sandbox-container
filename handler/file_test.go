@@ -2,13 +2,17 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +23,20 @@ import (
 )
 
 func setupRouter() (*gin.Engine, *session.Manager) {
+	return setupRouterWithFileOperator(&executor.DirectFileOperator{}, false)
+}
+
+func setupRouterWithFileOperator(fileOp executor.FileOperator, isBwrap bool) (*gin.Engine, *session.Manager) {
 	gin.SetMode(gin.TestMode)
 	dir := tTempDir()
 	mgr := session.NewManager(dir, 24*time.Hour)
+	if !isBwrap {
+		mgr.SetSessionInit((&executor.DirectExecutor{}).InitSession)
+	}
 
 	r := gin.New()
 
-	fileH := NewFileHandler(mgr, &executor.DirectFileOperator{})
+	fileH := NewFileHandler(mgr, fileOp, isBwrap)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -47,6 +58,169 @@ func tTempDir() string {
 	dir := filepath.Join(os.TempDir(), "sandbox-test-"+fmt.Sprintf("%d", time.Now().UnixNano()))
 	os.MkdirAll(dir, 0755)
 	return dir
+}
+
+type virtualFileOperator struct {
+	files map[string]string
+	dirs  map[string]struct{}
+}
+
+func newVirtualFileOperator(files map[string]string) *virtualFileOperator {
+	v := &virtualFileOperator{
+		files: make(map[string]string, len(files)),
+		dirs:  map[string]struct{}{filepath.Clean(SandboxHome): {}},
+	}
+
+	for path, content := range files {
+		cleanPath := filepath.Clean(path)
+		v.files[cleanPath] = content
+		for dir := filepath.Dir(cleanPath); ; dir = filepath.Dir(dir) {
+			v.dirs[filepath.Clean(dir)] = struct{}{}
+			if dir == "/" || dir == filepath.Dir(dir) {
+				break
+			}
+		}
+	}
+
+	return v
+}
+
+func (v *virtualFileOperator) ReadFile(_ context.Context, _ executor.FileOpOptions, path string) ([]byte, error) {
+	content, ok := v.files[filepath.Clean(path)]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return []byte(content), nil
+}
+
+func (v *virtualFileOperator) WriteFile(_ context.Context, _ executor.FileOpOptions, _ string, _ []byte, _ os.FileMode) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (v *virtualFileOperator) AppendFile(_ context.Context, _ executor.FileOpOptions, _ string, _ []byte, _ os.FileMode) (int, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (v *virtualFileOperator) Stat(_ context.Context, _ executor.FileOpOptions, path string) (*executor.FileInfo, error) {
+	info, ok := v.infoForPath(path)
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return &info, nil
+}
+
+func (v *virtualFileOperator) Lstat(ctx context.Context, opts executor.FileOpOptions, path string) (*executor.FileInfo, error) {
+	return v.Stat(ctx, opts, path)
+}
+
+func (v *virtualFileOperator) ReadDir(_ context.Context, _ executor.FileOpOptions, path string) ([]executor.FileInfo, error) {
+	cleanRoot := filepath.Clean(path)
+	if _, ok := v.dirs[cleanRoot]; !ok {
+		return nil, os.ErrNotExist
+	}
+
+	children := map[string]executor.FileInfo{}
+	for dir := range v.dirs {
+		if dir == cleanRoot {
+			continue
+		}
+		if filepath.Dir(dir) != cleanRoot {
+			continue
+		}
+		if info, ok := v.infoForPath(dir); ok {
+			children[dir] = info
+		}
+	}
+	for filePath := range v.files {
+		if filepath.Dir(filePath) != cleanRoot {
+			continue
+		}
+		if info, ok := v.infoForPath(filePath); ok {
+			children[filePath] = info
+		}
+	}
+
+	var paths []string
+	for child := range children {
+		paths = append(paths, child)
+	}
+	sort.Strings(paths)
+
+	entries := make([]executor.FileInfo, 0, len(paths))
+	for _, child := range paths {
+		entries = append(entries, children[child])
+	}
+	return entries, nil
+}
+
+func (v *virtualFileOperator) Walk(_ context.Context, _ executor.FileOpOptions, root string, walkFn executor.WalkFunc) error {
+	cleanRoot := filepath.Clean(root)
+	if _, ok := v.dirs[cleanRoot]; !ok {
+		return os.ErrNotExist
+	}
+
+	pathSet := map[string]struct{}{cleanRoot: {}}
+	for dir := range v.dirs {
+		if dir == cleanRoot || strings.HasPrefix(dir+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
+			pathSet[dir] = struct{}{}
+		}
+	}
+	for filePath := range v.files {
+		if strings.HasPrefix(filePath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
+			pathSet[filePath] = struct{}{}
+		}
+	}
+
+	var paths []string
+	for path := range pathSet {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		info, ok := v.infoForPath(path)
+		if !ok {
+			continue
+		}
+		if err := walkFn(path, info, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *virtualFileOperator) CreateFile(_ context.Context, _ executor.FileOpOptions, _ string, _ io.Reader) (int64, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (v *virtualFileOperator) MkdirAll(_ context.Context, _ executor.FileOpOptions, _ string, _ os.FileMode) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (v *virtualFileOperator) ServeFile(_ context.Context, _ executor.FileOpOptions, _ string) (string, func(), error) {
+	return "", nil, fmt.Errorf("not implemented")
+}
+
+func (v *virtualFileOperator) infoForPath(path string) (executor.FileInfo, bool) {
+	cleanPath := filepath.Clean(path)
+	if _, ok := v.dirs[cleanPath]; ok {
+		return executor.FileInfo{
+			Name:    filepath.Base(cleanPath),
+			Mode:    os.ModeDir | 0755,
+			ModTime: time.Unix(0, 0),
+			IsDir:   true,
+		}, true
+	}
+	if content, ok := v.files[cleanPath]; ok {
+		return executor.FileInfo{
+			Name:    filepath.Base(cleanPath),
+			Size:    int64(len(content)),
+			Mode:    0644,
+			ModTime: time.Unix(0, 0),
+			IsDir:   false,
+		}, true
+	}
+	return executor.FileInfo{}, false
 }
 
 func TestFileWriteAndRead(t *testing.T) {
@@ -246,6 +420,133 @@ func TestFileGlobRecursiveRespectsHiddenFlag(t *testing.T) {
 	}
 	if !names["/root.go"] || !names["/nested/code.go"] {
 		t.Fatalf("unexpected glob paths: %v", names)
+	}
+}
+
+func TestFileRecursiveAPIs_SkipImplicitSkillsInBwrap(t *testing.T) {
+	fileOp := newVirtualFileOperator(map[string]string{
+		"/home/README.md":                   "root docs",
+		"/home/project/app.txt":             "needle in workspace",
+		"/home/project/main.go":             "package main",
+		"/home/skills/test-skill/guide.md":  "skill docs",
+		"/home/skills/test-skill/notes.txt": "needle in skills",
+	})
+	r, _ := setupRouterWithFileOperator(fileOp, true)
+
+	tests := []struct {
+		name   string
+		path   string
+		body   string
+		assert func(*testing.T, map[string]interface{})
+	}{
+		{
+			name: "find",
+			path: "/v1/file/find",
+			body: `{"agent_id":"a1","session_id":"bwrap_find","path":"/","glob":"*.md"}`,
+			assert: func(t *testing.T, data map[string]interface{}) {
+				files := data["files"].([]interface{})
+				if len(files) != 1 || files[0].(string) != "/README.md" {
+					t.Fatalf("expected only /README.md, got %v", files)
+				}
+			},
+		},
+		{
+			name: "grep",
+			path: "/v1/file/grep",
+			body: `{"agent_id":"a1","session_id":"bwrap_grep","path":"/","pattern":"needle"}`,
+			assert: func(t *testing.T, data map[string]interface{}) {
+				matches := data["matches"].([]interface{})
+				if len(matches) != 1 {
+					t.Fatalf("expected 1 grep match, got %v", matches)
+				}
+				match := matches[0].(map[string]interface{})
+				if match["file"] != "/project/app.txt" {
+					t.Fatalf("expected workspace grep match, got %v", match)
+				}
+			},
+		},
+		{
+			name: "glob",
+			path: "/v1/file/glob",
+			body: `{"agent_id":"a1","session_id":"bwrap_glob","path":"/","pattern":"**/*.md"}`,
+			assert: func(t *testing.T, data map[string]interface{}) {
+				files := data["files"].([]interface{})
+				if len(files) != 1 {
+					t.Fatalf("expected 1 glob result, got %v", files)
+				}
+				file := files[0].(map[string]interface{})
+				if file["path"] != "/README.md" {
+					t.Fatalf("expected only /README.md, got %v", file)
+				}
+			},
+		},
+		{
+			name: "recursive list",
+			path: "/v1/file/list",
+			body: `{"agent_id":"a1","session_id":"bwrap_list","path":"/","recursive":true}`,
+			assert: func(t *testing.T, data map[string]interface{}) {
+				files := data["files"].([]interface{})
+				for _, entry := range files {
+					file := entry.(map[string]interface{})
+					if strings.HasPrefix(file["path"].(string), "/skills") {
+						t.Fatalf("expected recursive list to skip implicit skills tree, got %v", files)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s failed: %d %s", tt.name, w.Code, w.Body.String())
+			}
+
+			var resp map[string]interface{}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			data := resp["data"].(map[string]interface{})
+			tt.assert(t, data)
+		})
+	}
+}
+
+func TestFileGlob_AllowsExplicitSkillsSearchInBwrap(t *testing.T) {
+	fileOp := newVirtualFileOperator(map[string]string{
+		"/home/project/README.md":           "workspace docs",
+		"/home/skills/test-skill/guide.md":  "skill docs",
+		"/home/skills/test-skill/notes.txt": "skill notes",
+	})
+	r, _ := setupRouterWithFileOperator(fileOp, true)
+
+	body := `{"agent_id":"a1","session_id":"bwrap_skills","path":"/skills","pattern":"**/*.md"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/glob", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit skills glob failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	data := resp["data"].(map[string]interface{})
+	files := data["files"].([]interface{})
+	if len(files) != 1 {
+		t.Fatalf("expected 1 explicit skills glob result, got %v", files)
+	}
+	file := files[0].(map[string]interface{})
+	if file["path"] != "/skills/test-skill/guide.md" {
+		t.Fatalf("expected /skills/test-skill/guide.md, got %v", file)
 	}
 }
 
@@ -976,13 +1277,13 @@ func TestFileWrite_SkillsAliasReadOnly_Default(t *testing.T) {
 
 func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	_, mgr := setupRouter()
-	h := NewFileHandler(mgr, &executor.DirectFileOperator{})
+	h := NewFileHandler(mgr, &executor.DirectFileOperator{}, false)
 
 	sessionOpts := h.fileOpOpts("a1", "s1", false)
-	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0] != mgr.SessionRoot("a1", "s1") {
+	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0].Src != mgr.SessionRoot("a1", "s1") {
 		t.Fatalf("session RWBinds = %v", sessionOpts.RWBinds)
 	}
-	if len(sessionOpts.ROBinds) != 1 || sessionOpts.ROBinds[0] != mgr.SkillsRoot("a1") {
+	if len(sessionOpts.ROBinds) != 1 || sessionOpts.ROBinds[0].Src != mgr.SkillsRoot("a1") {
 		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
 	}
 
@@ -990,7 +1291,7 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	if len(workspaceOpts.RWBinds) != 2 {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}
-	if workspaceOpts.RWBinds[0] != mgr.WorkspaceRoot("a1") || workspaceOpts.RWBinds[1] != mgr.SkillsRoot("a1") {
+	if workspaceOpts.RWBinds[0].Src != mgr.WorkspaceRoot("a1") || workspaceOpts.RWBinds[1].Src != mgr.SkillsRoot("a1") {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}
 	if len(workspaceOpts.ROBinds) != 0 {

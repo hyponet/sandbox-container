@@ -26,9 +26,10 @@ func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	dir := filepath.Join(os.TempDir(), "sandbox-code-test-"+time.Now().Format("20060102150405"))
 	os.MkdirAll(dir, 0755)
 	mgr := session.NewManager(dir, 24*time.Hour)
+	mgr.SetSessionInit(cmdExec.InitSession)
 
 	r := gin.New()
-	codeH := NewCodeHandler(mgr, cmdExec)
+	codeH := NewCodeHandler(mgr, cmdExec, false)
 	r.POST("/v1/code/execute", codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 

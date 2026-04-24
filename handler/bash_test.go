@@ -27,9 +27,10 @@ func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	dir := filepath.Join(os.TempDir(), "sandbox-bash-test-"+time.Now().Format("20060102150405"))
 	os.MkdirAll(dir, 0755)
 	mgr := session.NewManager(dir, 24*time.Hour)
+	mgr.SetSessionInit(cmdExec.InitSession)
 
 	r := gin.New()
-	bashH := NewBashHandler(mgr, cmdExec)
+	bashH := NewBashHandler(mgr, cmdExec, false)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", bashH.Exec)

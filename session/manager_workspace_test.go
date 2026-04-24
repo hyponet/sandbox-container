@@ -21,6 +21,13 @@ func TestTouchWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(dir, time.Hour)
 
+	// Verify sessionInit callback is invoked
+	var calledSessionDir, calledSkillsDir string
+	mgr.SetSessionInit(func(sessionDir, skillsDir string) {
+		calledSessionDir = sessionDir
+		calledSkillsDir = skillsDir
+	})
+
 	mgr.TouchWorkspace("agent1")
 
 	// Verify the workspace directory was created.
@@ -33,28 +40,12 @@ func TestTouchWorkspace(t *testing.T) {
 		t.Error("expected workspace to be a directory")
 	}
 
-	// Verify the skills symlink was created inside the workspace.
-	symlinkPath := filepath.Join(wsDir, "skills")
-	linkInfo, err := os.Lstat(symlinkPath)
-	if err != nil {
-		t.Fatalf("skills symlink not created: %v", err)
+	if calledSessionDir != wsDir {
+		t.Errorf("expected sessionInit sessionDir=%s, got %s", wsDir, calledSessionDir)
 	}
-	if linkInfo.Mode()&os.ModeSymlink == 0 {
-		t.Error("expected skills to be a symlink")
-	}
-
-	// Verify the symlink points to the agent's skills directory.
-	target, err := os.Readlink(symlinkPath)
-	if err != nil {
-		t.Fatalf("failed to read symlink target: %v", err)
-	}
-	resolvedTarget, err := filepath.Abs(filepath.Join(wsDir, target))
-	if err != nil {
-		t.Fatalf("failed to resolve symlink target: %v", err)
-	}
-	expectedTarget := filepath.Join(dir, "agent1", "skills")
-	if resolvedTarget != expectedTarget {
-		t.Errorf("symlink target = %s, want %s", resolvedTarget, expectedTarget)
+	expectedSkillsDir := filepath.Join(dir, "agent1", "skills")
+	if calledSkillsDir != expectedSkillsDir {
+		t.Errorf("expected sessionInit skillsDir=%s, got %s", expectedSkillsDir, calledSkillsDir)
 	}
 }
 

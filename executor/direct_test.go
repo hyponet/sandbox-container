@@ -68,3 +68,35 @@ func TestDirectExecutor_Prepare_Args(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectExecutor_InitSession(t *testing.T) {
+	d := &DirectExecutor{}
+	dir := t.TempDir()
+	sessionDir := dir + "/session"
+	skillsDir := dir + "/skills"
+
+	os.MkdirAll(sessionDir, 0755)
+	os.MkdirAll(skillsDir, 0755)
+
+	d.InitSession(sessionDir, skillsDir)
+
+	// Verify skills symlink was created
+	symlinkPath := sessionDir + "/skills"
+	linkInfo, err := os.Lstat(symlinkPath)
+	if err != nil {
+		t.Fatalf("skills symlink not created: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Error("expected skills to be a symlink")
+	}
+
+	// Verify symlink target points to skillsDir
+	target, err := os.Readlink(symlinkPath)
+	if err != nil {
+		t.Fatalf("failed to read symlink: %v", err)
+	}
+	if target != "../skills" {
+		t.Errorf("expected symlink target '../skills', got %q", target)
+	}
+}
+

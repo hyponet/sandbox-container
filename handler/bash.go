@@ -23,6 +23,7 @@ import (
 type BashHandler struct {
 	mgr      *session.Manager
 	exec     executor.CommandExecutor
+	isBwrap  bool
 	sessions map[string]*bashSession // key: "sandboxSID:bashSID"
 	mu       sync.RWMutex
 }
@@ -72,10 +73,11 @@ func (b *threadSafeBuffer) Len() int {
 	return b.buf.Len()
 }
 
-func NewBashHandler(mgr *session.Manager, exec executor.CommandExecutor) *BashHandler {
+func NewBashHandler(mgr *session.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
 	return &BashHandler{
 		mgr:      mgr,
 		exec:     exec,
+		isBwrap:  isBwrap,
 		sessions: make(map[string]*bashSession),
 	}
 }
@@ -133,10 +135,18 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		log.Printf("[ERROR] CreateSession: mkdir %s: %v", workingDir, err)
 	}
 
+	var hostRoot string
+	if req.EnableAgentWorkspace {
+		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
+	} else {
+		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+	}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+
 	bs := &bashSession{
 		sandboxSID: req.SessionID,
 		bashSID:    bashSID,
-		workingDir: workingDir,
+		workingDir: sandboxWorkingDir,
 		createdAt:  time.Now(),
 		lastUsedAt: time.Now(),
 		status:     model.CommandStatus(model.SessionReady),
@@ -149,7 +159,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	c.JSON(http.StatusOK, model.OkResponse(model.BashSessionInfo{
 		SessionID:  bashSID,
 		Status:     model.SessionReady,
-		WorkingDir: workingDir,
+		WorkingDir: sandboxWorkingDir,
 		CreatedAt:  bs.createdAt,
 		LastUsedAt: bs.lastUsedAt,
 	}))
@@ -189,6 +199,14 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		log.Printf("[ERROR] Exec: mkdir %s: %v", workingDir, err)
 	}
 
+	var hostRoot string
+	if req.EnableAgentWorkspace {
+		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
+	} else {
+		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+	}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+
 	cmdID := uuid.New().String()[:8]
 	timeout := 30.0
 	if req.Timeout != nil {
@@ -202,11 +220,11 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Build command
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
-	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace)
+	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace, h.isBwrap)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
-		WorkingDir: workingDir,
-		Env:        buildIsolatedEnv(os.Environ(), workingDir, req.Env),
+		WorkingDir: sandboxWorkingDir,
+		Env:        buildIsolatedEnv(os.Environ(), sandboxWorkingDir, req.Env),
 		RWBinds:    rwBinds,
 		ROBinds:    roBinds,
 	}, "bash", "-c", req.Command)
@@ -238,7 +256,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		stdin:      stdinPipe,
 		stdoutBuf:  stdoutBuf,
 		stderrBuf:  stderrBuf,
-		workingDir: workingDir,
+		workingDir: sandboxWorkingDir,
 		createdAt:  time.Now(),
 		lastUsedAt: time.Now(),
 		status:     model.StatusRunning,

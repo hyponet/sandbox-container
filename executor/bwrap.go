@@ -52,10 +52,13 @@ func (b *BwrapExecutor) Prepare(opts ExecOptions, name string, args ...string) *
 	log.Printf("[bwrap] %s %s", b.path, strings.Join(bwrapArgs, " "))
 
 	cmd := exec.CommandContext(opts.Ctx, b.path, bwrapArgs...)
-	cmd.Dir = opts.WorkingDir
+	cmd.Dir = "/"
 	cmd.Env = opts.Env
 	return cmd
 }
+
+// InitSession is a no-op for bwrap mode (skills access is handled via bind mounts).
+func (b *BwrapExecutor) InitSession(sessionDir, skillsDir string) {}
 
 // buildArgs constructs the bwrap argument list (everything before "--").
 func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []string {
@@ -77,7 +80,7 @@ func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []s
 	seen := map[string]struct{}{}
 	for _, p := range systemPaths {
 		if _, err := os.Stat(p); err == nil {
-			args = appendBind(args, seen, "--ro-bind", p)
+			args = appendBind(args, seen, "--ro-bind", p, p)
 		}
 	}
 
@@ -94,23 +97,23 @@ func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []s
 
 	// Read-write binds from opts (session/workspace dir)
 	for _, rw := range opts.RWBinds {
-		args = appendBind(args, seen, "--bind", rw)
+		args = appendBind(args, seen, "--bind", rw.Src, rw.Dest)
 	}
 
 	// Read-only binds required by resolved runtime paths.
 	for _, ro := range runtimeROBinds {
-		args = appendBind(args, seen, "--ro-bind", ro)
+		args = appendBind(args, seen, "--ro-bind", ro, ro)
 	}
 
 	// Read-only binds from opts (skills dir).
 	for _, ro := range opts.ROBinds {
-		args = appendBind(args, seen, "--ro-bind", ro)
+		args = appendBind(args, seen, "--ro-bind", ro.Src, ro.Dest)
 	}
 
 	// Extra read-only binds from config
 	for _, ro := range b.cfg.ExtraROBinds {
 		if _, err := os.Stat(ro); err == nil {
-			args = appendBind(args, seen, "--ro-bind", ro)
+			args = appendBind(args, seen, "--ro-bind", ro, ro)
 		}
 	}
 
@@ -154,22 +157,23 @@ func runtimeMountRoots(commandPath string) []string {
 		}
 	}
 
-	return []string{filepath.Dir(cleanPath)}
+	return []string{filepath.Dir(commandPath)}
 }
 
-func appendBind(args []string, seen map[string]struct{}, flag, path string) []string {
-	cleanPath := filepath.Clean(path)
-	if cleanPath == "." || cleanPath == "" {
+func appendBind(args []string, seen map[string]struct{}, flag, src, dest string) []string {
+	cleanSrc := filepath.Clean(src)
+	cleanDest := filepath.Clean(dest)
+	if cleanSrc == "." || cleanSrc == "" || cleanDest == "." || cleanDest == "" {
 		return args
 	}
 
-	key := cleanPath
+	key := cleanSrc + "-" + cleanDest
 	if _, ok := seen[key]; ok {
 		return args
 	}
 	seen[key] = struct{}{}
 
-	return append(args, flag, cleanPath, cleanPath)
+	return append(args, flag, cleanSrc, cleanDest)
 }
 
 func hasPathPrefix(path, prefix string) bool {

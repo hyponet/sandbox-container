@@ -36,6 +36,17 @@ type SandboxResponse struct {
 	Detail    SandboxDetail `json:"detail"`
 }
 
+type FsInfoRequest struct {
+	AgentID              string `json:"agent_id" binding:"required"`
+	SessionID            string `json:"session_id" binding:"required"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+}
+
+type FsInfoResponse struct {
+	WorkDir     string            `json:"work_dir"`
+	Directories map[string]string `json:"directories"`
+}
+
 type SandboxDetail struct {
 	System  SystemEnv      `json:"system"`
 	Runtime RuntimeEnv     `json:"runtime"`

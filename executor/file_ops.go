@@ -10,8 +10,8 @@ import (
 
 // FileOpOptions specifies bind mount paths for sandboxed file operations.
 type FileOpOptions struct {
-	RWBinds []string
-	ROBinds []string
+	RWBinds []BindMount
+	ROBinds []BindMount
 }
 
 // FileInfo is a portable file metadata struct used by FileOperator.

@@ -18,12 +18,13 @@ import (
 )
 
 type CodeHandler struct {
-	mgr  *session.Manager
-	exec executor.CommandExecutor
+	mgr     *session.Manager
+	exec    executor.CommandExecutor
+	isBwrap bool
 }
 
-func NewCodeHandler(mgr *session.Manager, exec executor.CommandExecutor) *CodeHandler {
-	return &CodeHandler{mgr: mgr, exec: exec}
+func NewCodeHandler(mgr *session.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
+	return &CodeHandler{mgr: mgr, exec: exec, isBwrap: isBwrap}
 }
 
 func (h *CodeHandler) Execute(c *gin.Context) {
@@ -56,6 +57,14 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		log.Printf("[ERROR] Execute: mkdir %s: %v", workingDir, err)
 	}
 
+	var hostRoot string
+	if req.EnableAgentWorkspace {
+		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
+	} else {
+		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+	}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+
 	timeout := 30
 	if req.Timeout != nil && *req.Timeout > 0 {
 		timeout = *req.Timeout
@@ -79,11 +88,11 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace)
+	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace, h.isBwrap)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
-		WorkingDir: workingDir,
-		Env:        buildIsolatedEnv(os.Environ(), workingDir, req.Env),
+		WorkingDir: sandboxWorkingDir,
+		Env:        buildIsolatedEnv(os.Environ(), sandboxWorkingDir, req.Env),
 		RWBinds:    rwBinds,
 		ROBinds:    roBinds,
 	}, name, args...)

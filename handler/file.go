@@ -24,8 +24,9 @@ import (
 )
 
 type FileHandler struct {
-	mgr    *session.Manager
-	fileOp executor.FileOperator
+	mgr     *session.Manager
+	fileOp  executor.FileOperator
+	isBwrap bool
 }
 
 var (
@@ -34,29 +35,63 @@ var (
 	errGlobLimitReached     = errors.New("max results reached")
 )
 
-func NewFileHandler(mgr *session.Manager, fileOp executor.FileOperator) *FileHandler {
-	return &FileHandler{mgr: mgr, fileOp: fileOp}
+func NewFileHandler(mgr *session.Manager, fileOp executor.FileOperator, isBwrap bool) *FileHandler {
+	return &FileHandler{mgr: mgr, fileOp: fileOp, isBwrap: isBwrap}
 }
 
 // fileOpOpts builds FileOpOptions from the resolved paths for a request.
 func (h *FileHandler) fileOpOpts(agentID, sessionID string, agentWorkspace bool) executor.FileOpOptions {
 	var opts executor.FileOpOptions
 	if agentWorkspace {
-		opts.RWBinds = append(opts.RWBinds, h.mgr.WorkspaceRoot(agentID))
-		opts.RWBinds = append(opts.RWBinds, h.mgr.SkillsRoot(agentID))
+		if h.isBwrap {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: SandboxHome})
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+		} else {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: h.mgr.WorkspaceRoot(agentID)})
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: h.mgr.SkillsRoot(agentID)})
+		}
 	} else {
-		opts.RWBinds = append(opts.RWBinds, h.mgr.SessionRoot(agentID, sessionID))
-		opts.ROBinds = append(opts.ROBinds, h.mgr.SkillsRoot(agentID))
+		if h.isBwrap {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SessionRoot(agentID, sessionID), Dest: SandboxHome})
+			opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+		} else {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SessionRoot(agentID, sessionID), Dest: h.mgr.SessionRoot(agentID, sessionID)})
+			opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: h.mgr.SkillsRoot(agentID)})
+		}
 	}
 	return opts
 }
 
+// toSandboxPath translates a host path to the sandbox-internal path for file operations.
+func (h *FileHandler) toSandboxPath(agentID, sessionID, hostPath string, agentWorkspace bool) string {
+	var hostRoot string
+	if agentWorkspace {
+		hostRoot = h.mgr.WorkspaceRoot(agentID)
+	} else {
+		hostRoot = h.mgr.SessionRoot(agentID, sessionID)
+	}
+	return hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(agentID), hostPath)
+}
+
 // baseRootForDisplay returns the base directory for computing relative display paths.
 func (h *FileHandler) baseRootForDisplay(agentID, sessionID string, agentWorkspace bool) string {
+	if h.isBwrap {
+		return SandboxHome
+	}
 	if agentWorkspace {
 		return filepath.Clean(h.mgr.WorkspaceRoot(agentID))
 	}
 	return filepath.Clean(h.mgr.SessionRoot(agentID, sessionID))
+}
+
+func (h *FileHandler) shouldSkipImplicitSkillsPath(path string, isSkillsSearch bool) bool {
+	if !h.isBwrap || isSkillsSearch {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	cleanSkills := filepath.Clean(SandboxSkillsDir)
+	return cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator))
 }
 
 func (h *FileHandler) validateWritablePath(agentID, sessionID, realPath string, agentWorkspace bool) error {
@@ -153,7 +188,8 @@ func (h *FileHandler) Read(c *gin.Context) {
 	}
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, realPath)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -226,10 +262,11 @@ func (h *FileHandler) Write(c *gin.Context) {
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
 
 	var written int
 	if req.Append {
-		n, err := h.fileOp.AppendFile(ctx, opts, realPath, content, 0644)
+		n, err := h.fileOp.AppendFile(ctx, opts, sandboxPath, content, 0644)
 		if err != nil {
 			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write: "+err.Error()))
@@ -237,7 +274,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 		}
 		written = n
 	} else {
-		err = h.fileOp.WriteFile(ctx, opts, realPath, content, 0644)
+		err = h.fileOp.WriteFile(ctx, opts, sandboxPath, content, 0644)
 		if err != nil {
 			log.Printf("[ERROR] Write: %v", err)
 			c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
@@ -278,8 +315,9 @@ func (h *FileHandler) Replace(c *gin.Context) {
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
 
-	data, err := h.fileOp.ReadFile(ctx, opts, realPath)
+	data, err := h.fileOp.ReadFile(ctx, opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -296,7 +334,7 @@ func (h *FileHandler) Replace(c *gin.Context) {
 	}
 
 	newContent := strings.ReplaceAll(content, req.OldStr, req.NewStr)
-	if err := h.fileOp.WriteFile(ctx, opts, realPath, []byte(newContent), 0644); err != nil {
+	if err := h.fileOp.WriteFile(ctx, opts, sandboxPath, []byte(newContent), 0644); err != nil {
 		log.Printf("[ERROR] Replace: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
 		return
@@ -330,7 +368,8 @@ func (h *FileHandler) Search(c *gin.Context) {
 	}
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, realPath)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
 		return
@@ -377,13 +416,19 @@ func (h *FileHandler) Find(c *gin.Context) {
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	var files []string
-	h.fileOp.Walk(c.Request.Context(), opts, realPath, func(path string, info executor.FileInfo, err error) error {
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
+	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
+	h.fileOp.Walk(c.Request.Context(), opts, sandboxPath, func(path string, info executor.FileInfo, err error) error {
 		if err != nil {
+			return nil
+		}
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
 			return nil
 		}
 		matched, _ := filepath.Match(req.Glob, filepath.Base(info.Name))
 		if matched {
-			rel, _ := filepath.Rel(realPath, path)
+			rel, _ := filepath.Rel(sandboxPath, path)
 			files = append(files, filepath.Join(req.Path, rel))
 		}
 		return nil
@@ -438,19 +483,26 @@ func (h *FileHandler) Grep(c *gin.Context) {
 
 	// Determine the base root for relative path display
 	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	// If searching in skills, use skills root for relative paths
-	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
+	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
 	baseRoot := sessionRoot
 	if isSkillsSearch {
-		baseRoot = skillsRoot
+		if h.isBwrap {
+			baseRoot = SandboxSkillsDir
+		} else {
+			baseRoot = filepath.Clean(skillsRoot)
+		}
 	}
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
 
-	h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
+	h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir {
+			return nil
+		}
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
 			return nil
 		}
 
@@ -548,23 +600,31 @@ func (h *FileHandler) Glob(c *gin.Context) {
 	truncated := false
 
 	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
+	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
 	baseRoot := sessionRoot
 	if isSkillsSearch {
-		baseRoot = skillsRoot
+		if h.isBwrap {
+			baseRoot = SandboxSkillsDir
+		} else {
+			baseRoot = filepath.Clean(skillsRoot)
+		}
 	}
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
 	pattern := normalizeGlobPattern(req.Pattern)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
 
-	walkErr := h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
-		if walkErr != nil || path == realPath {
+	walkErr := h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
+		if walkErr != nil || path == sandboxPath {
+			return nil
+		}
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(realPath, path)
+		relPath, err := filepath.Rel(sandboxPath, path)
 		if err != nil {
 			return nil
 		}
@@ -650,12 +710,6 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	file, err := c.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, model.ErrResponse("file is required"))
-		return
-	}
-
 	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, targetPath, agentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
@@ -670,6 +724,12 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("file is required"))
+		return
+	}
+
 	src, err := file.Open()
 	if err != nil {
 		log.Printf("[ERROR] Upload: %v", err)
@@ -679,7 +739,8 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	defer src.Close()
 
 	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
-	written, err := h.fileOp.CreateFile(c.Request.Context(), opts, realPath, src)
+	sandboxPath := h.toSandboxPath(agentID, sessionID, realPath, agentWorkspace)
+	written, err := h.fileOp.CreateFile(c.Request.Context(), opts, sandboxPath, src)
 	if err != nil {
 		log.Printf("[ERROR] Upload: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to write file: "+err.Error()))
@@ -722,8 +783,9 @@ func (h *FileHandler) Download(c *gin.Context) {
 
 	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
 	ctx := c.Request.Context()
+	sandboxPath := h.toSandboxPath(agentID, sessionID, realPath, agentWorkspace)
 
-	info, err := h.fileOp.Stat(ctx, opts, realPath)
+	info, err := h.fileOp.Stat(ctx, opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found"))
 		return
@@ -734,7 +796,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	localPath, cleanup, err := h.fileOp.ServeFile(ctx, opts, realPath)
+	localPath, cleanup, err := h.fileOp.ServeFile(ctx, opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrResponse("failed to read file: "+err.Error()))
 		return
@@ -779,22 +841,30 @@ func (h *FileHandler) List(c *gin.Context) {
 
 	// Determine base root for relative paths
 	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	skillsRoot := filepath.Clean(h.mgr.SkillsRoot(req.AgentID))
+	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
 	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
 	baseRoot := sessionRoot
 	if isSkillsSearch {
-		baseRoot = skillsRoot
+		if h.isBwrap {
+			baseRoot = SandboxSkillsDir
+		} else {
+			baseRoot = filepath.Clean(skillsRoot)
+		}
 	}
 
 	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
 
 	if req.Recursive {
-		h.fileOp.Walk(ctx, opts, realPath, func(path string, info executor.FileInfo, walkErr error) error {
+		h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				return nil
 			}
-			if path == realPath {
+			if path == sandboxPath {
+				return nil
+			}
+			if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
 				return nil
 			}
 
@@ -860,7 +930,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			return nil
 		})
 	} else {
-		entries, err := h.fileOp.ReadDir(ctx, opts, realPath)
+		entries, err := h.fileOp.ReadDir(ctx, opts, sandboxPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				c.JSON(http.StatusOK, model.OkResponse(model.FileListResult{
@@ -881,7 +951,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			}
 
 			// Follow symlinks: use Stat to resolve link targets
-			fullPath := filepath.Join(realPath, name)
+			fullPath := filepath.Join(sandboxPath, name)
 			info, err := h.fileOp.Stat(ctx, opts, fullPath)
 			if err != nil {
 				continue
@@ -903,7 +973,7 @@ func (h *FileHandler) List(c *gin.Context) {
 				}
 			}
 
-			relPath, _ := filepath.Rel(baseRoot, filepath.Join(realPath, name))
+			relPath, _ := filepath.Rel(baseRoot, filepath.Join(sandboxPath, name))
 			displayPath := "/" + relPath
 			if isSkillsSearch {
 				displayPath = "/skills/" + relPath

@@ -83,6 +83,11 @@ type PackageInfo struct {
 	Version string `json:"version"`
 }
 
+type FsInfoResponse struct {
+	WorkDir     string            `json:"work_dir"`
+	Directories map[string]string `json:"directories"`
+}
+
 // =============================================
 // Bash types
 // =============================================

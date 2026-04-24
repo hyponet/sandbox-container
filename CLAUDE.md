@@ -38,9 +38,9 @@ main.go → gin router with middleware chain
   ├── session/     - Manager creates/cleans up session dirs; TTL cleanup goroutine (24h default, 10min interval)
   ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager + executor.CommandExecutor)
   ├── executor/    - Command execution & file operation abstraction
-  │     ├── executor.go         - CommandExecutor interface
-  │     ├── direct.go           - DirectExecutor (no sandbox)
-  │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox for commands)
+  │     ├── executor.go         - CommandExecutor interface + BindMount type (Src/Dest)
+  │     ├── direct.go           - DirectExecutor (no sandbox, creates skills symlink in InitSession)
+  │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox for commands, InitSession no-op)
   │     ├── file_ops.go         - FileOperator interface + factory (auto-selects Direct or Bwrap)
   │     ├── file_ops_direct.go  - DirectFileOperator (os.* calls)
   │     └── file_ops_bwrap.go   - BwrapFileOperator (file ops inside bwrap sandbox)
@@ -50,22 +50,25 @@ main.go → gin router with middleware chain
 
 **Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → Executor (Direct or Bwrap) → Response
 
-**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. Skills are accessed via symlink `sessions/<sid>/skills → ../../skills`.
+**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. In direct mode, skills are accessed via symlink `sessions/<sid>/skills → ../../skills` created by `DirectExecutor.InitSession`. In bwrap mode, no symlinks are created; skills are accessed via read-only bind mount at `/home/skills`.
 
-**Bwrap isolation:** When `SANDBOX_ISOLATION_MODE=bwrap`, both command execution and file operations run inside bubblewrap sandboxes. `NewFileOperator()` auto-detects the executor type and returns `BwrapFileOperator` (sandboxed) or `DirectFileOperator` accordingly. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks.
+**Bwrap isolation:** By default, both command execution and file operations run inside bubblewrap sandboxes. Set `SANDBOX_ISOLATION_MODE=none` to opt into direct execution. `NewFileOperator()` auto-detects the executor type and returns `BwrapFileOperator` (sandboxed) or `DirectFileOperator` accordingly. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks.
 
 **Bwrap security features:**
 - Namespace isolation: PID (`--unshare-pid`), UTS (`--unshare-uts`), IPC (`--unshare-ipc`), optional network (`--unshare-net`)
-- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session dirs read-write; skills dirs read-only
+- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only)
+- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory and `/home/skills` for skills access
 - Process: `--die-with-parent`, `--new-session`
 - Runtime path resolution: auto-mounts `/usr/local`, `/opt`, `/run/current-system`, `/nix/store` as needed
+
+**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `DirectExecutor.InitSession` creates a `skills` symlink with a relative path. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts.
 
 **Async bash:** Commands run in async mode write output to thread-safe buffers; output is read incrementally via offset.
 
 ## Environment Variables
 
 - `SANDBOX_API_KEY` - Comma-separated API keys for Bearer token auth. If unset, auth is disabled.
-- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `none` (default, direct execution) or `bwrap` (bubblewrap sandbox). In bwrap mode, both command execution and file operations run inside bubblewrap sandboxes with namespace isolation and filesystem restrictions.
+- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `bwrap` (default, bubblewrap sandbox) or `none` (direct execution). In bwrap mode, both command execution and file operations run inside bubblewrap sandboxes with namespace isolation and filesystem restrictions.
 - `SANDBOX_BWRAP_NETWORK` - Network policy in bwrap mode: `host` (default, allows network access) or `isolated` (unshares network namespace).
 - `SANDBOX_BWRAP_EXTRA_RO_BINDS` - Comma-separated list of additional read-only bind mount paths in bwrap mode.
 - `SANDBOX_BWRAP_PROC_BIND` - When set (any value), uses `--bind /proc /proc` instead of `--proc /proc` in bwrap mode. Use this on systems where new procfs mounts are restricted (e.g., "Operation not permitted" errors with `--proc`).
@@ -77,6 +80,7 @@ All routes are under `/v1/`. Sandbox info endpoints (`/v1/sandbox`, `/v1/sandbox
 
 | Group | Key Endpoints |
 |-------|--------------|
+| Sandbox | `GET /v1/sandbox`, `/v1/sandbox/packages/*`, `POST /v1/sandbox/fsinfo` |
 | Bash | `POST /v1/bash/exec`, `/output`, `/write`, `/kill`; session management under `/v1/bash/sessions/*` |
 | File | `POST /v1/file/read`, `/write`, `/replace`, `/search`, `/find`, `/grep`, `/glob`, `/upload`, `/list`; `GET /v1/file/download` |
 | Code | `POST /v1/code/execute`, `GET /v1/code/info` |

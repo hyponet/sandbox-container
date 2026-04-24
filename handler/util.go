@@ -8,10 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
 )
 
 const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+const (
+	SandboxHome      = "/home"
+	SandboxSkillsDir = "/home/skills"
+)
 
 var sensitiveExecEnvKeys = map[string]struct{}{
 	"ANTHROPIC_API_KEY":     {},
@@ -125,16 +131,54 @@ func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]st
 	return env
 }
 
-func commandExecBinds(mgr *session.Manager, agentID, writableRoot string, agentWorkspace bool) (rwBinds []string, roBinds []string) {
-	rwBinds = appendUniqueExecPath(rwBinds, writableRoot)
+// hostToSandboxPath translates a host path to the sandbox-internal path.
+// In direct mode it returns the path unchanged.
+func hostToSandboxPath(isBwrap bool, hostRoot, skillsRoot, hostPath string) string {
+	if !isBwrap {
+		return hostPath
+	}
+	cleanPath := filepath.Clean(hostPath)
+	cleanRoot := filepath.Clean(hostRoot)
+	cleanSkills := filepath.Clean(skillsRoot)
 
-	skillsRoot := mgr.SkillsRoot(agentID)
-	if agentWorkspace {
-		rwBinds = appendUniqueExecPath(rwBinds, skillsRoot)
-		return rwBinds, nil
+	if cleanPath == cleanRoot || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(cleanRoot, cleanPath)
+		if err != nil {
+			return hostPath
+		}
+		return filepath.Join(SandboxHome, rel)
 	}
 
-	roBinds = appendUniqueExecPath(roBinds, skillsRoot)
+	if cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(cleanSkills, cleanPath)
+		if err != nil {
+			return hostPath
+		}
+		return filepath.Join(SandboxSkillsDir, rel)
+	}
+
+	return hostPath
+}
+
+func commandExecBinds(mgr *session.Manager, agentID, writableRoot string, agentWorkspace bool, isBwrap bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
+	if isBwrap {
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: writableRoot, Dest: SandboxHome})
+		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+		if agentWorkspace {
+			// workspace mode also needs skills writable
+			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+			roBinds = nil
+		}
+		return rwBinds, roBinds
+	}
+
+	// Direct mode: identity mapping
+	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: writableRoot, Dest: writableRoot})
+	if agentWorkspace {
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: mgr.SkillsRoot(agentID)})
+		return rwBinds, nil
+	}
+	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: mgr.SkillsRoot(agentID)})
 	return rwBinds, roBinds
 }
 
@@ -177,15 +221,16 @@ func isSensitiveExecEnvKey(key string) bool {
 	return false
 }
 
-func appendUniqueExecPath(paths []string, path string) []string {
-	cleanPath := filepath.Clean(path)
-	if cleanPath == "." || cleanPath == "" {
-		return paths
+func appendUniqueBindMount(mounts []executor.BindMount, mount executor.BindMount) []executor.BindMount {
+	cleanSrc := filepath.Clean(mount.Src)
+	cleanDest := filepath.Clean(mount.Dest)
+	if cleanSrc == "." || cleanSrc == "" || cleanDest == "." || cleanDest == "" {
+		return mounts
 	}
-	for _, existing := range paths {
-		if filepath.Clean(existing) == cleanPath {
-			return paths
+	for _, existing := range mounts {
+		if filepath.Clean(existing.Src) == cleanSrc && filepath.Clean(existing.Dest) == cleanDest {
+			return mounts
 		}
 	}
-	return append(paths, cleanPath)
+	return append(mounts, mount)
 }

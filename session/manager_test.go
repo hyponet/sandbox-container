@@ -101,6 +101,13 @@ func TestTouch(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(dir, time.Hour)
 
+	// Verify sessionInit callback is invoked
+	var calledSessionDir, calledSkillsDir string
+	mgr.SetSessionInit(func(sessionDir, skillsDir string) {
+		calledSessionDir = sessionDir
+		calledSkillsDir = skillsDir
+	})
+
 	mgr.Touch("a1", "sess1")
 
 	sessionDir := filepath.Join(dir, "a1", "sessions", "sess1")
@@ -112,14 +119,12 @@ func TestTouch(t *testing.T) {
 		t.Error("expected directory")
 	}
 
-	// Check skills symlink
-	symlinkPath := filepath.Join(sessionDir, "skills")
-	linkInfo, err := os.Lstat(symlinkPath)
-	if err != nil {
-		t.Fatalf("skills symlink not created: %v", err)
+	if calledSessionDir != sessionDir {
+		t.Errorf("expected sessionInit sessionDir=%s, got %s", sessionDir, calledSessionDir)
 	}
-	if linkInfo.Mode()&os.ModeSymlink == 0 {
-		t.Error("expected skills to be a symlink")
+	expectedSkillsDir := filepath.Join(dir, "a1", "skills")
+	if calledSkillsDir != expectedSkillsDir {
+		t.Errorf("expected sessionInit skillsDir=%s, got %s", expectedSkillsDir, calledSkillsDir)
 	}
 }
 

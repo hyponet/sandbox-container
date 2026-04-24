@@ -28,17 +28,23 @@ func (c *captureExecutor) Prepare(opts executor.ExecOptions, name string, args .
 	return cmd
 }
 
+func (c *captureExecutor) InitSession(sessionDir, skillsDir string) {}
+
 func cloneExecOptions(opts executor.ExecOptions) executor.ExecOptions {
 	opts.Env = append([]string(nil), opts.Env...)
-	opts.RWBinds = append([]string(nil), opts.RWBinds...)
-	opts.ROBinds = append([]string(nil), opts.ROBinds...)
+	if opts.RWBinds != nil {
+		opts.RWBinds = append([]executor.BindMount(nil), opts.RWBinds...)
+	}
+	if opts.ROBinds != nil {
+		opts.ROBinds = append([]executor.BindMount(nil), opts.ROBinds...)
+	}
 	return opts
 }
 
-func containsExecPath(paths []string, want string) bool {
+func containsExecPath(binds []executor.BindMount, want string) bool {
 	cleanWant := filepath.Clean(want)
-	for _, path := range paths {
-		if filepath.Clean(path) == cleanWant {
+	for _, bm := range binds {
+		if filepath.Clean(bm.Src) == cleanWant {
 			return true
 		}
 	}

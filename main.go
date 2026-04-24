@@ -24,7 +24,7 @@ const (
 	bwrapNetworkIsolated = "isolated"
 )
 
-func newCommandExecutor() executor.CommandExecutor {
+func newCommandExecutor() (executor.CommandExecutor, bool) {
 	mode, err := parseIsolationMode(os.Getenv("SANDBOX_ISOLATION_MODE"))
 	if err != nil {
 		log.Fatal(err)
@@ -46,17 +46,17 @@ func newCommandExecutor() executor.CommandExecutor {
 			log.Fatalf("Failed to initialize bwrap executor: %v", err)
 		}
 		log.Println("Isolation mode: bwrap")
-		return bwrapExec
+		return bwrapExec, true
 	default:
 		log.Println("Isolation mode: none (direct execution)")
-		return &executor.DirectExecutor{}
+		return &executor.DirectExecutor{}, false
 	}
 }
 
 func parseIsolationMode(raw string) (string, error) {
 	mode := strings.ToLower(strings.TrimSpace(raw))
 	if mode == "" {
-		return isolationModeNone, nil
+		return isolationModeBwrap, nil
 	}
 	switch mode {
 	case isolationModeNone, isolationModeBwrap:
@@ -101,6 +101,9 @@ func main() {
 	mgr := session.NewManager("/data/agents", 24*time.Hour)
 	mgr.SetAuditWriter(auditW)
 
+	cmdExec, isBwrap := newCommandExecutor()
+	mgr.SetSessionInit(cmdExec.InitSession)
+
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
@@ -108,14 +111,14 @@ func main() {
 	auditMW := middleware.AuditLogger(auditW)
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
-	sandboxH := handler.NewSandboxHandler()
+	sandboxH := handler.NewSandboxHandler(mgr, isBwrap)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
+	r.POST("/v1/sandbox/fsinfo", auth, sandboxH.FsInfo)
 
 	// Bash APIs
-	cmdExec := newCommandExecutor()
-	bashH := handler.NewBashHandler(mgr, cmdExec)
+	bashH := handler.NewBashHandler(mgr, cmdExec, isBwrap)
 	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -129,7 +132,7 @@ func main() {
 
 	// File APIs
 	fileOp := executor.NewFileOperator(cmdExec)
-	fileH := handler.NewFileHandler(mgr, fileOp)
+	fileH := handler.NewFileHandler(mgr, fileOp, isBwrap)
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
@@ -145,7 +148,7 @@ func main() {
 	}
 
 	// Code APIs
-	codeH := handler.NewCodeHandler(mgr, cmdExec)
+	codeH := handler.NewCodeHandler(mgr, cmdExec, isBwrap)
 	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 

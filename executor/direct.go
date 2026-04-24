@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // DirectExecutor passes through to exec.CommandContext directly.
@@ -13,4 +15,23 @@ func (d *DirectExecutor) Prepare(opts ExecOptions, name string, args ...string) 
 	cmd.Dir = opts.WorkingDir
 	cmd.Env = opts.Env
 	return cmd
+}
+
+// InitSession creates the skills symlink for direct execution mode.
+// sessionDir is the session or workspace directory, skillsDir is the agent's skills directory.
+func (d *DirectExecutor) InitSession(sessionDir, skillsDir string) {
+	// Ensure skills directory exists
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		return
+	}
+
+	// Create skills symlink: <sessionDir>/skills -> <relative path to skillsDir>
+	symlinkPath := filepath.Join(sessionDir, "skills")
+	os.Remove(symlinkPath)
+
+	relSkills, err := filepath.Rel(sessionDir, skillsDir)
+	if err != nil {
+		relSkills = skillsDir
+	}
+	os.Symlink(relSkills, symlinkPath)
 }

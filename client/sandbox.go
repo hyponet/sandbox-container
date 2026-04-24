@@ -28,3 +28,39 @@ func (c *Client) GetNodejsPackages() ([]PackageInfo, error) {
 	}
 	return result, nil
 }
+
+// FsInfoOption is a functional option for GetFsInfo.
+type FsInfoOption func(*fsInfoOptions)
+
+type fsInfoOptions struct {
+	EnableAgentWorkspace bool
+}
+
+// WithFsInfoAgentWorkspace enables agent workspace mode for the fsinfo request.
+func WithFsInfoAgentWorkspace() FsInfoOption {
+	return func(o *fsInfoOptions) {
+		o.EnableAgentWorkspace = true
+	}
+}
+
+// GetFsInfo returns filesystem layout information for a session.
+func (c *Client) GetFsInfo(agentID, sessionID string, opts ...FsInfoOption) (*FsInfoResponse, error) {
+	var o fsInfoOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	reqBody := map[string]interface{}{
+		"agent_id":   agentID,
+		"session_id": sessionID,
+	}
+	if o.EnableAgentWorkspace {
+		reqBody["enable_agent_workspace"] = true
+	}
+
+	var result FsInfoResponse
+	if err := c.post("/v1/sandbox/fsinfo", reqBody, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

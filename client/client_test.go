@@ -41,19 +41,21 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
 	mgr.SetAuditWriter(auditW)
 	auditMW := middleware.AuditLogger(auditW)
+	cmdExec := &executor.DirectExecutor{}
+	mgr.SetSessionInit(cmdExec.InitSession)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
 
 	// Sandbox
-	sandboxH := handler.NewSandboxHandler()
+	sandboxH := handler.NewSandboxHandler(mgr, false)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
+	r.POST("/v1/sandbox/fsinfo", sandboxH.FsInfo)
 
 	// Bash
-	cmdExec := &executor.DirectExecutor{}
-	bashH := handler.NewBashHandler(mgr, cmdExec)
+	bashH := handler.NewBashHandler(mgr, cmdExec, false)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -66,7 +68,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// File
-	fileH := handler.NewFileHandler(mgr, &executor.DirectFileOperator{})
+	fileH := handler.NewFileHandler(mgr, &executor.DirectFileOperator{}, false)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -82,7 +84,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Code
-	codeH := handler.NewCodeHandler(mgr, cmdExec)
+	codeH := handler.NewCodeHandler(mgr, cmdExec, false)
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
@@ -163,6 +165,66 @@ func TestGetSandboxContext(t *testing.T) {
 	}
 	if ctx.Detail.System.OS == "" {
 		t.Error("expected non-empty OS")
+	}
+}
+
+func TestGetFsInfo(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetFsInfo("a1", "fs1")
+	if err != nil {
+		t.Fatalf("GetFsInfo failed: %v", err)
+	}
+	if result.WorkDir == "" {
+		t.Error("expected non-empty work_dir")
+	}
+	if _, err := os.Stat(result.WorkDir); err != nil {
+		t.Fatalf("expected work_dir to exist, stat %q: %v", result.WorkDir, err)
+	}
+	if result.Directories["skills"] == "" {
+		t.Errorf("expected non-empty skills directory, got %v", result.Directories)
+	}
+	if _, err := os.Stat(result.Directories["skills"]); err != nil {
+		t.Fatalf("expected skills directory to exist, stat %q: %v", result.Directories["skills"], err)
+	}
+	linkPath := filepath.Join(result.WorkDir, "skills")
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("expected skills entry in work_dir, lstat %q: %v", linkPath, err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %q to be a symlink, mode=%v", linkPath, linkInfo.Mode())
+	}
+}
+
+func TestGetFsInfoAgentWorkspace(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetFsInfo("a1", "fs2", WithFsInfoAgentWorkspace())
+	if err != nil {
+		t.Fatalf("GetFsInfo with AgentWorkspace failed: %v", err)
+	}
+	if result.WorkDir == "" {
+		t.Error("expected non-empty work_dir")
+	}
+	if _, err := os.Stat(result.WorkDir); err != nil {
+		t.Fatalf("expected work_dir to exist, stat %q: %v", result.WorkDir, err)
+	}
+	if result.Directories["skills"] == "" {
+		t.Errorf("expected non-empty skills directory, got %v", result.Directories)
+	}
+	if _, err := os.Stat(result.Directories["skills"]); err != nil {
+		t.Fatalf("expected skills directory to exist, stat %q: %v", result.Directories["skills"], err)
+	}
+	linkPath := filepath.Join(result.WorkDir, "skills")
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("expected skills entry in work_dir, lstat %q: %v", linkPath, err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %q to be a symlink, mode=%v", linkPath, linkInfo.Mode())
 	}
 }
 

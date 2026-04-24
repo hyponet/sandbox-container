@@ -16,8 +16,8 @@ func TestBwrapExecutor_buildArgs_HostMode(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/data/agents/a1/sessions/s1",
 		Env:        os.Environ(),
-		RWBinds:    []string{"/data/agents/a1/sessions/s1"},
-		ROBinds:    []string{"/data/agents/a1/skills"},
+		RWBinds:    []BindMount{{Src: "/data/agents/a1/sessions/s1", Dest: "/data/agents/a1/sessions/s1"}},
+		ROBinds:    []BindMount{{Src: "/data/agents/a1/skills", Dest: "/data/agents/a1/skills"}},
 	}, nil)
 
 	argsStr := strings.Join(args, " ")
@@ -62,7 +62,7 @@ func TestBwrapExecutor_buildArgs_IsolatedMode(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/tmp/test",
 		Env:        os.Environ(),
-		RWBinds:    []string{"/tmp/test"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
 		ROBinds:    nil,
 	}, nil)
 
@@ -82,7 +82,7 @@ func TestBwrapExecutor_buildArgs_ExtraROBinds(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/tmp/test",
 		Env:        os.Environ(),
-		RWBinds:    []string{"/tmp/test"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
 		ROBinds:    nil,
 	}, nil)
 
@@ -110,8 +110,8 @@ func TestBwrapExecutor_Prepare_CmdFields(t *testing.T) {
 		Ctx:        ctx,
 		WorkingDir: "/tmp/test",
 		Env:        []string{"HOME=/tmp/test"},
-		RWBinds:    []string{"/tmp/test"},
-		ROBinds:    []string{"/tmp/skills"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
+		ROBinds:    []BindMount{{Src: "/tmp/skills", Dest: "/tmp/skills"}},
 	}, "bash", "-c", "echo hello")
 
 	if !strings.HasSuffix(cmd.Path, "bwrap") {
@@ -129,8 +129,8 @@ func TestBwrapExecutor_Prepare_CmdFields(t *testing.T) {
 		t.Errorf("expected trailing args to be '-- <bash> -c echo hello', got %v", cmd.Args[n-4:])
 	}
 
-	if cmd.Dir != "/tmp/test" {
-		t.Errorf("expected Dir=/tmp/test, got %s", cmd.Dir)
+	if cmd.Dir != "/" {
+		t.Errorf("expected Dir=/, got %s", cmd.Dir)
 	}
 	if len(cmd.Env) != 1 || cmd.Env[0] != "HOME=/tmp/test" {
 		t.Errorf("expected Env=['HOME=/tmp/test'], got %v", cmd.Env)
@@ -150,7 +150,7 @@ func TestBwrapExecutor_Prepare_ResolvesCommandPath(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/tmp/test",
 		Env:        []string{"PATH=" + dir},
-		RWBinds:    []string{"/tmp/test"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
 	}, "customcmd", "--flag")
 
 	argsStr := strings.Join(cmd.Args, " ")
@@ -194,7 +194,7 @@ func TestBwrapExecutor_buildArgs_ProcBindFallback(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/tmp/test",
 		Env:        os.Environ(),
-		RWBinds:    []string{"/tmp/test"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
 	}, nil)
 
 	argsStr := strings.Join(args, " ")
@@ -213,7 +213,7 @@ func TestBwrapExecutor_buildArgs_DefaultProcMount(t *testing.T) {
 		Ctx:        context.Background(),
 		WorkingDir: "/tmp/test",
 		Env:        os.Environ(),
-		RWBinds:    []string{"/tmp/test"},
+		RWBinds:    []BindMount{{Src: "/tmp/test", Dest: "/tmp/test"}},
 	}, nil)
 
 	argsStr := strings.Join(args, " ")

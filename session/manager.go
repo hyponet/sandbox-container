@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	DefaultAgentRoot     = "/data/agents"
-	DefaultGlobalSkills  = "/data/skills"
-	DefaultRegistryRoot  = "/data/skill-registry"
-	DefaultTTL           = 24 * time.Hour
-	CleanupInterval      = 10 * time.Minute
+	DefaultAgentRoot    = "/data/agents"
+	DefaultGlobalSkills = "/data/skills"
+	DefaultRegistryRoot = "/data/skill-registry"
+	DefaultTTL          = 24 * time.Hour
+	CleanupInterval     = 10 * time.Minute
 )
 
 // Manager manages session directories with TTL-based cleanup.
@@ -31,6 +31,7 @@ type Manager struct {
 	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
 	auditWriter      *audit.Writer
 	workspaceInited  sync.Map // agentID -> struct{}, tracks agents whose workspace is set up
+	sessionInit      func(sessionDir, skillsDir string)
 }
 
 // SessionEntry represents a session with its last access time.
@@ -284,7 +285,13 @@ func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, agentWo
 	return os.MkdirAll(parent, 0755)
 }
 
-// Touch updates the last access time for a session and creates the directory + skills symlink.
+// SetSessionInit sets the callback invoked after session/workspace directories are created.
+func (m *Manager) SetSessionInit(fn func(sessionDir, skillsDir string)) {
+	m.sessionInit = fn
+}
+
+// Touch updates the last access time for a session and creates the directory.
+// If a sessionInit callback is set, it is invoked after directory creation.
 func (m *Manager) Touch(agentID, sessionID string) {
 	key := m.agentKey(agentID, sessionID)
 	m.mu.Lock()
@@ -297,30 +304,21 @@ func (m *Manager) Touch(agentID, sessionID string) {
 		log.Printf("[ERROR] Touch: failed to create session dir %s: %v", sessionDir, err)
 	}
 
-	// Create skills symlink: <session>/skills -> <agent>/skills
-	symlinkPath := filepath.Join(sessionDir, "skills")
-	skillsDir := m.SkillsRoot(agentID)
-
-	// Remove existing symlink/file if it exists
-	os.Remove(symlinkPath)
-
 	// Ensure skills directory exists
+	skillsDir := m.SkillsRoot(agentID)
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		log.Printf("[ERROR] Touch: failed to create skills dir %s: %v", skillsDir, err)
 	}
 
-	// Create relative symlink
-	relSkills, err := filepath.Rel(sessionDir, skillsDir)
-	if err != nil {
-		// Fallback to absolute symlink
-		relSkills = skillsDir
+	if m.sessionInit != nil {
+		m.sessionInit(sessionDir, skillsDir)
 	}
-	os.Symlink(relSkills, symlinkPath)
 }
 
-// TouchWorkspace creates the workspace directory and skills symlink for an agent.
+// TouchWorkspace creates the workspace directory for an agent.
 // Unlike Touch, it does not track TTL-based cleanup.
 // It is idempotent: once initialized for an agent, subsequent calls are no-ops.
+// If a sessionInit callback is set, it is invoked after directory creation.
 func (m *Manager) TouchWorkspace(agentID string) {
 	if _, loaded := m.workspaceInited.LoadOrStore(agentID, struct{}{}); loaded {
 		return
@@ -340,14 +338,9 @@ func (m *Manager) TouchWorkspace(agentID string) {
 		return
 	}
 
-	// Create skills symlink: <workspace>/skills -> <agent>/skills
-	symlinkPath := filepath.Join(wsDir, "skills")
-	relSkills, err := filepath.Rel(wsDir, skillsDir)
-	if err != nil {
-		relSkills = skillsDir
+	if m.sessionInit != nil {
+		m.sessionInit(wsDir, skillsDir)
 	}
-	// Ignore error: symlink may already exist from a previous process run
-	_ = os.Symlink(relSkills, symlinkPath)
 }
 
 // Exists checks if a session directory exists.

@@ -9,7 +9,7 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Code Execution** — Run Python and JavaScript code with timeout control and pre-installed scientific computing and web development libraries
 - **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
-- **Bwrap Sandbox** — Optional bubblewrap-based isolation with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
+- **Bwrap Sandbox** — Bubblewrap-based isolation by default, with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
 - **Audit Logging** — Full request/response logging
 
 ## Quick Start
@@ -35,6 +35,8 @@ The server listens on port `9090`. Health check endpoint: `GET /v1/sandbox`.
 go run .
 ```
 
+By default the service starts in `bwrap` mode and requires a working `bwrap` binary on the host. Set `SANDBOX_ISOLATION_MODE=none` to opt out of bubblewrap isolation for local debugging or unsupported environments.
+
 ## API Overview
 
 ### Sandbox Info
@@ -43,6 +45,31 @@ go run .
 GET  /v1/sandbox                # Get sandbox environment info (OS, runtimes, tools)
 GET  /v1/sandbox/packages/python # List installed Python packages
 GET  /v1/sandbox/packages/nodejs # List installed Node.js packages
+POST /v1/sandbox/fsinfo         # Get filesystem layout info (work_dir, skills dir, etc.)
+```
+
+**Example — Get filesystem info:**
+
+```json
+POST /v1/sandbox/fsinfo
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "enable_agent_workspace": false
+}
+```
+
+Response:
+
+```json
+{
+  "data": {
+    "work_dir": "/home",
+    "directories": {
+      "skills": "/home/skills"
+    }
+  }
+}
 ```
 
 ### Bash Execution
@@ -299,6 +326,11 @@ loaded, _ := c.SkillAgentLoad("agent-1", []string{"my-skill"})
 listed, _ := c.SkillAgentList("agent-1", []string{"my-skill"})
 c.SkillAgentCacheDelete("agent-1", "my-skill")
 
+// Filesystem info
+fsInfo, _ := c.GetFsInfo("agent-1", "session-1")
+// fsInfo.WorkDir = "/home" (bwrap) or session root (direct)
+// fsInfo.Directories["skills"] = "/home/skills" (bwrap) or skills root (direct)
+
 // Session management
 sessions, _ := c.SessionList("agent-1")
 audits, _ := c.SessionGetAuditLogs("agent-1", "session-1", 0, 100)
@@ -321,10 +353,10 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
       skills/                     # Agent-level skill cache (copied from global)
         <skill-id>/
       workspace/                  # Persistent workspace (used when disable_session_isolation=true)
-        skills -> ../skills       # Symlink to agent's skills cache
+        skills -> ../skills       # Symlink to agent's skills cache (direct mode only)
       sessions/
         <session_id>/             # Session working directory
-          skills -> ../../skills  # Symlink to agent's skills cache
+          skills -> ../../skills  # Symlink to agent's skills cache (direct mode only)
 ```
 
 - Default TTL: 24 hours
@@ -333,7 +365,18 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
 
 ## Bwrap Isolation
 
-When `SANDBOX_ISOLATION_MODE=bwrap` is set, all command execution and file operations run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes. This provides OS-level isolation on top of the session directory isolation.
+By default, all command execution and file operations run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes. This provides OS-level isolation on top of the session directory isolation. Set `SANDBOX_ISOLATION_MODE=none` to disable bubblewrap and use direct execution instead.
+
+### Path Remapping
+
+In bwrap mode, the host filesystem paths are remapped inside the sandbox to hide the host directory structure:
+
+| Host Path | Sandbox Path | Access |
+|-----------|--------------|--------|
+| Session or workspace directory | `/home` | Read-write |
+| Agent skills cache | `/home/skills` | Read-only |
+
+This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. No symlinks are created in bwrap mode — access is provided entirely through bind mounts.
 
 ### Security Features
 
@@ -341,14 +384,14 @@ When `SANDBOX_ISOLATION_MODE=bwrap` is set, all command execution and file opera
 - **Read-only system mounts** — `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc` are mounted read-only
 - **Sandboxed file operations** — File reads/writes go through `BwrapFileOperator`, which executes all file I/O inside bwrap using base64-encoded stdin/stdout, preventing symlink escape attacks
 - **Ephemeral `/tmp`** — Each command gets a fresh tmpfs `/tmp`
-- **Skills read-only** — Skills directories are mounted read-only inside the sandbox
+- **Skills read-only** — Skills directories are mounted read-only inside the sandbox at `/home/skills`
 - **Process safety** — `--die-with-parent` and `--new-session` prevent orphaned processes
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SANDBOX_ISOLATION_MODE` | Set to `bwrap` to enable bubblewrap isolation | `none` |
+| `SANDBOX_ISOLATION_MODE` | Isolation mode: `bwrap` (default) or `none` to disable bubblewrap | `bwrap` |
 | `SANDBOX_BWRAP_NETWORK` | `host` (allow network) or `isolated` (no network) | `host` |
 | `SANDBOX_BWRAP_EXTRA_RO_BINDS` | Comma-separated additional read-only bind mount paths | — |
 | `SANDBOX_BWRAP_PROC_BIND` | Set any value to use `--bind /proc /proc` instead of `--proc /proc` (for restricted systems) | — |
@@ -386,7 +429,7 @@ Files in the workspace persist across sessions and are **not** subject to TTL-ba
 
 - When `disable_session_isolation` is `false` (default), paths resolve under the session directory as usual.
 - When `disable_session_isolation` is `true`, non-skills paths resolve under `/data/agents/<agent_id>/workspace/`. Skills paths (`/skills/...`) continue to resolve to the agent's skills cache directory.
-- The workspace directory is created on first access with a `skills` symlink pointing to the agent's skills cache.
+- In direct mode, the workspace directory is created on first access with a `skills` symlink pointing to the agent's skills cache. In bwrap mode, skills are exposed inside the sandbox at `/home/skills` via bind mount instead.
 
 ### Supported Endpoints
 

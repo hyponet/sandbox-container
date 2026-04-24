@@ -5,14 +5,18 @@ import (
 	"runtime"
 
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/session"
 
 	"github.com/gin-gonic/gin"
 )
 
-type SandboxHandler struct{}
+type SandboxHandler struct {
+	mgr     *session.Manager
+	isBwrap bool
+}
 
-func NewSandboxHandler() *SandboxHandler {
-	return &SandboxHandler{}
+func NewSandboxHandler(mgr *session.Manager, isBwrap bool) *SandboxHandler {
+	return &SandboxHandler{mgr: mgr, isBwrap: isBwrap}
 }
 
 func (h *SandboxHandler) GetContext(c *gin.Context) {
@@ -74,4 +78,34 @@ func (h *SandboxHandler) GetNodejsPackages(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, model.OkResponse(pkgs))
+}
+
+func (h *SandboxHandler) FsInfo(c *gin.Context) {
+	var req model.FsInfoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+
+	var workDir string
+	directories := make(map[string]string)
+
+	if h.isBwrap {
+		workDir = SandboxHome
+		directories["skills"] = SandboxSkillsDir
+	} else {
+		if req.EnableAgentWorkspace {
+			h.mgr.TouchWorkspace(req.AgentID)
+			workDir = h.mgr.WorkspaceRoot(req.AgentID)
+		} else {
+			h.mgr.Touch(req.AgentID, req.SessionID)
+			workDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+		}
+		directories["skills"] = h.mgr.SkillsRoot(req.AgentID)
+	}
+
+	c.JSON(http.StatusOK, model.OkResponse(model.FsInfoResponse{
+		WorkDir:     workDir,
+		Directories: directories,
+	}))
 }

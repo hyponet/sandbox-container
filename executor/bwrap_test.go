@@ -23,15 +23,15 @@ func TestBwrapExecutor_buildArgs_HostMode(t *testing.T) {
 	argsStr := strings.Join(args, " ")
 
 	// Must contain core namespace flags
-	for _, flag := range []string{"--die-with-parent", "--new-session", "--unshare-pid", "--unshare-uts", "--unshare-ipc"} {
+	for _, flag := range []string{"--die-with-parent", "--new-session", "--unshare-all"} {
 		if !strings.Contains(argsStr, flag) {
 			t.Errorf("expected args to contain %s, got: %s", flag, argsStr)
 		}
 	}
 
-	// Must NOT contain network isolation in host mode
-	if strings.Contains(argsStr, "--unshare-net") {
-		t.Error("expected --unshare-net to be absent in host mode")
+	// Must contain network sharing in host mode
+	if !strings.Contains(argsStr, "--share-net") {
+		t.Error("expected --share-net to be present in host mode")
 	}
 
 	// Must contain RW bind for session dir
@@ -67,8 +67,8 @@ func TestBwrapExecutor_buildArgs_IsolatedMode(t *testing.T) {
 	}, nil)
 
 	argsStr := strings.Join(args, " ")
-	if !strings.Contains(argsStr, "--unshare-net") {
-		t.Error("expected --unshare-net in isolated mode")
+	if strings.Contains(argsStr, "--share-net") {
+		t.Error("expected --share-net to be absent in isolated mode")
 	}
 }
 

@@ -65,14 +65,12 @@ func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []s
 	args := []string{
 		"--die-with-parent",
 		"--new-session",
-		"--unshare-pid",
-		"--unshare-uts",
-		"--unshare-ipc",
+		"--unshare-all",
 	}
 
 	// Network isolation (optional)
-	if b.cfg.NetworkMode == "isolated" {
-		args = append(args, "--unshare-net")
+	if b.cfg.NetworkMode != "isolated" {
+		args = append(args, "--share-net")
 	}
 
 	// System paths: read-only
@@ -167,7 +165,7 @@ func appendBind(args []string, seen map[string]struct{}, flag, src, dest string)
 		return args
 	}
 
-	key := cleanSrc + "-" + cleanDest
+	key := flag + ":" + cleanSrc + "-" + cleanDest
 	if _, ok := seen[key]; ok {
 		return args
 	}

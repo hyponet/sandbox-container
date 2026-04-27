@@ -253,18 +253,24 @@ func (m *Manager) SetUserdataRoot(path string) {
 }
 
 // TouchUserdata creates the userdata directory for a user (idempotent).
-func (m *Manager) TouchUserdata(userID string) {
+// Validates user_id to prevent path traversal before creating the directory.
+func (m *Manager) TouchUserdata(userID string) error {
 	if userID == "" {
-		return
+		return nil
+	}
+	if err := audit.ValidateID(userID); err != nil {
+		return fmt.Errorf("invalid user_id: %w", err)
 	}
 	if _, loaded := m.userdataInited.LoadOrStore(userID, struct{}{}); loaded {
-		return
+		return nil
 	}
 	dir := m.UserdataRoot(userID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		log.Printf("[ERROR] TouchUserdata: failed to create %s: %v", dir, err)
 		m.userdataInited.Delete(userID)
+		return err
 	}
+	return nil
 }
 
 // IsUserdataPath checks if a request path targets the userdata directory.

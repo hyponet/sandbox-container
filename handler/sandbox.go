@@ -94,11 +94,18 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 		workDir = SandboxHome
 		directories["skills"] = SandboxSkillsDir
 		if req.UserID != "" {
-			h.mgr.TouchUserdata(req.UserID)
+			if err := h.mgr.TouchUserdata(req.UserID); err != nil {
+				c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+				return
+			}
 			directories["userdata"] = SandboxUserdataDir
 		}
 	} else {
-		roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+		roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+			return
+		}
 		workDir = roots.HostRoot
 		directories["skills"] = roots.SkillsRoot
 		if roots.UserdataRoot != "" {

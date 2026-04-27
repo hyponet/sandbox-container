@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,7 @@ func (d *DirectExecutor) InitUserdata(sessionDir, userdataDir string) {
 		return
 	}
 	if err := os.MkdirAll(userdataDir, 0755); err != nil {
+		log.Printf("[ERROR] InitUserdata: failed to create %s: %v", userdataDir, err)
 		return
 	}
 	symlinkPath := filepath.Join(sessionDir, "userdata")

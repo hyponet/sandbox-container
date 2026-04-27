@@ -34,7 +34,11 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		return
 	}
 
-	roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
 	workingDir := roots.HostRoot
 	if req.Cwd != nil && *req.Cwd != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.EnableAgentWorkspace)
@@ -87,7 +91,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	exitCode := 0
 	status := "completed"

@@ -9,6 +9,7 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Code Execution** — Run Python and JavaScript code with timeout control and pre-installed scientific computing and web development libraries
 - **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
+- **Userdata** — Per-user persistent directory (`/data/users/<user_id>/`) mounted to `/home/userdata`, enabling data sharing across agents for the same user
 - **Bwrap Sandbox** — Bubblewrap-based isolation by default, with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
 - **Audit Logging** — Full request/response logging
 
@@ -72,6 +73,33 @@ Response:
 }
 ```
 
+When `user_id` is provided:
+
+```json
+POST /v1/sandbox/fsinfo
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "user_id": "user-123"
+}
+```
+
+Response:
+
+```json
+{
+  "data": {
+    "work_dir": "/home",
+    "directories": {
+      "skills": "/home/skills",
+      "userdata": "/home/userdata"
+    }
+  }
+}
+```
+
+> Note: The `skills` directory is always present. The `userdata` directory only appears when `user_id` is provided.
+
 ### Bash Execution
 
 ```
@@ -109,6 +137,7 @@ POST /v1/bash/exec
 | `max_output_length` | int | No | Maximum output length |
 | `env` | map | No | Environment variables for the runtime process |
 | `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
+| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home/userdata` (default: empty) |
 
 ### File Operations
 
@@ -144,6 +173,7 @@ POST /v1/file/write
 | `file` | string | Yes | File path |
 | `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
 | `skills_writable` | bool | No | Allow writing to skills directories (default: false, applies to write/replace/upload) |
+| `user_id` | string | No | User identifier for userdata access; resolves `/userdata/...` paths to `/data/users/<user_id>/` (default: empty) |
 
 ### Code Execution
 
@@ -175,6 +205,7 @@ POST /v1/code/execute
 | `cwd` | string | No | Working directory for execution |
 | `env` | map | No | Environment variables for the runtime process |
 | `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
+| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home/userdata` (default: empty) |
 
 ### Skills Management
 
@@ -331,6 +362,18 @@ fsInfo, _ := c.GetFsInfo("agent-1", "session-1")
 // fsInfo.WorkDir = "/home" (bwrap) or session root (direct)
 // fsInfo.Directories["skills"] = "/home/skills" (bwrap) or skills root (direct)
 
+// Filesystem info with userdata
+fsInfo, _ := c.GetFsInfo("agent-1", "session-1", client.WithFsInfoUserID("user-123"))
+// fsInfo.Directories["userdata"] = "/home/userdata"
+
+// Bash/command execution with userdata mount
+result, _ := c.BashExec("agent-1", "session-1", "cat /home/userdata/config.json",
+    client.WithBashUserID("user-123"))
+
+// File read from userdata
+content, _ := c.FileRead("agent-1", "session-1", "/userdata/config.json",
+    client.WithFileReadUserID("user-123"))
+
 // Session management
 sessions, _ := c.SessionList("agent-1")
 audits, _ := c.SessionGetAuditLogs("agent-1", "session-1", 0, 100)
@@ -348,15 +391,20 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
       _meta.json                  # System-maintained metadata (version timestamps)
       SKILLS.md                   # Skill documentation
       ...                         # Skill files
+  users/
+    <user_id>/                    # Per-user persistent data (userdata)
+      ...                         # Shared across agents for the same user
   agents/
     <agent_id>/
       skills/                     # Agent-level skill cache (copied from global)
         <skill-id>/
       workspace/                  # Persistent workspace (used when disable_session_isolation=true)
         skills -> ../skills       # Symlink to agent's skills cache (direct mode only)
+        userdata -> ../../users/<user_id>  # Symlink to userdata (direct mode only, when user_id provided)
       sessions/
         <session_id>/             # Session working directory
           skills -> ../../skills  # Symlink to agent's skills cache (direct mode only)
+          userdata -> ../../../users/<user_id>  # Symlink to userdata (direct mode only, when user_id provided)
 ```
 
 - Default TTL: 24 hours
@@ -375,8 +423,9 @@ In bwrap mode, the host filesystem paths are remapped inside the sandbox to hide
 |-----------|--------------|--------|
 | Session or workspace directory | `/home` | Read-write |
 | Agent skills cache | `/home/skills` | Read-only |
+| User persistent data (`/data/users/<user_id>/`) | `/home/userdata` | Read-write (only when `user_id` provided) |
 
-This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. No symlinks are created in bwrap mode — access is provided entirely through bind mounts.
+This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. When `user_id` is provided, user data is accessible at `/home/userdata`. No symlinks are created in bwrap mode — access is provided entirely through bind mounts.
 
 ### Security Features
 
@@ -467,6 +516,56 @@ POST /v1/bash/exec
 ```
 
 The command runs with the workspace directory as the root for path resolution.
+
+## Userdata
+
+Userdata provides a per-user persistent directory that is shared across all agents. When a request includes a `user_id`, the directory `/data/users/<user_id>/` is mounted to `/home/userdata` (read-write) inside the sandbox.
+
+### How It Works
+
+- **Bwrap mode:** The userdata directory is bind-mounted at `/home/userdata` at runtime. No symlinks are needed.
+- **Direct mode:** A `userdata` symlink is created in the session/workspace directory, pointing to `/data/users/<user_id>/` via a relative path.
+- File API paths starting with `/userdata/...` resolve to the user's persistent directory.
+
+### Supported Endpoints
+
+The `user_id` parameter is available on the following endpoints:
+
+| Endpoint Group | Endpoints |
+|----------------|-----------|
+| File | `read`, `write`, `replace`, `search`, `find`, `grep`, `glob`, `list`, `upload`, `download` |
+| Bash | `exec`, `sessions/create` |
+| Code | `execute` |
+| Sandbox | `fsinfo` |
+
+### Example — Write to userdata
+
+```json
+POST /v1/file/write
+{
+  "agent_id": "agent-1",
+  "session_id": "session-1",
+  "file": "/userdata/config.json",
+  "content": "{\"theme\": \"dark\"}",
+  "user_id": "user-123"
+}
+```
+
+The file is written to `/data/users/user-123/config.json` and can be accessed from any agent with the same `user_id`.
+
+### Example — Read userdata in bash
+
+```json
+POST /v1/bash/exec
+{
+  "agent_id": "agent-2",
+  "session_id": "session-1",
+  "command": "cat /home/userdata/config.json",
+  "user_id": "user-123"
+}
+```
+
+The command runs with the user's persistent directory mounted at `/home/userdata`, allowing cross-agent data sharing.
 
 ## Skills Writable Mode
 

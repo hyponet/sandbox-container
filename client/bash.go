@@ -111,8 +111,9 @@ type bashExecRequest struct {
 	AsyncMode       bool              `json:"async_mode"`
 	Timeout         *float64          `json:"timeout,omitempty"`
 	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
-	MaxOutputLength int               `json:"max_output_length"`
+	MaxOutputLength      int               `json:"max_output_length"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
+	UserID               string            `json:"user_id,omitempty"`
 }
 
 type bashOutputRequest struct {
@@ -141,9 +142,10 @@ type bashKillRequest struct {
 type bashSessionCreateRequest struct {
 	AgentID   string  `json:"agent_id"`
 	SessionID string  `json:"session_id"`
-	BashSID  *string `json:"bash_session_id,omitempty"`
-	ExecDir  *string `json:"exec_dir,omitempty"`
+	BashSID              *string `json:"bash_session_id,omitempty"`
+	ExecDir              *string `json:"exec_dir,omitempty"`
 	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
+	UserID               string  `json:"user_id,omitempty"`
 }
 
 type bashSessionCloseRequest struct {
@@ -216,4 +218,14 @@ type BashOutputOption func(*bashOutputRequest)
 // WithWait enables waiting for output with a timeout.
 func WithWait(timeout float64) BashOutputOption {
 	return func(r *bashOutputRequest) { r.Wait = true; r.WaitTimeout = timeout }
+}
+
+// WithBashUserID sets the user ID for userdata access in BashExec.
+func WithBashUserID(userID string) BashExecOption {
+	return func(r *bashExecRequest) { r.UserID = userID }
+}
+
+// WithCreateSessionUserID sets the user ID for userdata access in BashCreateSession.
+func WithCreateSessionUserID(userID string) BashCreateSessionOption {
+	return func(r *bashSessionCreateRequest) { r.UserID = userID }
 }

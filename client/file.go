@@ -177,6 +177,9 @@ func (c *Client) FileUpload(agentID, sessionID, path string, reader io.Reader, f
 	if ur.EnableAgentWorkspace {
 		w.WriteField("enable_agent_workspace", "true")
 	}
+	if ur.UserID != "" {
+		w.WriteField("user_id", ur.UserID)
+	}
 
 	part, err := w.CreateFormFile("file", filename)
 	if err != nil {
@@ -222,6 +225,9 @@ func (c *Client) FileDownload(agentID, sessionID, path string, opts ...FileDownl
 	if fd.EnableAgentWorkspace {
 		params.Set("enable_agent_workspace", "true")
 	}
+	if fd.UserID != "" {
+		params.Set("user_id", fd.UserID)
+	}
 
 	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/file/download?"+params.Encode(), nil)
 	if err != nil {
@@ -250,6 +256,7 @@ type fileReadRequest struct {
 	StartLine *int   `json:"start_line,omitempty"`
 	EndLine   *int   `json:"end_line,omitempty"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileWriteRequest struct {
@@ -262,6 +269,7 @@ type fileWriteRequest struct {
 	LeadingNewline  bool   `json:"leading_newline"`
 	TrailingNewline bool   `json:"trailing_newline"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileReplaceRequest struct {
@@ -271,6 +279,7 @@ type fileReplaceRequest struct {
 	OldStr    string `json:"old_str"`
 	NewStr    string `json:"new_str"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileSearchRequest struct {
@@ -279,6 +288,7 @@ type fileSearchRequest struct {
 	File      string `json:"file"`
 	Regex     string `json:"regex"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileFindRequest struct {
@@ -287,6 +297,7 @@ type fileFindRequest struct {
 	Path      string `json:"path"`
 	Glob      string `json:"glob"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileGrepRequest struct {
@@ -303,6 +314,7 @@ type fileGrepRequest struct {
 	MaxResults      int      `json:"max_results"`
 	Recursive       *bool    `json:"recursive,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileGlobRequest struct {
@@ -316,6 +328,7 @@ type fileGlobRequest struct {
 	IncludeMetadata *bool    `json:"include_metadata,omitempty"`
 	MaxResults      int      `json:"max_results"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 type fileListRequest struct {
@@ -329,6 +342,7 @@ type fileListRequest struct {
 	IncludeSize        *bool    `json:"include_size,omitempty"`
 	IncludePermissions *bool    `json:"include_permissions,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID              string `json:"user_id,omitempty"`
 }
 
 // --- Functional options ---
@@ -449,6 +463,7 @@ type FileUploadOption func(*fileUploadOptions)
 
 type fileUploadOptions struct {
 	EnableAgentWorkspace bool
+	UserID              string
 }
 
 // WithUploadAgentWorkspace enables agent workspace mode for FileUpload.
@@ -461,9 +476,60 @@ type FileDownloadOption func(*fileDownloadOptions)
 
 type fileDownloadOptions struct {
 	EnableAgentWorkspace bool
+	UserID              string
 }
 
 // WithDownloadAgentWorkspace enables agent workspace mode for FileDownload.
 func WithDownloadAgentWorkspace() FileDownloadOption {
 	return func(o *fileDownloadOptions) { o.EnableAgentWorkspace = true }
+}
+
+// WithFileReadUserID sets the user ID for userdata access in FileRead.
+func WithFileReadUserID(userID string) FileReadOption {
+	return func(r *fileReadRequest) { r.UserID = userID }
+}
+
+// WithFileWriteUserID sets the user ID for userdata access in FileWrite.
+func WithFileWriteUserID(userID string) FileWriteOption {
+	return func(r *fileWriteRequest) { r.UserID = userID }
+}
+
+// WithFileReplaceUserID sets the user ID for userdata access in FileReplace.
+func WithFileReplaceUserID(userID string) FileReplaceOption {
+	return func(r *fileReplaceRequest) { r.UserID = userID }
+}
+
+// WithFileSearchUserID sets the user ID for userdata access in FileSearch.
+func WithFileSearchUserID(userID string) FileSearchOption {
+	return func(r *fileSearchRequest) { r.UserID = userID }
+}
+
+// WithFileFindUserID sets the user ID for userdata access in FileFind.
+func WithFileFindUserID(userID string) FileFindOption {
+	return func(r *fileFindRequest) { r.UserID = userID }
+}
+
+// WithFileGrepUserID sets the user ID for userdata access in FileGrep.
+func WithFileGrepUserID(userID string) FileGrepOption {
+	return func(r *fileGrepRequest) { r.UserID = userID }
+}
+
+// WithFileGlobUserID sets the user ID for userdata access in FileGlob.
+func WithFileGlobUserID(userID string) FileGlobOption {
+	return func(r *fileGlobRequest) { r.UserID = userID }
+}
+
+// WithFileListUserID sets the user ID for userdata access in FileList.
+func WithFileListUserID(userID string) FileListOption {
+	return func(r *fileListRequest) { r.UserID = userID }
+}
+
+// WithFileUploadUserID sets the user ID for userdata access in FileUpload.
+func WithFileUploadUserID(userID string) FileUploadOption {
+	return func(o *fileUploadOptions) { o.UserID = userID }
+}
+
+// WithFileDownloadUserID sets the user ID for userdata access in FileDownload.
+func WithFileDownloadUserID(userID string) FileDownloadOption {
+	return func(o *fileDownloadOptions) { o.UserID = userID }
 }

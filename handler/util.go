@@ -28,7 +28,7 @@ type resolvedRoots struct {
 }
 
 // resolveRoots resolves the host paths based on workspace mode.
-func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspace bool, userID string) resolvedRoots {
+func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspace bool, userID string) (resolvedRoots, error) {
 	var roots resolvedRoots
 	if agentWorkspace {
 		mgr.TouchWorkspace(agentID)
@@ -44,14 +44,16 @@ func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspac
 		}
 	}
 	if userID != "" {
-		mgr.TouchUserdata(userID)
+		if err := mgr.TouchUserdata(userID); err != nil {
+			return roots, err
+		}
 		roots.UserdataRoot = mgr.UserdataRoot(userID)
 		// Call userdataInit (e.g. create symlink in direct mode) for the session/workspace dir.
 		if fn := mgr.UserdataInit(); fn != nil {
 			fn(roots.HostRoot, roots.UserdataRoot)
 		}
 	}
-	return roots
+	return roots, nil
 }
 
 // sandboxPathMapping holds the host-to-sandbox path mapping configuration.

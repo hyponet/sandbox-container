@@ -52,16 +52,18 @@ main.go → gin router with middleware chain
 
 **Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. In direct mode, skills are accessed via symlink `sessions/<sid>/skills → ../../skills` created by `DirectExecutor.InitSession`. In bwrap mode, no symlinks are created; skills are accessed via read-only bind mount at `/home/skills`.
 
+**Userdata:** When a request includes `user_id`, the user's persistent directory `/data/users/<user_id>/` is mounted to `/home/userdata` (read-write). This enables data sharing across agents for the same user. In direct mode, a `userdata` symlink is created in the session/workspace directory. In bwrap mode, the directory is bind-mounted at runtime. Userdata paths (`/userdata/...`) are resolved and validated separately by `ResolveUserdataPath`.
+
 **Bwrap isolation:** By default, both command execution and file operations run inside bubblewrap sandboxes. Set `SANDBOX_ISOLATION_MODE=none` to opt into direct execution. `NewFileOperator()` auto-detects the executor type and returns `BwrapFileOperator` (sandboxed) or `DirectFileOperator` accordingly. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks.
 
 **Bwrap security features:**
 - Namespace isolation: PID (`--unshare-pid`), UTS (`--unshare-uts`), IPC (`--unshare-ipc`), optional network (`--unshare-net`)
-- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only)
-- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory and `/home/skills` for skills access
+- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only); userdata dirs mapped to `/home/userdata` (read-write when `user_id` provided)
+- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory, `/home/skills` for skills access, and `/home/userdata` for user data access
 - Process: `--die-with-parent`, `--new-session`
 - Runtime path resolution: auto-mounts `/usr/local`, `/opt`, `/run/current-system`, `/nix/store` as needed
 
-**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `DirectExecutor.InitSession` creates a `skills` symlink with a relative path. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts.
+**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `DirectExecutor.InitSession` creates a `skills` symlink with a relative path. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts. Similarly, `InitUserdata(sessionDir, userdataDir)` is called when a `user_id` is present: `DirectExecutor.InitUserdata` creates a `userdata` symlink, while `BwrapExecutor.InitUserdata` is a no-op (handled via bind mounts at runtime).
 
 **Async bash:** Commands run in async mode write output to thread-safe buffers; output is read incrementally via offset.
 

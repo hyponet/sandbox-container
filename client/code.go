@@ -39,6 +39,7 @@ type codeExecRequest struct {
 	Cwd                  *string           `json:"cwd,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
+	UserID               string            `json:"user_id,omitempty"`
 }
 
 // --- Functional options ---
@@ -64,4 +65,9 @@ func WithCodeEnv(env map[string]string) CodeExecOption {
 // WithCodeAgentWorkspace enables agent workspace mode for CodeExecute.
 func WithCodeAgentWorkspace() CodeExecOption {
 	return func(r *codeExecRequest) { r.EnableAgentWorkspace = true }
+}
+
+// WithCodeUserID sets the user ID for userdata access in CodeExecute.
+func WithCodeUserID(userID string) CodeExecOption {
+	return func(r *codeExecRequest) { r.UserID = userID }
 }

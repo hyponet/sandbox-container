@@ -34,6 +34,12 @@ type FsInfoOption func(*fsInfoOptions)
 
 type fsInfoOptions struct {
 	EnableAgentWorkspace bool
+	UserID              string
+}
+
+// WithFsInfoUserID sets the user ID for userdata access in GetFsInfo.
+func WithFsInfoUserID(userID string) FsInfoOption {
+	return func(o *fsInfoOptions) { o.UserID = userID }
 }
 
 // WithFsInfoAgentWorkspace enables agent workspace mode for the fsinfo request.
@@ -56,6 +62,9 @@ func (c *Client) GetFsInfo(agentID, sessionID string, opts ...FsInfoOption) (*Fs
 	}
 	if o.EnableAgentWorkspace {
 		reqBody["enable_agent_workspace"] = true
+	}
+	if o.UserID != "" {
+		reqBody["user_id"] = o.UserID
 	}
 
 	var result FsInfoResponse

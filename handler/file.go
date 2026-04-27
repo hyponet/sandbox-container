@@ -208,7 +208,9 @@ func (h *FileHandler) resolveFilePath(userID, agentID, sessionID, reqPath string
 		if userID == "" {
 			return "", fmt.Errorf("user_id is required for /userdata/ paths")
 		}
-		h.mgr.TouchUserdata(userID)
+		if err := h.mgr.TouchUserdata(userID); err != nil {
+			return "", err
+		}
 		return h.mgr.ResolveUserdataPath(userID, reqPath)
 	}
 	return h.mgr.ResolvePathEx(agentID, sessionID, reqPath, agentWorkspace)

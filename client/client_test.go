@@ -43,6 +43,10 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	auditMW := middleware.AuditLogger(auditW)
 	cmdExec := &executor.DirectExecutor{}
 	mgr.SetSessionInit(cmdExec.InitSession)
+	mgr.SetUserdataInit(cmdExec.InitUserdata)
+	userdataDir := filepath.Join(dir, "users")
+	os.MkdirAll(userdataDir, 0755)
+	mgr.SetUserdataRoot(userdataDir)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -1990,4 +1994,456 @@ func createTestZIPServer(t *testing.T, files map[string]string) string {
 	t.Cleanup(server.Close)
 
 	return server.URL + "/skill.zip"
+}
+
+// =============================================
+// Userdata tests
+// =============================================
+
+func TestGetFsInfoWithUserID(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetFsInfo("a1", "ud-fs1", WithFsInfoUserID("user-1"))
+	if err != nil {
+		t.Fatalf("GetFsInfo with UserID failed: %v", err)
+	}
+	if result.Directories["userdata"] == "" {
+		t.Errorf("expected non-empty userdata directory, got %v", result.Directories)
+	}
+	if _, err := os.Stat(result.Directories["userdata"]); err != nil {
+		t.Fatalf("expected userdata directory to exist, stat %q: %v", result.Directories["userdata"], err)
+	}
+}
+
+func TestGetFsInfoWithoutUserID(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetFsInfo("a1", "ud-fs2")
+	if err != nil {
+		t.Fatalf("GetFsInfo failed: %v", err)
+	}
+	if _, ok := result.Directories["userdata"]; ok {
+		t.Errorf("expected no userdata directory without user_id, got %v", result.Directories)
+	}
+}
+
+func TestUserdataFileWriteAndRead(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write to /userdata/ path with user_id
+	_, err := cli.FileWrite("a1", "ud-s1", "/userdata/config.json", `{"theme":"dark"}`,
+		WithFileWriteUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileWrite to userdata failed: %v", err)
+	}
+
+	// Read back with same user_id
+	result, err := cli.FileRead("a1", "ud-s1", "/userdata/config.json",
+		WithFileReadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileRead from userdata failed: %v", err)
+	}
+	if result.Content != `{"theme":"dark"}` {
+		t.Errorf("expected '{\"theme\":\"dark\"}', got %q", result.Content)
+	}
+}
+
+func TestUserdataCrossAgentSharing(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write to userdata from agent-1
+	_, err := cli.FileWrite("a1", "ud-s1", "/userdata/shared.txt", "shared data",
+		WithFileWriteUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileWrite to userdata from agent-1 failed: %v", err)
+	}
+
+	// Read from agent-2 with same user_id
+	result, err := cli.FileRead("a2", "ud-s2", "/userdata/shared.txt",
+		WithFileReadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileRead from userdata by agent-2 failed: %v", err)
+	}
+	if result.Content != "shared data" {
+		t.Errorf("expected 'shared data', got %q", result.Content)
+	}
+}
+
+func TestUserdataWriteWithoutUserIDBlocked(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write to /userdata/ without user_id should fail
+	_, err := cli.FileWrite("a1", "ud-s3", "/userdata/test.txt", "no user")
+	if err == nil {
+		t.Error("expected error writing to /userdata/ without user_id")
+	}
+}
+
+func TestUserdataReadWithoutUserIDBlocked(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// First write with user_id
+	if _, err := cli.FileWrite("a1", "ud-s4", "/userdata/test.txt", "data",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	// Read without user_id should fail
+	_, err := cli.FileRead("a1", "ud-s4", "/userdata/test.txt")
+	if err == nil {
+		t.Error("expected error reading from /userdata/ without user_id")
+	}
+}
+
+func TestUserdataBashExec(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write a file via file API
+	if _, err := cli.FileWrite("a1", "ud-bash1", "/userdata/hello.txt", "hello from userdata",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	// Read it via bash with user_id.
+	// In direct mode, userdata is a symlink at <sessionDir>/userdata,
+	// so the path inside the working dir is "userdata/hello.txt".
+	result, err := cli.BashExec("a1", "ud-bash1", "cat userdata/hello.txt",
+		WithBashUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with UserID failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "hello from userdata" {
+		t.Errorf("expected stdout 'hello from userdata', got %v", result.Stdout)
+	}
+}
+
+func TestUserdataBashCreateSession(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write a file to userdata
+	if _, err := cli.FileWrite("a1", "ud-bash2", "/userdata/session-test.txt", "session data",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	// Create bash session with user_id
+	_, err := cli.BashCreateSession("a1", "ud-bash2",
+		WithBashSID("ud-session"),
+		WithCreateSessionUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("BashCreateSession with UserID failed: %v", err)
+	}
+
+	// Verify userdata is accessible via exec in the same agent.
+	// In direct mode, userdata symlink is at <workDir>/userdata.
+	result, err := cli.BashExec("a1", "ud-bash2", "cat userdata/session-test.txt",
+		WithBashUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with UserID failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "session data" {
+		t.Errorf("expected stdout 'session data', got %v", result.Stdout)
+	}
+}
+
+func TestUserdataCodeExecute(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Write a file to userdata
+	if _, err := cli.FileWrite("a1", "ud-code1", "/userdata/data.txt", "42",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	// Read it via python code with user_id.
+	// In direct mode, working dir is the session dir; userdata is a symlink at ./userdata.
+	result, err := cli.CodeExecute("a1", "ud-code1", "python",
+		`with open('userdata/data.txt') as f: print(f.read().strip())`,
+		WithCodeUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("CodeExecute with UserID failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "42\n" {
+		t.Errorf("expected stdout '42\\n', got %v", result.Stdout)
+	}
+}
+
+func TestUserdataFileUpload(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	content := bytes.NewReader([]byte("uploaded to userdata"))
+	result, err := cli.FileUpload("a1", "ud-up1", "/userdata/uploaded.txt", content, "test.txt",
+		WithFileUploadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileUpload to userdata failed: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected success")
+	}
+
+	// Verify via read
+	readResult, err := cli.FileRead("a1", "ud-up1", "/userdata/uploaded.txt",
+		WithFileReadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileRead from userdata after upload failed: %v", err)
+	}
+	if readResult.Content != "uploaded to userdata" {
+		t.Errorf("expected 'uploaded to userdata', got %q", readResult.Content)
+	}
+}
+
+func TestUserdataFileDownload(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-dl1", "/userdata/download.txt", "download from userdata",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	data, err := cli.FileDownload("a1", "ud-dl1", "/userdata/download.txt",
+		WithFileDownloadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileDownload from userdata failed: %v", err)
+	}
+	if string(data) != "download from userdata" {
+		t.Errorf("expected 'download from userdata', got %q", string(data))
+	}
+}
+
+func TestUserdataFileReplace(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-rep1", "/userdata/replace.txt", "foo bar foo",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	rr, err := cli.FileReplace("a1", "ud-rep1", "/userdata/replace.txt", "foo", "baz",
+		WithFileReplaceUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileReplace in userdata failed: %v", err)
+	}
+	if rr.ReplacedCount != 2 {
+		t.Errorf("expected 2 replacements, got %d", rr.ReplacedCount)
+	}
+
+	result, err := cli.FileRead("a1", "ud-rep1", "/userdata/replace.txt",
+		WithFileReadUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileRead after replace failed: %v", err)
+	}
+	if result.Content != "baz bar baz" {
+		t.Errorf("expected 'baz bar baz', got %q", result.Content)
+	}
+}
+
+func TestUserdataFileSearch(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-sea1", "/userdata/search.txt", "hello world\nfoo bar\nhello again",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	result, err := cli.FileSearch("a1", "ud-sea1", "/userdata/search.txt", "hello",
+		WithFileSearchUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileSearch in userdata failed: %v", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Errorf("expected 2 matches, got %d", len(result.Matches))
+	}
+}
+
+func TestUserdataFileFind(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-find1", "/userdata/docs/readme.md", "# Hello",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	result, err := cli.FileFind("a1", "ud-find1", "/userdata", "*.md",
+		WithFileFindUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileFind in userdata failed: %v", err)
+	}
+	if len(result.Files) != 1 {
+		t.Errorf("expected 1 file, got %d", len(result.Files))
+	}
+}
+
+func TestUserdataFileGrep(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-grep1", "/userdata/grep_test.txt", "hello world\nfoo bar\nhello again",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	result, err := cli.FileGrep("a1", "ud-grep1", "/userdata", "hello",
+		WithFileGrepUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileGrep in userdata failed: %v", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Errorf("expected 2 matches, got %d", len(result.Matches))
+	}
+}
+
+func TestUserdataFileGlob(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-glob1", "/userdata/test.py", "print('hi')",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+	if _, err := cli.FileWrite("a1", "ud-glob1", "/userdata/test.txt", "data",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	result, err := cli.FileGlob("a1", "ud-glob1", "/userdata", "*.py",
+		WithFileGlobUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileGlob in userdata failed: %v", err)
+	}
+	if len(result.Files) != 1 {
+		t.Errorf("expected 1 file, got %d", len(result.Files))
+	}
+}
+
+func TestUserdataFileList(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "ud-list1", "/userdata/a.txt", "a",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+	if _, err := cli.FileWrite("a1", "ud-list1", "/userdata/b.txt", "b",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	result, err := cli.FileList("a1", "ud-list1", "/userdata",
+		WithFileListUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileList in userdata failed: %v", err)
+	}
+	if len(result.Files) < 2 {
+		t.Errorf("expected at least 2 files, got %d", len(result.Files))
+	}
+}
+
+// =============================================
+// Userdata user_id validation tests
+// =============================================
+
+func TestUserdataMaliciousUserIDPathTraversal(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	maliciousIDs := []string{
+		"../../etc",
+		"../passwd",
+		"user/sub",
+		"user\\sub",
+		"..",
+		".",
+	}
+
+	for _, badID := range maliciousIDs {
+		t.Run("file_write_"+badID, func(t *testing.T) {
+			_, err := cli.FileWrite("a1", "ud-val1", "/userdata/test.txt", "data",
+				WithFileWriteUserID(badID),
+			)
+			if err == nil {
+				t.Errorf("expected error for malicious user_id %q, got nil", badID)
+			}
+		})
+
+		t.Run("file_read_"+badID, func(t *testing.T) {
+			_, err := cli.FileRead("a1", "ud-val1", "/userdata/test.txt",
+				WithFileReadUserID(badID),
+			)
+			if err == nil {
+				t.Errorf("expected error for malicious user_id %q, got nil", badID)
+			}
+		})
+
+		t.Run("fsinfo_"+badID, func(t *testing.T) {
+			_, err := cli.GetFsInfo("a1", "ud-val1", WithFsInfoUserID(badID))
+			if err == nil {
+				t.Errorf("expected error for malicious user_id %q, got nil", badID)
+			}
+		})
+
+		t.Run("bash_exec_"+badID, func(t *testing.T) {
+			_, err := cli.BashExec("a1", "ud-val1", "echo hi",
+				WithBashUserID(badID),
+			)
+			if err == nil {
+				t.Errorf("expected error for malicious user_id %q, got nil", badID)
+			}
+		})
+	}
+}
+
+func TestUserdataEmptyUserIDAllowed(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Empty user_id should work fine for non-userdata paths
+	_, err := cli.FileWrite("a1", "ud-val2", "test.txt", "data")
+	if err != nil {
+		t.Fatalf("FileWrite without user_id should succeed for non-userdata paths: %v", err)
+	}
 }

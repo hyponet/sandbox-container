@@ -33,4 +33,7 @@ type CommandExecutor interface {
 	// InitSession is called after the session/workspace directory is created.
 	// It performs executor-specific initialization (e.g. symlinks for DirectExecutor).
 	InitSession(sessionDir, skillsDir string)
+
+	// InitUserdata is called when a userID is provided to set up userdata access.
+	InitUserdata(sessionDir, userdataDir string)
 }

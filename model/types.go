@@ -40,6 +40,7 @@ type FsInfoRequest struct {
 	AgentID              string `json:"agent_id" binding:"required"`
 	SessionID            string `json:"session_id" binding:"required"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FsInfoResponse struct {
@@ -100,6 +101,7 @@ type BashExecRequest struct {
 	HardTimeout          *float64          `json:"hard_timeout,omitempty"`
 	MaxOutputLength      int               `json:"max_output_length"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
+	UserID               string            `json:"user_id"`
 }
 
 type BashExecResult struct {
@@ -151,7 +153,8 @@ type BashSessionCreateRequest struct {
 	SessionID            string  `json:"session_id" binding:"required"`
 	BashSID              *string `json:"bash_session_id,omitempty"`
 	ExecDir              *string `json:"exec_dir,omitempty"`
-	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
+	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type BashSessionCloseRequest struct {
@@ -204,6 +207,7 @@ type FileReadRequest struct {
 	StartLine            *int   `json:"start_line,omitempty"`
 	EndLine              *int   `json:"end_line,omitempty"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FileReadResult struct {
@@ -221,6 +225,7 @@ type FileWriteRequest struct {
 	LeadingNewline       bool   `json:"leading_newline"`
 	TrailingNewline      bool   `json:"trailing_newline"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FileWriteResult struct {
@@ -235,6 +240,7 @@ type FileReplaceRequest struct {
 	OldStr               string `json:"old_str" binding:"required"`
 	NewStr               string `json:"new_str" binding:"required"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FileReplaceResult struct {
@@ -248,6 +254,7 @@ type FileSearchRequest struct {
 	File                 string `json:"file" binding:"required"`
 	Regex                string `json:"regex" binding:"required"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FileSearchResult struct {
@@ -262,6 +269,7 @@ type FileFindRequest struct {
 	Path                 string `json:"path" binding:"required"`
 	Glob                 string `json:"glob" binding:"required"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
+	UserID               string `json:"user_id"`
 }
 
 type FileFindResult struct {
@@ -283,6 +291,7 @@ type FileGrepRequest struct {
 	MaxResults           int      `json:"max_results"`
 	Recursive            *bool    `json:"recursive,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID               string   `json:"user_id"`
 }
 
 type FileGrepResult struct {
@@ -314,6 +323,7 @@ type FileGlobRequest struct {
 	IncludeMetadata      *bool    `json:"include_metadata,omitempty"`
 	MaxResults           int      `json:"max_results"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID               string   `json:"user_id"`
 }
 
 type FileGlobResult struct {
@@ -343,6 +353,7 @@ type FileListRequest struct {
 	IncludeSize          *bool    `json:"include_size,omitempty"`
 	IncludePermissions   *bool    `json:"include_permissions,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID               string   `json:"user_id"`
 }
 
 type FileListResult struct {
@@ -367,6 +378,7 @@ type FileUploadRequest struct {
 	AgentID   string `form:"agent_id" binding:"required"`
 	SessionID string `form:"session_id" binding:"required"`
 	Path      string `form:"path" binding:"required"`
+	UserID    string `form:"user_id"`
 }
 
 type FileUploadResult struct {
@@ -388,6 +400,7 @@ type CodeExecuteRequest struct {
 	Cwd                  *string           `json:"cwd,omitempty"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
 	Env                  map[string]string `json:"env,omitempty"`
+	UserID               string            `json:"user_id"`
 }
 
 type CodeExecuteResponse struct {

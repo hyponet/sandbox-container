@@ -34,17 +34,8 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		return
 	}
 
-	var workingDir string
-	var writableRoot string
-	if req.EnableAgentWorkspace {
-		h.mgr.TouchWorkspace(req.AgentID)
-		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
-		writableRoot = workingDir
-	} else {
-		h.mgr.Touch(req.AgentID, req.SessionID)
-		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-		writableRoot = workingDir
-	}
+	roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	workingDir := roots.HostRoot
 	if req.Cwd != nil && *req.Cwd != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.EnableAgentWorkspace)
 		if err != nil {
@@ -57,13 +48,8 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		log.Printf("[ERROR] Execute: mkdir %s: %v", workingDir, err)
 	}
 
-	var hostRoot string
-	if req.EnableAgentWorkspace {
-		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
-	} else {
-		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-	}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	timeout := 30
 	if req.Timeout != nil && *req.Timeout > 0 {
@@ -88,7 +74,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace, h.isBwrap)
+	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace, h.isBwrap)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,

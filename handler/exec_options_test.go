@@ -30,6 +30,8 @@ func (c *captureExecutor) Prepare(opts executor.ExecOptions, name string, args .
 
 func (c *captureExecutor) InitSession(sessionDir, skillsDir string) {}
 
+func (c *captureExecutor) InitUserdata(sessionDir, userdataDir string) {}
+
 func cloneExecOptions(opts executor.ExecOptions) executor.ExecOptions {
 	opts.Env = append([]string(nil), opts.Env...)
 	if opts.RWBinds != nil {

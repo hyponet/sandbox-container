@@ -115,14 +115,8 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	}
 
 	// Determine working dir within session
-	var workingDir string
-	if req.EnableAgentWorkspace {
-		h.mgr.TouchWorkspace(req.AgentID)
-		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
-	} else {
-		h.mgr.Touch(req.AgentID, req.SessionID)
-		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-	}
+	roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	workingDir := roots.HostRoot
 	if req.ExecDir != nil && *req.ExecDir != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
 		if err != nil {
@@ -135,13 +129,8 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		log.Printf("[ERROR] CreateSession: mkdir %s: %v", workingDir, err)
 	}
 
-	var hostRoot string
-	if req.EnableAgentWorkspace {
-		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
-	} else {
-		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-	}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	bs := &bashSession{
 		sandboxSID: req.SessionID,
@@ -172,21 +161,12 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		return
 	}
 
-	h.mgr.Touch(req.AgentID, req.SessionID)
 	bashSID := "default"
 	key := h.sessionKey(req.SessionID, bashSID)
 
 	// Determine working dir
-	var workingDir string
-	var writableRoot string
-	if req.EnableAgentWorkspace {
-		h.mgr.TouchWorkspace(req.AgentID)
-		workingDir = h.mgr.WorkspaceRoot(req.AgentID)
-		writableRoot = workingDir
-	} else {
-		workingDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-		writableRoot = workingDir
-	}
+	roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	workingDir := roots.HostRoot
 	if req.ExecDir != nil && *req.ExecDir != "" {
 		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
 		if err != nil {
@@ -199,13 +179,8 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		log.Printf("[ERROR] Exec: mkdir %s: %v", workingDir, err)
 	}
 
-	var hostRoot string
-	if req.EnableAgentWorkspace {
-		hostRoot = h.mgr.WorkspaceRoot(req.AgentID)
-	} else {
-		hostRoot = h.mgr.SessionRoot(req.AgentID, req.SessionID)
-	}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(req.AgentID), workingDir)
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	cmdID := uuid.New().String()[:8]
 	timeout := 30.0
@@ -220,7 +195,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Build command
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
-	rwBinds, roBinds := commandExecBinds(h.mgr, req.AgentID, writableRoot, req.EnableAgentWorkspace, h.isBwrap)
+	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace, h.isBwrap)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,

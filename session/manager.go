@@ -17,6 +17,7 @@ const (
 	DefaultAgentRoot    = "/data/agents"
 	DefaultGlobalSkills = "/data/skills"
 	DefaultRegistryRoot = "/data/skill-registry"
+	DefaultUserdataRoot = "/data/users"
 	DefaultTTL          = 24 * time.Hour
 	CleanupInterval     = 10 * time.Minute
 )
@@ -31,7 +32,10 @@ type Manager struct {
 	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
 	auditWriter      *audit.Writer
 	workspaceInited  sync.Map // agentID -> struct{}, tracks agents whose workspace is set up
+	userdataRoot     string
+	userdataInited   sync.Map // userID -> struct{}, tracks users whose userdata dir is created
 	sessionInit      func(sessionDir, skillsDir string)
+	userdataInit     func(sessionDir, userdataDir string)
 }
 
 // SessionEntry represents a session with its last access time.
@@ -52,6 +56,7 @@ func NewManager(root string, ttl time.Duration) *Manager {
 		root:             root,
 		globalSkillsRoot: DefaultGlobalSkills,
 		registryRoot:     DefaultRegistryRoot,
+		userdataRoot:     DefaultUserdataRoot,
 		ttl:              ttl,
 		accessTime:       make(map[string]time.Time),
 	}
@@ -138,60 +143,73 @@ func IsSkillsPath(reqPath string) bool {
 	return cleanPath == "/skills" || strings.HasPrefix(cleanPath, "/skills/")
 }
 
-// ResolvePath rewrites an absolute path to be within the session directory.
-// Paths starting with /skills/ are mapped to the agent's skills directory (read-only).
-// The given path must be absolute. Returns the real path, whether it's a skills path, and an error if path escapes.
-func (m *Manager) ResolvePath(agentID, sessionID, reqPath string) (string, error) {
-	m.Touch(agentID, sessionID)
-
-	// Security: reject any path containing ".." components before Clean normalizes them away.
+// RejectDotDot rejects paths containing ".." components.
+func RejectDotDot(reqPath string) error {
 	for _, component := range strings.Split(reqPath, "/") {
 		if component == ".." {
-			return "", fmt.Errorf("path escapes session directory: %s", reqPath)
+			return fmt.Errorf("path contains invalid component: %s", reqPath)
 		}
 	}
+	return nil
+}
 
-	// Clean the requested path
+// resolveUnder resolves reqPath to be within rootDir, with path traversal protection.
+// reqPath may be absolute (e.g. "/foo/bar") or relative (e.g. "foo/bar"); both forms
+// are normalized to a relative path and joined under rootDir. The result is guaranteed
+// to stay within rootDir.
+func resolveUnder(rootDir, reqPath string) (string, error) {
+	cleanRoot := filepath.Clean(rootDir)
 	cleanPath := filepath.Clean(reqPath)
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = "/" + cleanPath
 	}
-
-	// Check if this is a skills path
-	if IsSkillsPath(cleanPath) {
-		skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
-		relPath := strings.TrimPrefix(cleanPath, "/skills")
-		relPath = strings.TrimPrefix(relPath, "/")
-		var realPath string
-		if relPath == "" {
-			realPath = skillsRoot
-		} else {
-			realPath = filepath.Join(skillsRoot, relPath)
-		}
-		realPath = filepath.Clean(realPath)
-		if !strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) && realPath != skillsRoot {
-			return "", fmt.Errorf("path escapes skills directory: %s", reqPath)
-		}
-		return realPath, nil
-	}
-
-	// Regular session path
-	sessionRoot := filepath.Clean(m.SessionRoot(agentID, sessionID))
 	relPath := strings.TrimPrefix(cleanPath, "/")
-	realPath := filepath.Join(sessionRoot, relPath)
-
-	// Double-check: ensure resolved path is within session root
+	realPath := filepath.Join(cleanRoot, relPath)
 	realPath = filepath.Clean(realPath)
-	if !strings.HasPrefix(realPath+string(os.PathSeparator), sessionRoot+string(os.PathSeparator)) && realPath != sessionRoot {
-		return "", fmt.Errorf("path escapes session directory: %s", reqPath)
+	if !strings.HasPrefix(realPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) && realPath != cleanRoot {
+		return "", fmt.Errorf("path escapes directory: %s", reqPath)
 	}
-
 	return realPath, nil
 }
 
-// ResolveReadOnlyPath resolves a path and checks if it's in the read-only skills directory.
-func (m *Manager) ResolveReadOnlyPath(agentID, sessionID, reqPath string) (string, error) {
-	return m.ResolvePath(agentID, sessionID, reqPath)
+// resolveSkillsPath resolves a /skills/... request path to the agent's skills directory.
+func (m *Manager) resolveSkillsPath(agentID, reqPath string) (string, error) {
+	skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
+	cleanPath := filepath.Clean(reqPath)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = "/" + cleanPath
+	}
+	relPath := strings.TrimPrefix(cleanPath, "/skills")
+	relPath = strings.TrimPrefix(relPath, "/")
+	return resolveUnder(skillsRoot, relPath)
+}
+
+// cleanRequestPath cleans a request path and ensures it is absolute.
+func cleanRequestPath(reqPath string) string {
+	cleanPath := filepath.Clean(reqPath)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = "/" + cleanPath
+	}
+	return cleanPath
+}
+
+// ResolvePath rewrites an absolute path to be within the session directory.
+// Paths starting with /skills/ are mapped to the agent's skills directory (read-only).
+// The given path must be absolute. Returns the real path and an error if path escapes.
+func (m *Manager) ResolvePath(agentID, sessionID, reqPath string) (string, error) {
+	m.Touch(agentID, sessionID)
+
+	if err := RejectDotDot(reqPath); err != nil {
+		return "", err
+	}
+
+	cleanPath := cleanRequestPath(reqPath)
+
+	if IsSkillsPath(cleanPath) {
+		return m.resolveSkillsPath(agentID, cleanPath)
+	}
+
+	return resolveUnder(m.SessionRoot(agentID, sessionID), cleanPath)
 }
 
 // ResolvePathEx resolves a path with optional workspace mode support.
@@ -204,49 +222,17 @@ func (m *Manager) ResolvePathEx(agentID, sessionID, reqPath string, agentWorkspa
 
 	m.TouchWorkspace(agentID)
 
-	// Security: reject any path containing ".." components before Clean normalizes them away.
-	for _, component := range strings.Split(reqPath, "/") {
-		if component == ".." {
-			return "", fmt.Errorf("path escapes workspace directory: %s", reqPath)
-		}
+	if err := RejectDotDot(reqPath); err != nil {
+		return "", err
 	}
 
-	// Clean the requested path
-	cleanPath := filepath.Clean(reqPath)
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = "/" + cleanPath
-	}
+	cleanPath := cleanRequestPath(reqPath)
 
-	// Check if this is a skills path — always resolves to agent skills dir
 	if IsSkillsPath(cleanPath) {
-		skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
-		relPath := strings.TrimPrefix(cleanPath, "/skills")
-		relPath = strings.TrimPrefix(relPath, "/")
-		var realPath string
-		if relPath == "" {
-			realPath = skillsRoot
-		} else {
-			realPath = filepath.Join(skillsRoot, relPath)
-		}
-		realPath = filepath.Clean(realPath)
-		if !strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) && realPath != skillsRoot {
-			return "", fmt.Errorf("path escapes skills directory: %s", reqPath)
-		}
-		return realPath, nil
+		return m.resolveSkillsPath(agentID, cleanPath)
 	}
 
-	// Regular workspace path
-	wsRoot := filepath.Clean(m.WorkspaceRoot(agentID))
-	relPath := strings.TrimPrefix(cleanPath, "/")
-	realPath := filepath.Join(wsRoot, relPath)
-
-	// Ensure resolved path is within workspace root
-	realPath = filepath.Clean(realPath)
-	if !strings.HasPrefix(realPath+string(os.PathSeparator), wsRoot+string(os.PathSeparator)) && realPath != wsRoot {
-		return "", fmt.Errorf("path escapes workspace directory: %s", reqPath)
-	}
-
-	return realPath, nil
+	return resolveUnder(m.WorkspaceRoot(agentID), cleanPath)
 }
 
 // IsResolvedSkillsPath checks if a resolved absolute path is within an agent's skills directory.
@@ -254,6 +240,57 @@ func (m *Manager) IsResolvedSkillsPath(agentID, resolvedPath string) bool {
 	skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
 	cleanResolved := filepath.Clean(resolvedPath)
 	return strings.HasPrefix(cleanResolved+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || cleanResolved == skillsRoot
+}
+
+// UserdataRoot returns the userdata directory for a given user.
+func (m *Manager) UserdataRoot(userID string) string {
+	return filepath.Join(m.userdataRoot, userID)
+}
+
+// SetUserdataRoot sets the userdata root directory (for testing).
+func (m *Manager) SetUserdataRoot(path string) {
+	m.userdataRoot = path
+}
+
+// TouchUserdata creates the userdata directory for a user (idempotent).
+func (m *Manager) TouchUserdata(userID string) {
+	if userID == "" {
+		return
+	}
+	if _, loaded := m.userdataInited.LoadOrStore(userID, struct{}{}); loaded {
+		return
+	}
+	dir := m.UserdataRoot(userID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[ERROR] TouchUserdata: failed to create %s: %v", dir, err)
+		m.userdataInited.Delete(userID)
+	}
+}
+
+// IsUserdataPath checks if a request path targets the userdata directory.
+func IsUserdataPath(reqPath string) bool {
+	cleanPath := filepath.Clean(reqPath)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = "/" + cleanPath
+	}
+	return cleanPath == "/userdata" || strings.HasPrefix(cleanPath, "/userdata/")
+}
+
+// ResolveUserdataPath resolves a /userdata/... path to the host userdata directory.
+func (m *Manager) ResolveUserdataPath(userID, reqPath string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("user_id is required for /userdata/ paths")
+	}
+	if err := audit.ValidateID(userID); err != nil {
+		return "", fmt.Errorf("invalid user_id: %w", err)
+	}
+	if err := RejectDotDot(reqPath); err != nil {
+		return "", err
+	}
+	cleanPath := cleanRequestPath(reqPath)
+	relPath := strings.TrimPrefix(cleanPath, "/userdata")
+	relPath = strings.TrimPrefix(relPath, "/")
+	return resolveUnder(m.UserdataRoot(userID), relPath)
 }
 
 // EnsureDir creates the session directory and any parent directories for a file.
@@ -288,6 +325,18 @@ func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, agentWo
 // SetSessionInit sets the callback invoked after session/workspace directories are created.
 func (m *Manager) SetSessionInit(fn func(sessionDir, skillsDir string)) {
 	m.sessionInit = fn
+}
+
+// SetUserdataInit sets the callback invoked after userdata directories are created.
+// The callback receives (sessionDir, userdataDir) and is responsible for executor-specific
+// setup (e.g. creating symlinks in direct mode).
+func (m *Manager) SetUserdataInit(fn func(sessionDir, userdataDir string)) {
+	m.userdataInit = fn
+}
+
+// UserdataInit returns the userdataInit callback (for use by handler layer).
+func (m *Manager) UserdataInit() func(sessionDir, userdataDir string) {
+	return m.userdataInit
 }
 
 // Touch updates the last access time for a session and creates the directory.

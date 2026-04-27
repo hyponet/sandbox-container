@@ -93,15 +93,17 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 	if h.isBwrap {
 		workDir = SandboxHome
 		directories["skills"] = SandboxSkillsDir
-	} else {
-		if req.EnableAgentWorkspace {
-			h.mgr.TouchWorkspace(req.AgentID)
-			workDir = h.mgr.WorkspaceRoot(req.AgentID)
-		} else {
-			h.mgr.Touch(req.AgentID, req.SessionID)
-			workDir = h.mgr.SessionRoot(req.AgentID, req.SessionID)
+		if req.UserID != "" {
+			h.mgr.TouchUserdata(req.UserID)
+			directories["userdata"] = SandboxUserdataDir
 		}
-		directories["skills"] = h.mgr.SkillsRoot(req.AgentID)
+	} else {
+		roots := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+		workDir = roots.HostRoot
+		directories["skills"] = roots.SkillsRoot
+		if roots.UserdataRoot != "" {
+			directories["userdata"] = roots.UserdataRoot
+		}
 	}
 
 	c.JSON(http.StatusOK, model.OkResponse(model.FsInfoResponse{

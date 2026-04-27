@@ -40,7 +40,7 @@ func NewFileHandler(mgr *session.Manager, fileOp executor.FileOperator, isBwrap 
 }
 
 // fileOpOpts builds FileOpOptions from the resolved paths for a request.
-func (h *FileHandler) fileOpOpts(agentID, sessionID string, agentWorkspace bool) executor.FileOpOptions {
+func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspace bool) executor.FileOpOptions {
 	var opts executor.FileOpOptions
 	if agentWorkspace {
 		if h.isBwrap {
@@ -59,18 +59,30 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID string, agentWorkspace bool)
 			opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: h.mgr.SkillsRoot(agentID)})
 		}
 	}
+	if userID != "" {
+		userdataRoot := h.mgr.UserdataRoot(userID)
+		if h.isBwrap {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
+		} else {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: userdataRoot})
+		}
+	}
 	return opts
 }
 
 // toSandboxPath translates a host path to the sandbox-internal path for file operations.
-func (h *FileHandler) toSandboxPath(agentID, sessionID, hostPath string, agentWorkspace bool) string {
+func (h *FileHandler) toSandboxPath(agentID, sessionID, userID, hostPath string, agentWorkspace bool) string {
 	var hostRoot string
 	if agentWorkspace {
 		hostRoot = h.mgr.WorkspaceRoot(agentID)
 	} else {
 		hostRoot = h.mgr.SessionRoot(agentID, sessionID)
 	}
-	return hostToSandboxPath(h.isBwrap, hostRoot, h.mgr.SkillsRoot(agentID), hostPath)
+	mapping := sandboxPathMapping{HostRoot: hostRoot, SkillsRoot: h.mgr.SkillsRoot(agentID)}
+	if userID != "" {
+		mapping.UserdataRoot = h.mgr.UserdataRoot(userID)
+	}
+	return hostToSandboxPath(h.isBwrap, mapping, hostPath)
 }
 
 // baseRootForDisplay returns the base directory for computing relative display paths.
@@ -94,7 +106,19 @@ func (h *FileHandler) shouldSkipImplicitSkillsPath(path string, isSkillsSearch b
 	return cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator))
 }
 
-func (h *FileHandler) validateWritablePath(agentID, sessionID, realPath string, agentWorkspace bool) error {
+// shouldSkipImplicitUserdataPath returns true for paths under /home/userdata in bwrap mode,
+// so that userdata bind-mount entries are excluded from directory listings unless explicitly targeted.
+// In direct mode this always returns false because paths use host filesystem layout.
+func (h *FileHandler) shouldSkipImplicitUserdataPath(path string) bool {
+	if !h.isBwrap {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	cleanUserdata := filepath.Clean(SandboxUserdataDir)
+	return cleanPath == cleanUserdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator))
+}
+
+func (h *FileHandler) validateWritablePath(agentID, sessionID, userID, realPath string, agentWorkspace bool) error {
 	resolved, err := resolvePathThroughExistingSymlinks(realPath)
 	if err != nil {
 		return err
@@ -110,6 +134,9 @@ func (h *FileHandler) validateWritablePath(agentID, sessionID, realPath string, 
 			filepath.Clean(h.mgr.WorkspaceRoot(agentID)),
 			filepath.Clean(h.mgr.SkillsRoot(agentID)),
 		}
+	}
+	if userID != "" {
+		allowedRoots = append(allowedRoots, filepath.Clean(h.mgr.UserdataRoot(userID)))
 	}
 	if !pathWithinRoots(resolved, allowedRoots...) {
 		return fmt.Errorf("%w: %s", errPathOutsideWriteRoot, realPath)
@@ -172,6 +199,21 @@ func writePathStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
+// resolveFilePath resolves a file path, handling /userdata/ paths separately.
+func (h *FileHandler) resolveFilePath(userID, agentID, sessionID, reqPath string, agentWorkspace bool) (string, error) {
+	if err := session.RejectDotDot(reqPath); err != nil {
+		return "", err
+	}
+	if session.IsUserdataPath(reqPath) {
+		if userID == "" {
+			return "", fmt.Errorf("user_id is required for /userdata/ paths")
+		}
+		h.mgr.TouchUserdata(userID)
+		return h.mgr.ResolveUserdataPath(userID, reqPath)
+	}
+	return h.mgr.ResolvePathEx(agentID, sessionID, reqPath, agentWorkspace)
+}
+
 // ---- Read ----
 
 func (h *FileHandler) Read(c *gin.Context) {
@@ -181,14 +223,14 @@ func (h *FileHandler) Read(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
@@ -228,12 +270,12 @@ func (h *FileHandler) Write(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	if err := h.validateWritablePath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace); err != nil {
+	if err := h.validateWritablePath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace); err != nil {
 		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
 		return
 	}
@@ -260,9 +302,9 @@ func (h *FileHandler) Write(c *gin.Context) {
 		}
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
 	var written int
 	if req.Append {
@@ -303,19 +345,19 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	if err := h.validateWritablePath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace); err != nil {
+	if err := h.validateWritablePath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace); err != nil {
 		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
 	data, err := h.fileOp.ReadFile(ctx, opts, sandboxPath)
 	if err != nil {
@@ -355,7 +397,7 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -367,8 +409,8 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, model.ErrResponse("file not found: "+err.Error()))
@@ -408,22 +450,21 @@ func (h *FileHandler) Find(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	var files []string
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
-	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
-	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
+	isSkillsSearch := h.mgr.IsResolvedSkillsPath(req.AgentID, realPath)
 	h.fileOp.Walk(c.Request.Context(), opts, sandboxPath, func(path string, info executor.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
-		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) || h.shouldSkipImplicitUserdataPath(path) {
 			return nil
 		}
 		matched, _ := filepath.Match(req.Glob, filepath.Base(info.Name))
@@ -453,7 +494,7 @@ func (h *FileHandler) Grep(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -482,27 +523,17 @@ func (h *FileHandler) Grep(c *gin.Context) {
 	truncated := false
 
 	// Determine the base root for relative path display
-	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
-	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
-	baseRoot := sessionRoot
-	if isSkillsSearch {
-		if h.isBwrap {
-			baseRoot = SandboxSkillsDir
-		} else {
-			baseRoot = filepath.Clean(skillsRoot)
-		}
-	}
+	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
 	h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir {
 			return nil
 		}
-		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) || h.shouldSkipImplicitUserdataPath(path) {
 			return nil
 		}
 
@@ -516,11 +547,7 @@ func (h *FileHandler) Grep(c *gin.Context) {
 			return nil
 		}
 
-		relPath, _ := filepath.Rel(baseRoot, path)
-		displayPath := "/" + relPath
-		if isSkillsSearch {
-			displayPath = "/skills/" + relPath
-		}
+		displayPath := formatDisplayPath(baseRoot, path, isSkillsSearch)
 
 		lines := strings.Split(string(data), "\n")
 		for i, line := range lines {
@@ -576,7 +603,7 @@ func (h *FileHandler) Glob(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -599,28 +626,18 @@ func (h *FileHandler) Glob(c *gin.Context) {
 	var files []model.GlobFileInfo
 	truncated := false
 
-	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
-	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
-	baseRoot := sessionRoot
-	if isSkillsSearch {
-		if h.isBwrap {
-			baseRoot = SandboxSkillsDir
-		} else {
-			baseRoot = filepath.Clean(skillsRoot)
-		}
-	}
+	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
 	pattern := normalizeGlobPattern(req.Pattern)
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
 	walkErr := h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
 		if walkErr != nil || path == sandboxPath {
 			return nil
 		}
-		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
+		if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) || h.shouldSkipImplicitUserdataPath(path) {
 			return nil
 		}
 
@@ -639,14 +656,7 @@ func (h *FileHandler) Glob(c *gin.Context) {
 			return nil
 		}
 
-		displayRelPath, err := filepath.Rel(baseRoot, path)
-		if err != nil {
-			return nil
-		}
-		displayPath := "/" + displayRelPath
-		if isSkillsSearch {
-			displayPath = "/skills/" + displayRelPath
-		}
+		displayPath := formatDisplayPath(baseRoot, path, isSkillsSearch)
 
 		gfi := model.GlobFileInfo{
 			Path:        displayPath,
@@ -704,18 +714,19 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 
 	agentWorkspace := c.PostForm("enable_agent_workspace") == "true"
+	userID := c.PostForm("user_id")
 
 	if session.IsSkillsPath(targetPath) && !agentWorkspace {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, targetPath, agentWorkspace)
+	realPath, err := h.resolveFilePath(userID, agentID, sessionID, targetPath, agentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	if err := h.validateWritablePath(agentID, sessionID, realPath, agentWorkspace); err != nil {
+	if err := h.validateWritablePath(agentID, sessionID, userID, realPath, agentWorkspace); err != nil {
 		c.JSON(writePathStatus(err), model.ErrResponse(err.Error()))
 		return
 	}
@@ -738,8 +749,8 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 	defer src.Close()
 
-	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
-	sandboxPath := h.toSandboxPath(agentID, sessionID, realPath, agentWorkspace)
+	opts := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
+	sandboxPath := h.toSandboxPath(agentID, sessionID, userID, realPath, agentWorkspace)
 	written, err := h.fileOp.CreateFile(c.Request.Context(), opts, sandboxPath, src)
 	if err != nil {
 		log.Printf("[ERROR] Upload: %v", err)
@@ -774,16 +785,17 @@ func (h *FileHandler) Download(c *gin.Context) {
 	}
 
 	agentWorkspace := c.Query("enable_agent_workspace") == "true"
+	userID := c.Query("user_id")
 
-	realPath, err := h.mgr.ResolvePathEx(agentID, sessionID, filePath, agentWorkspace)
+	realPath, err := h.resolveFilePath(userID, agentID, sessionID, filePath, agentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
 
-	opts := h.fileOpOpts(agentID, sessionID, agentWorkspace)
+	opts := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
 	ctx := c.Request.Context()
-	sandboxPath := h.toSandboxPath(agentID, sessionID, realPath, agentWorkspace)
+	sandboxPath := h.toSandboxPath(agentID, sessionID, userID, realPath, agentWorkspace)
 
 	info, err := h.fileOp.Stat(ctx, opts, sandboxPath)
 	if err != nil {
@@ -816,7 +828,7 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	realPath, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
+	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.Path, req.EnableAgentWorkspace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -840,21 +852,11 @@ func (h *FileHandler) List(c *gin.Context) {
 	dirCount := 0
 
 	// Determine base root for relative paths
-	sessionRoot := h.baseRootForDisplay(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
-	skillsRoot := h.mgr.SkillsRoot(req.AgentID)
-	isSkillsSearch := strings.HasPrefix(realPath+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || realPath == skillsRoot
-	baseRoot := sessionRoot
-	if isSkillsSearch {
-		if h.isBwrap {
-			baseRoot = SandboxSkillsDir
-		} else {
-			baseRoot = filepath.Clean(skillsRoot)
-		}
-	}
+	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.EnableAgentWorkspace)
+	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
 	ctx := c.Request.Context()
-	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, realPath, req.EnableAgentWorkspace)
+	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
 	if req.Recursive {
 		h.fileOp.Walk(ctx, opts, sandboxPath, func(path string, info executor.FileInfo, walkErr error) error {
@@ -864,7 +866,7 @@ func (h *FileHandler) List(c *gin.Context) {
 			if path == sandboxPath {
 				return nil
 			}
-			if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) {
+			if h.shouldSkipImplicitSkillsPath(path, isSkillsSearch) || h.shouldSkipImplicitUserdataPath(path) {
 				return nil
 			}
 
@@ -879,47 +881,12 @@ func (h *FileHandler) List(c *gin.Context) {
 			}
 
 			// Check file type filter
-			if len(req.FileTypes) > 0 && !info.IsDir {
-				ext := strings.ToLower(filepath.Ext(name))
-				matched := false
-				for _, ft := range req.FileTypes {
-					if strings.ToLower(ft) == ext || (len(ext) > 0 && strings.ToLower(ft) == ext[1:]) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					return nil
-				}
+			if !info.IsDir && !matchesFileTypes(name, req.FileTypes) {
+				return nil
 			}
 
-			relPath, _ := filepath.Rel(baseRoot, path)
-			displayPath := "/" + relPath
-			if isSkillsSearch {
-				displayPath = "/skills/" + relPath
-			}
-
-			fi := model.FileInfo{
-				Name:        name,
-				Path:        displayPath,
-				IsDirectory: info.IsDir,
-			}
-			if includeSize {
-				size := info.Size
-				fi.Size = &size
-			}
-			if includePerms {
-				perm := info.Mode.String()
-				fi.Permissions = &perm
-			}
-			modTime := info.ModTime.Format(time.RFC3339)
-			fi.ModifiedTime = &modTime
-			if !info.IsDir {
-				ext := filepath.Ext(name)
-				if ext != "" {
-					fi.Extension = &ext
-				}
-			}
+			displayPath := formatDisplayPath(baseRoot, path, isSkillsSearch)
+			fi := buildFileInfoFromEntry(name, displayPath, info, includeSize, includePerms)
 
 			files = append(files, fi)
 			if info.IsDir {
@@ -959,47 +926,12 @@ func (h *FileHandler) List(c *gin.Context) {
 			isDir := info.IsDir
 
 			// Check file type filter
-			if len(req.FileTypes) > 0 && !isDir {
-				ext := strings.ToLower(filepath.Ext(name))
-				matched := false
-				for _, ft := range req.FileTypes {
-					if strings.ToLower(ft) == ext || (len(ext) > 0 && strings.ToLower(ft) == ext[1:]) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					continue
-				}
+			if !isDir && !matchesFileTypes(name, req.FileTypes) {
+				continue
 			}
 
-			relPath, _ := filepath.Rel(baseRoot, filepath.Join(sandboxPath, name))
-			displayPath := "/" + relPath
-			if isSkillsSearch {
-				displayPath = "/skills/" + relPath
-			}
-
-			fi := model.FileInfo{
-				Name:        name,
-				Path:        displayPath,
-				IsDirectory: isDir,
-			}
-			if includeSize {
-				size := info.Size
-				fi.Size = &size
-			}
-			if includePerms {
-				perm := info.Mode.String()
-				fi.Permissions = &perm
-			}
-			modTime := info.ModTime.Format(time.RFC3339)
-			fi.ModifiedTime = &modTime
-			if !isDir {
-				ext := filepath.Ext(name)
-				if ext != "" {
-					fi.Extension = &ext
-				}
-			}
+			displayPath := formatDisplayPath(baseRoot, filepath.Join(sandboxPath, name), isSkillsSearch)
+			fi := buildFileInfoFromEntry(name, displayPath, *info, includeSize, includePerms)
 
 			files = append(files, fi)
 			if isDir {
@@ -1021,6 +953,72 @@ func (h *FileHandler) List(c *gin.Context) {
 		DirectoryCount: dirCount,
 		FileCount:      fileCount,
 	}))
+}
+
+// ---- Display path helpers ----
+
+// resolveDisplayBase computes the base root and skills-search flag for display path construction.
+func (h *FileHandler) resolveDisplayBase(agentID, sessionID string, agentWorkspace bool, realPath string) (baseRoot string, isSkillsSearch bool) {
+	skillsRoot := h.mgr.SkillsRoot(agentID)
+	isSkillsSearch = h.mgr.IsResolvedSkillsPath(agentID, realPath)
+	baseRoot = h.baseRootForDisplay(agentID, sessionID, agentWorkspace)
+	if isSkillsSearch {
+		if h.isBwrap {
+			baseRoot = SandboxSkillsDir
+		} else {
+			baseRoot = filepath.Clean(skillsRoot)
+		}
+	}
+	return baseRoot, isSkillsSearch
+}
+
+// formatDisplayPath builds a display path relative to baseRoot, with /skills/ prefix for skills paths.
+func formatDisplayPath(baseRoot, path string, isSkillsSearch bool) string {
+	relPath, _ := filepath.Rel(baseRoot, path)
+	if isSkillsSearch {
+		return "/skills/" + relPath
+	}
+	return "/" + relPath
+}
+
+// matchesFileTypes checks if a file name matches any of the given file type extensions.
+func matchesFileTypes(name string, fileTypes []string) bool {
+	if len(fileTypes) == 0 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	for _, ft := range fileTypes {
+		if strings.ToLower(ft) == ext || (len(ext) > 0 && strings.ToLower(ft) == ext[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildFileInfoFromEntry constructs a model.FileInfo from an executor.FileInfo.
+func buildFileInfoFromEntry(name, displayPath string, info executor.FileInfo, includeSize, includePerms bool) model.FileInfo {
+	fi := model.FileInfo{
+		Name:        name,
+		Path:        displayPath,
+		IsDirectory: info.IsDir,
+	}
+	if includeSize {
+		size := info.Size
+		fi.Size = &size
+	}
+	if includePerms {
+		perm := info.Mode.String()
+		fi.Permissions = &perm
+	}
+	modTime := info.ModTime.Format(time.RFC3339)
+	fi.ModifiedTime = &modTime
+	if !info.IsDir {
+		ext := filepath.Ext(name)
+		if ext != "" {
+			fi.Extension = &ext
+		}
+	}
+	return fi
 }
 
 // ---- Helpers ----

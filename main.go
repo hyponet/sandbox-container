@@ -103,6 +103,7 @@ func main() {
 
 	cmdExec, isBwrap := newCommandExecutor()
 	mgr.SetSessionInit(cmdExec.InitSession)
+	mgr.SetUserdataInit(cmdExec.InitUserdata)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -158,6 +159,9 @@ func main() {
 	}
 	if err := os.MkdirAll(session.DefaultRegistryRoot, 0755); err != nil {
 		log.Fatalf("Failed to create skill registry directory %s: %v", session.DefaultRegistryRoot, err)
+	}
+	if err := os.MkdirAll(session.DefaultUserdataRoot, 0755); err != nil {
+		log.Fatalf("Failed to create userdata directory %s: %v", session.DefaultUserdataRoot, err)
 	}
 	skillH := handler.NewSkillHandler(mgr)
 

@@ -15,9 +15,51 @@ import (
 const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 const (
-	SandboxHome      = "/home"
-	SandboxSkillsDir = "/home/skills"
+	SandboxHome        = "/home"
+	SandboxSkillsDir   = "/home/skills"
+	SandboxUserdataDir = "/home/userdata"
 )
+
+// resolvedRoots holds the resolved host paths for a request.
+type resolvedRoots struct {
+	HostRoot     string // session root or workspace root
+	SkillsRoot   string // agent skills root
+	UserdataRoot string // user userdata root (empty if no userID)
+}
+
+// resolveRoots resolves the host paths based on workspace mode.
+func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspace bool, userID string) resolvedRoots {
+	var roots resolvedRoots
+	if agentWorkspace {
+		mgr.TouchWorkspace(agentID)
+		roots = resolvedRoots{
+			HostRoot:   mgr.WorkspaceRoot(agentID),
+			SkillsRoot: mgr.SkillsRoot(agentID),
+		}
+	} else {
+		mgr.Touch(agentID, sessionID)
+		roots = resolvedRoots{
+			HostRoot:   mgr.SessionRoot(agentID, sessionID),
+			SkillsRoot: mgr.SkillsRoot(agentID),
+		}
+	}
+	if userID != "" {
+		mgr.TouchUserdata(userID)
+		roots.UserdataRoot = mgr.UserdataRoot(userID)
+		// Call userdataInit (e.g. create symlink in direct mode) for the session/workspace dir.
+		if fn := mgr.UserdataInit(); fn != nil {
+			fn(roots.HostRoot, roots.UserdataRoot)
+		}
+	}
+	return roots
+}
+
+// sandboxPathMapping holds the host-to-sandbox path mapping configuration.
+type sandboxPathMapping struct {
+	HostRoot     string
+	SkillsRoot   string
+	UserdataRoot string // empty means no userdata mapping
+}
 
 var sensitiveExecEnvKeys = map[string]struct{}{
 	"ANTHROPIC_API_KEY":     {},
@@ -133,13 +175,13 @@ func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]st
 
 // hostToSandboxPath translates a host path to the sandbox-internal path.
 // In direct mode it returns the path unchanged.
-func hostToSandboxPath(isBwrap bool, hostRoot, skillsRoot, hostPath string) string {
+func hostToSandboxPath(isBwrap bool, mapping sandboxPathMapping, hostPath string) string {
 	if !isBwrap {
 		return hostPath
 	}
 	cleanPath := filepath.Clean(hostPath)
-	cleanRoot := filepath.Clean(hostRoot)
-	cleanSkills := filepath.Clean(skillsRoot)
+	cleanRoot := filepath.Clean(mapping.HostRoot)
+	cleanSkills := filepath.Clean(mapping.SkillsRoot)
 
 	if cleanPath == cleanRoot || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
 		rel, err := filepath.Rel(cleanRoot, cleanPath)
@@ -157,28 +199,46 @@ func hostToSandboxPath(isBwrap bool, hostRoot, skillsRoot, hostPath string) stri
 		return filepath.Join(SandboxSkillsDir, rel)
 	}
 
+	if mapping.UserdataRoot != "" {
+		cleanUserdata := filepath.Clean(mapping.UserdataRoot)
+		if cleanPath == cleanUserdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator)) {
+			rel, err := filepath.Rel(cleanUserdata, cleanPath)
+			if err != nil {
+				return hostPath
+			}
+			return filepath.Join(SandboxUserdataDir, rel)
+		}
+	}
+
 	return hostPath
 }
 
-func commandExecBinds(mgr *session.Manager, agentID, writableRoot string, agentWorkspace bool, isBwrap bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
+func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
 	if isBwrap {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: writableRoot, Dest: SandboxHome})
-		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxHome})
+		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
 		if agentWorkspace {
 			// workspace mode also needs skills writable
-			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
 			roBinds = nil
+		}
+		if roots.UserdataRoot != "" {
+			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
 		}
 		return rwBinds, roBinds
 	}
 
-	// Direct mode: identity mapping
-	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: writableRoot, Dest: writableRoot})
+	// Direct mode: identity mapping (Src == Dest).
+	// In workspace mode, skills are writable so they go into rwBinds (no roBinds needed).
+	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: roots.HostRoot})
 	if agentWorkspace {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: mgr.SkillsRoot(agentID)})
-		return rwBinds, nil
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
+	} else {
+		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
 	}
-	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: mgr.SkillsRoot(agentID), Dest: mgr.SkillsRoot(agentID)})
+	if roots.UserdataRoot != "" {
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: roots.UserdataRoot})
+	}
 	return rwBinds, roBinds
 }
 

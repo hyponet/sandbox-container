@@ -1279,7 +1279,7 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	_, mgr := setupRouter()
 	h := NewFileHandler(mgr, &executor.DirectFileOperator{}, false)
 
-	sessionOpts := h.fileOpOpts("a1", "s1", false)
+	sessionOpts := h.fileOpOpts("a1", "s1", "", false)
 	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0].Src != mgr.SessionRoot("a1", "s1") {
 		t.Fatalf("session RWBinds = %v", sessionOpts.RWBinds)
 	}
@@ -1287,7 +1287,7 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
 	}
 
-	workspaceOpts := h.fileOpOpts("a1", "s1", true)
+	workspaceOpts := h.fileOpOpts("a1", "s1", "", true)
 	if len(workspaceOpts.RWBinds) != 2 {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}

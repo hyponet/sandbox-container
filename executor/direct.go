@@ -35,3 +35,20 @@ func (d *DirectExecutor) InitSession(sessionDir, skillsDir string) {
 	}
 	os.Symlink(relSkills, symlinkPath)
 }
+
+// InitUserdata creates the userdata symlink for direct execution mode.
+func (d *DirectExecutor) InitUserdata(sessionDir, userdataDir string) {
+	if userdataDir == "" {
+		return
+	}
+	if err := os.MkdirAll(userdataDir, 0755); err != nil {
+		return
+	}
+	symlinkPath := filepath.Join(sessionDir, "userdata")
+	os.Remove(symlinkPath)
+	relUserdata, err := filepath.Rel(sessionDir, userdataDir)
+	if err != nil {
+		relUserdata = userdataDir
+	}
+	os.Symlink(relUserdata, symlinkPath)
+}

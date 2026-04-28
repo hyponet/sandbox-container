@@ -6,17 +6,19 @@ import (
 
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
 
 type SandboxHandler struct {
 	mgr     *session.Manager
+	udMgr   *userdata.Manager
 	isBwrap bool
 }
 
-func NewSandboxHandler(mgr *session.Manager, isBwrap bool) *SandboxHandler {
-	return &SandboxHandler{mgr: mgr, isBwrap: isBwrap}
+func NewSandboxHandler(mgr *session.Manager, udMgr *userdata.Manager, isBwrap bool) *SandboxHandler {
+	return &SandboxHandler{mgr: mgr, udMgr: udMgr, isBwrap: isBwrap}
 }
 
 func (h *SandboxHandler) GetContext(c *gin.Context) {
@@ -94,14 +96,14 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 		workDir = SandboxHome
 		directories["skills"] = SandboxSkillsDir
 		if req.UserID != "" {
-			if err := h.mgr.TouchUserdata(req.UserID); err != nil {
+			if err := h.udMgr.Touch(req.UserID); err != nil {
 				c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 				return
 			}
 			directories["userdata"] = SandboxUserdataDir
 		}
 	} else {
-		roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+		roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return

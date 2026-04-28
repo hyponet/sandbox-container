@@ -13,18 +13,20 @@ import (
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
 
 type CodeHandler struct {
 	mgr     *session.Manager
+	udMgr   *userdata.Manager
 	exec    executor.CommandExecutor
 	isBwrap bool
 }
 
-func NewCodeHandler(mgr *session.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
-	return &CodeHandler{mgr: mgr, exec: exec, isBwrap: isBwrap}
+func NewCodeHandler(mgr *session.Manager, udMgr *userdata.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
+	return &CodeHandler{mgr: mgr, udMgr: udMgr, exec: exec, isBwrap: isBwrap}
 }
 
 func (h *CodeHandler) Execute(c *gin.Context) {
@@ -34,7 +36,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		return
 	}
 
-	roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -109,6 +111,10 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 
 	stdoutStr := stdout.String()
 	stderrStr := stderr.String()
+
+	if err != nil && stderrStr != "" {
+		log.Printf("[bwrap-stderr] code lang=%s exit=%d stderr=%s", req.Language, exitCode, stderrStr)
+	}
 
 	resp := model.CodeExecuteResponse{
 		Language: req.Language,

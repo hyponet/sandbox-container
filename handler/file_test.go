@@ -18,6 +18,7 @@ import (
 
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -33,10 +34,11 @@ func setupRouterWithFileOperator(fileOp executor.FileOperator, isBwrap bool) (*g
 	if !isBwrap {
 		mgr.SetSessionInit((&executor.DirectExecutor{}).InitSession)
 	}
+	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
 
 	r := gin.New()
 
-	fileH := NewFileHandler(mgr, fileOp, isBwrap)
+	fileH := NewFileHandler(mgr, udMgr, fileOp, isBwrap)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -1277,7 +1279,8 @@ func TestFileWrite_SkillsAliasReadOnly_Default(t *testing.T) {
 
 func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	_, mgr := setupRouter()
-	h := NewFileHandler(mgr, &executor.DirectFileOperator{}, false)
+	udMgr := userdata.NewManager("/tmp/test-users")
+	h := NewFileHandler(mgr, udMgr, &executor.DirectFileOperator{}, false)
 
 	sessionOpts := h.fileOpOpts("a1", "s1", "", false)
 	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0].Src != mgr.SessionRoot("a1", "s1") {

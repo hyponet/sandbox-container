@@ -17,7 +17,6 @@ const (
 	DefaultAgentRoot    = "/data/agents"
 	DefaultGlobalSkills = "/data/skills"
 	DefaultRegistryRoot = "/data/skill-registry"
-	DefaultUserdataRoot = "/data/users"
 	DefaultTTL          = 24 * time.Hour
 	CleanupInterval     = 10 * time.Minute
 )
@@ -32,10 +31,7 @@ type Manager struct {
 	accessTime       map[string]time.Time // "agentID/sessionID" -> last access time
 	auditWriter      *audit.Writer
 	workspaceInited  sync.Map // agentID -> struct{}, tracks agents whose workspace is set up
-	userdataRoot     string
-	userdataInited   sync.Map // userID -> struct{}, tracks users whose userdata dir is created
 	sessionInit      func(sessionDir, skillsDir string)
-	userdataInit     func(sessionDir, userdataDir string)
 }
 
 // SessionEntry represents a session with its last access time.
@@ -56,7 +52,6 @@ func NewManager(root string, ttl time.Duration) *Manager {
 		root:             root,
 		globalSkillsRoot: DefaultGlobalSkills,
 		registryRoot:     DefaultRegistryRoot,
-		userdataRoot:     DefaultUserdataRoot,
 		ttl:              ttl,
 		accessTime:       make(map[string]time.Time),
 	}
@@ -242,64 +237,7 @@ func (m *Manager) IsResolvedSkillsPath(agentID, resolvedPath string) bool {
 	return strings.HasPrefix(cleanResolved+string(os.PathSeparator), skillsRoot+string(os.PathSeparator)) || cleanResolved == skillsRoot
 }
 
-// UserdataRoot returns the userdata directory for a given user.
-func (m *Manager) UserdataRoot(userID string) string {
-	return filepath.Join(m.userdataRoot, userID)
-}
-
-// SetUserdataRoot sets the userdata root directory (for testing).
-func (m *Manager) SetUserdataRoot(path string) {
-	m.userdataRoot = path
-}
-
-// TouchUserdata creates the userdata directory for a user (idempotent).
-// Validates user_id to prevent path traversal before creating the directory.
-func (m *Manager) TouchUserdata(userID string) error {
-	if userID == "" {
-		return nil
-	}
-	if err := audit.ValidateID(userID); err != nil {
-		return fmt.Errorf("invalid user_id: %w", err)
-	}
-	if _, loaded := m.userdataInited.LoadOrStore(userID, struct{}{}); loaded {
-		return nil
-	}
-	dir := m.UserdataRoot(userID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("[ERROR] TouchUserdata: failed to create %s: %v", dir, err)
-		m.userdataInited.Delete(userID)
-		return err
-	}
-	return nil
-}
-
-// IsUserdataPath checks if a request path targets the userdata directory.
-func IsUserdataPath(reqPath string) bool {
-	cleanPath := filepath.Clean(reqPath)
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = "/" + cleanPath
-	}
-	return cleanPath == "/userdata" || strings.HasPrefix(cleanPath, "/userdata/")
-}
-
-// ResolveUserdataPath resolves a /userdata/... path to the host userdata directory.
-func (m *Manager) ResolveUserdataPath(userID, reqPath string) (string, error) {
-	if userID == "" {
-		return "", fmt.Errorf("user_id is required for /userdata/ paths")
-	}
-	if err := audit.ValidateID(userID); err != nil {
-		return "", fmt.Errorf("invalid user_id: %w", err)
-	}
-	if err := RejectDotDot(reqPath); err != nil {
-		return "", err
-	}
-	cleanPath := cleanRequestPath(reqPath)
-	relPath := strings.TrimPrefix(cleanPath, "/userdata")
-	relPath = strings.TrimPrefix(relPath, "/")
-	return resolveUnder(m.UserdataRoot(userID), relPath)
-}
-
-// EnsureDir creates the session directory and any parent directories for a file.
+// IsResolvedSkillsPath checks if a resolved absolute path is within an agent's skills directory.
 func (m *Manager) EnsureDir(agentID, sessionID, dirPath string) error {
 	realPath, err := m.ResolvePath(agentID, sessionID, dirPath)
 	if err != nil {
@@ -331,18 +269,6 @@ func (m *Manager) EnsureParentDirEx(agentID, sessionID, filePath string, agentWo
 // SetSessionInit sets the callback invoked after session/workspace directories are created.
 func (m *Manager) SetSessionInit(fn func(sessionDir, skillsDir string)) {
 	m.sessionInit = fn
-}
-
-// SetUserdataInit sets the callback invoked after userdata directories are created.
-// The callback receives (sessionDir, userdataDir) and is responsible for executor-specific
-// setup (e.g. creating symlinks in direct mode).
-func (m *Manager) SetUserdataInit(fn func(sessionDir, userdataDir string)) {
-	m.userdataInit = fn
-}
-
-// UserdataInit returns the userdataInit callback (for use by handler layer).
-func (m *Manager) UserdataInit() func(sessionDir, userdataDir string) {
-	return m.userdataInit
 }
 
 // Touch updates the last access time for a session and creates the directory.

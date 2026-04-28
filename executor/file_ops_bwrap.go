@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,6 +36,9 @@ func (b *BwrapFileOperator) run(ctx context.Context, opts FileOpOptions, stdin i
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if err != nil && stderr.Len() > 0 {
+		log.Printf("[bwrap-stderr] fileop=%s err=%v stderr=%s", name, err, strings.TrimSpace(stderr.String()))
+	}
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
@@ -287,6 +291,9 @@ func (b *BwrapFileOperator) ServeFile(ctx context.Context, opts FileOpOptions, p
 		runErr = closeErr
 	}
 	if runErr != nil {
+		if stderr.Len() > 0 {
+			log.Printf("[bwrap-stderr] fileop=serve-file err=%v stderr=%s", runErr, strings.TrimSpace(stderr.String()))
+		}
 		os.Remove(tmp.Name())
 		return "", nil, mapError(stderr.Bytes(), runErr)
 	}

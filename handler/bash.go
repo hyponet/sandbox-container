@@ -15,6 +15,7 @@ import (
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ import (
 
 type BashHandler struct {
 	mgr      *session.Manager
+	udMgr    *userdata.Manager
 	exec     executor.CommandExecutor
 	isBwrap  bool
 	sessions map[string]*bashSession // key: "sandboxSID:bashSID"
@@ -73,9 +75,10 @@ func (b *threadSafeBuffer) Len() int {
 	return b.buf.Len()
 }
 
-func NewBashHandler(mgr *session.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
+func NewBashHandler(mgr *session.Manager, udMgr *userdata.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
 	return &BashHandler{
 		mgr:      mgr,
+		udMgr:    udMgr,
 		exec:     exec,
 		isBwrap:  isBwrap,
 		sessions: make(map[string]*bashSession),
@@ -115,7 +118,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	}
 
 	// Determine working dir within session
-	roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -169,7 +172,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 	key := h.sessionKey(req.SessionID, bashSID)
 
 	// Determine working dir
-	roots, err := resolveRoots(h.mgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -276,6 +279,10 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		stdout := stdoutBuf.ReadFromOffset(0)
 		stderr := stderrBuf.ReadFromOffset(0)
 
+		if exitCode != 0 && stderr != "" {
+			log.Printf("[bwrap-stderr] cmd=%q exit=%d stderr=%s", req.Command, exitCode, stderr)
+		}
+
 		bs.status = model.StatusCompleted
 		bs.exitCode = &exitCode
 
@@ -298,6 +305,10 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		stdout := stdoutBuf.ReadFromOffset(0)
 		stderr := stderrBuf.ReadFromOffset(0)
 		exitCode := -1
+
+		if stderr != "" {
+			log.Printf("[bwrap-stderr] cmd=%q timed_out stderr=%s", req.Command, stderr)
+		}
 
 		bs.status = model.StatusTimedOut
 		bs.exitCode = &exitCode
@@ -331,6 +342,12 @@ func (h *BashHandler) waitCommand(key string, cmd *exec.Cmd, hardTimeout float64
 	defer h.mu.Unlock()
 	if bs, ok := h.sessions[key]; ok {
 		exitCode := cmd.ProcessState.ExitCode()
+		if exitCode != 0 {
+			stderr := bs.stderrBuf.ReadFromOffset(0)
+			if stderr != "" {
+				log.Printf("[bwrap-stderr] async cmd=%q exit=%d stderr=%s", bs.command, exitCode, stderr)
+			}
+		}
 		bs.status = model.StatusCompleted
 		bs.exitCode = &exitCode
 		bs.commandCount++

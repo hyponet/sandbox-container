@@ -19,12 +19,14 @@ import (
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
 
 type FileHandler struct {
 	mgr     *session.Manager
+	udMgr   *userdata.Manager
 	fileOp  executor.FileOperator
 	isBwrap bool
 }
@@ -35,8 +37,8 @@ var (
 	errGlobLimitReached     = errors.New("max results reached")
 )
 
-func NewFileHandler(mgr *session.Manager, fileOp executor.FileOperator, isBwrap bool) *FileHandler {
-	return &FileHandler{mgr: mgr, fileOp: fileOp, isBwrap: isBwrap}
+func NewFileHandler(mgr *session.Manager, udMgr *userdata.Manager, fileOp executor.FileOperator, isBwrap bool) *FileHandler {
+	return &FileHandler{mgr: mgr, udMgr: udMgr, fileOp: fileOp, isBwrap: isBwrap}
 }
 
 // fileOpOpts builds FileOpOptions from the resolved paths for a request.
@@ -60,7 +62,7 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspa
 		}
 	}
 	if userID != "" {
-		userdataRoot := h.mgr.UserdataRoot(userID)
+		userdataRoot := h.udMgr.Root(userID)
 		if h.isBwrap {
 			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
 		} else {
@@ -80,7 +82,7 @@ func (h *FileHandler) toSandboxPath(agentID, sessionID, userID, hostPath string,
 	}
 	mapping := sandboxPathMapping{HostRoot: hostRoot, SkillsRoot: h.mgr.SkillsRoot(agentID)}
 	if userID != "" {
-		mapping.UserdataRoot = h.mgr.UserdataRoot(userID)
+		mapping.UserdataRoot = h.udMgr.Root(userID)
 	}
 	return hostToSandboxPath(h.isBwrap, mapping, hostPath)
 }
@@ -136,7 +138,7 @@ func (h *FileHandler) validateWritablePath(agentID, sessionID, userID, realPath 
 		}
 	}
 	if userID != "" {
-		allowedRoots = append(allowedRoots, filepath.Clean(h.mgr.UserdataRoot(userID)))
+		allowedRoots = append(allowedRoots, filepath.Clean(h.udMgr.Root(userID)))
 	}
 	if !pathWithinRoots(resolved, allowedRoots...) {
 		return fmt.Errorf("%w: %s", errPathOutsideWriteRoot, realPath)
@@ -204,14 +206,14 @@ func (h *FileHandler) resolveFilePath(userID, agentID, sessionID, reqPath string
 	if err := session.RejectDotDot(reqPath); err != nil {
 		return "", err
 	}
-	if session.IsUserdataPath(reqPath) {
+	if userdata.IsPath(reqPath) {
 		if userID == "" {
 			return "", fmt.Errorf("user_id is required for /userdata/ paths")
 		}
-		if err := h.mgr.TouchUserdata(userID); err != nil {
+		if err := h.udMgr.Touch(userID); err != nil {
 			return "", err
 		}
-		return h.mgr.ResolveUserdataPath(userID, reqPath)
+		return h.udMgr.ResolvePath(userID, reqPath)
 	}
 	return h.mgr.ResolvePathEx(agentID, sessionID, reqPath, agentWorkspace)
 }

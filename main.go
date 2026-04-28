@@ -13,6 +13,7 @@ import (
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -103,7 +104,9 @@ func main() {
 
 	cmdExec, isBwrap := newCommandExecutor()
 	mgr.SetSessionInit(cmdExec.InitSession)
-	mgr.SetUserdataInit(cmdExec.InitUserdata)
+
+	udMgr := userdata.NewManager(userdata.DefaultRoot)
+	udMgr.SetInitFn(cmdExec.InitUserdata)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -112,14 +115,14 @@ func main() {
 	auditMW := middleware.AuditLogger(auditW)
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
-	sandboxH := handler.NewSandboxHandler(mgr, isBwrap)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, isBwrap)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", auth, sandboxH.FsInfo)
 
 	// Bash APIs
-	bashH := handler.NewBashHandler(mgr, cmdExec, isBwrap)
+	bashH := handler.NewBashHandler(mgr, udMgr, cmdExec, isBwrap)
 	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -133,7 +136,7 @@ func main() {
 
 	// File APIs
 	fileOp := executor.NewFileOperator(cmdExec)
-	fileH := handler.NewFileHandler(mgr, fileOp, isBwrap)
+	fileH := handler.NewFileHandler(mgr, udMgr, fileOp, isBwrap)
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
@@ -149,7 +152,7 @@ func main() {
 	}
 
 	// Code APIs
-	codeH := handler.NewCodeHandler(mgr, cmdExec, isBwrap)
+	codeH := handler.NewCodeHandler(mgr, udMgr, cmdExec, isBwrap)
 	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 
@@ -160,8 +163,8 @@ func main() {
 	if err := os.MkdirAll(session.DefaultRegistryRoot, 0755); err != nil {
 		log.Fatalf("Failed to create skill registry directory %s: %v", session.DefaultRegistryRoot, err)
 	}
-	if err := os.MkdirAll(session.DefaultUserdataRoot, 0755); err != nil {
-		log.Fatalf("Failed to create userdata directory %s: %v", session.DefaultUserdataRoot, err)
+	if err := os.MkdirAll(userdata.DefaultRoot, 0755); err != nil {
+		log.Fatalf("Failed to create userdata directory %s: %v", userdata.DefaultRoot, err)
 	}
 	skillH := handler.NewSkillHandler(mgr)
 

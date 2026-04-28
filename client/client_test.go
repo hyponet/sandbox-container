@@ -18,6 +18,7 @@ import (
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -43,23 +44,23 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	auditMW := middleware.AuditLogger(auditW)
 	cmdExec := &executor.DirectExecutor{}
 	mgr.SetSessionInit(cmdExec.InitSession)
-	mgr.SetUserdataInit(cmdExec.InitUserdata)
 	userdataDir := filepath.Join(dir, "users")
 	os.MkdirAll(userdataDir, 0755)
-	mgr.SetUserdataRoot(userdataDir)
+	udMgr := userdata.NewManager(userdataDir)
+	udMgr.SetInitFn(cmdExec.InitUserdata)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
 
 	// Sandbox
-	sandboxH := handler.NewSandboxHandler(mgr, false)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, false)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", sandboxH.FsInfo)
 
 	// Bash
-	bashH := handler.NewBashHandler(mgr, cmdExec, false)
+	bashH := handler.NewBashHandler(mgr, udMgr, cmdExec, false)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -72,7 +73,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// File
-	fileH := handler.NewFileHandler(mgr, &executor.DirectFileOperator{}, false)
+	fileH := handler.NewFileHandler(mgr, udMgr, &executor.DirectFileOperator{}, false)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -88,7 +89,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Code
-	codeH := handler.NewCodeHandler(mgr, cmdExec, false)
+	codeH := handler.NewCodeHandler(mgr, udMgr, cmdExec, false)
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 

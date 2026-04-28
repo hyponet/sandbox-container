@@ -10,6 +10,7 @@ import (
 
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 )
 
 const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -28,7 +29,7 @@ type resolvedRoots struct {
 }
 
 // resolveRoots resolves the host paths based on workspace mode.
-func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspace bool, userID string) (resolvedRoots, error) {
+func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, agentID, sessionID string, agentWorkspace bool, userID string) (resolvedRoots, error) {
 	var roots resolvedRoots
 	if agentWorkspace {
 		mgr.TouchWorkspace(agentID)
@@ -44,12 +45,12 @@ func resolveRoots(mgr *session.Manager, agentID, sessionID string, agentWorkspac
 		}
 	}
 	if userID != "" {
-		if err := mgr.TouchUserdata(userID); err != nil {
+		if err := udMgr.Touch(userID); err != nil {
 			return roots, err
 		}
-		roots.UserdataRoot = mgr.UserdataRoot(userID)
+		roots.UserdataRoot = udMgr.Root(userID)
 		// Call userdataInit (e.g. create symlink in direct mode) for the session/workspace dir.
-		if fn := mgr.UserdataInit(); fn != nil {
+		if fn := udMgr.InitFn(); fn != nil {
 			fn(roots.HostRoot, roots.UserdataRoot)
 		}
 	}

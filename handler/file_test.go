@@ -1282,7 +1282,10 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	udMgr := userdata.NewManager("/tmp/test-users")
 	h := NewFileHandler(mgr, udMgr, &executor.DirectFileOperator{}, false)
 
-	sessionOpts := h.fileOpOpts("a1", "s1", "", false)
+	sessionOpts, err := h.fileOpOpts("a1", "s1", "", false)
+	if err != nil {
+		t.Fatalf("fileOpOpts: %v", err)
+	}
 	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0].Src != mgr.SessionRoot("a1", "s1") {
 		t.Fatalf("session RWBinds = %v", sessionOpts.RWBinds)
 	}
@@ -1290,7 +1293,10 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
 	}
 
-	workspaceOpts := h.fileOpOpts("a1", "s1", "", true)
+	workspaceOpts, err := h.fileOpOpts("a1", "s1", "", true)
+	if err != nil {
+		t.Fatalf("fileOpOpts: %v", err)
+	}
 	if len(workspaceOpts.RWBinds) != 2 {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}

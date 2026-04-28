@@ -42,7 +42,7 @@ func NewFileHandler(mgr *session.Manager, udMgr *userdata.Manager, fileOp execut
 }
 
 // fileOpOpts builds FileOpOptions from the resolved paths for a request.
-func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspace bool) executor.FileOpOptions {
+func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspace bool) (executor.FileOpOptions, error) {
 	var opts executor.FileOpOptions
 	if agentWorkspace {
 		if h.isBwrap {
@@ -62,16 +62,17 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspa
 		}
 	}
 	if userID != "" {
-		if err := h.udMgr.Touch(userID); err == nil {
-			userdataRoot := h.udMgr.Root(userID)
-			if h.isBwrap {
-				opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
-			} else {
-				opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: userdataRoot})
-			}
+		if err := h.udMgr.Touch(userID); err != nil {
+			return opts, fmt.Errorf("userdata touch: %w", err)
+		}
+		userdataRoot := h.udMgr.Root(userID)
+		if h.isBwrap {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
+		} else {
+			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: userdataRoot})
 		}
 	}
-	return opts
+	return opts, nil
 }
 
 // toSandboxPath translates a host path to the sandbox-internal path for file operations.
@@ -235,7 +236,11 @@ func (h *FileHandler) Read(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
@@ -308,7 +313,11 @@ func (h *FileHandler) Write(c *gin.Context) {
 		}
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
@@ -361,7 +370,11 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
@@ -415,7 +428,11 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 	data, err := h.fileOp.ReadFile(c.Request.Context(), opts, sandboxPath)
 	if err != nil {
@@ -462,7 +479,11 @@ func (h *FileHandler) Find(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	var files []string
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 	isSkillsSearch := h.mgr.IsResolvedSkillsPath(req.AgentID, realPath)
@@ -531,7 +552,11 @@ func (h *FileHandler) Grep(c *gin.Context) {
 	// Determine the base root for relative path display
 	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 
@@ -634,7 +659,11 @@ func (h *FileHandler) Glob(c *gin.Context) {
 
 	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	pattern := normalizeGlobPattern(req.Pattern)
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
@@ -755,7 +784,11 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 	defer src.Close()
 
-	opts := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
+	opts, err := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	sandboxPath := h.toSandboxPath(agentID, sessionID, userID, realPath, agentWorkspace)
 	written, err := h.fileOp.CreateFile(c.Request.Context(), opts, sandboxPath, src)
 	if err != nil {
@@ -799,7 +832,11 @@ func (h *FileHandler) Download(c *gin.Context) {
 		return
 	}
 
-	opts := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
+	opts, err := h.fileOpOpts(agentID, sessionID, userID, agentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	sandboxPath := h.toSandboxPath(agentID, sessionID, userID, realPath, agentWorkspace)
 
@@ -860,7 +897,11 @@ func (h *FileHandler) List(c *gin.Context) {
 	// Determine base root for relative paths
 	baseRoot, isSkillsSearch := h.resolveDisplayBase(req.AgentID, req.SessionID, req.EnableAgentWorkspace, realPath)
 
-	opts := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	opts, err := h.fileOpOpts(req.AgentID, req.SessionID, req.UserID, req.EnableAgentWorkspace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrResponse(err.Error()))
+		return
+	}
 	ctx := c.Request.Context()
 	sandboxPath := h.toSandboxPath(req.AgentID, req.SessionID, req.UserID, realPath, req.EnableAgentWorkspace)
 

@@ -62,11 +62,13 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID, userID string, agentWorkspa
 		}
 	}
 	if userID != "" {
-		userdataRoot := h.udMgr.Root(userID)
-		if h.isBwrap {
-			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
-		} else {
-			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: userdataRoot})
+		if err := h.udMgr.Touch(userID); err == nil {
+			userdataRoot := h.udMgr.Root(userID)
+			if h.isBwrap {
+				opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: SandboxUserdataDir})
+			} else {
+				opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: userdataRoot, Dest: userdataRoot})
+			}
 		}
 	}
 	return opts

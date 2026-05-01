@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
-	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/model"
 	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
@@ -251,21 +250,6 @@ func writePathStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func projectAccessStatus(err error) int {
-	if errors.Is(err, middleware.ErrProjectAccessDenied) {
-		return http.StatusForbidden
-	}
-	return http.StatusBadRequest
-}
-
-func authorizeProjectAccess(c *gin.Context, projectID string) bool {
-	if err := middleware.AuthorizeProjectAccess(c, projectID); err != nil {
-		c.JSON(projectAccessStatus(err), model.ErrResponse(err.Error()))
-		return false
-	}
-	return true
-}
-
 // resolveFilePath resolves a file path, handling /userdata/ paths separately.
 func (h *FileHandler) resolveFilePath(userID, agentID, sessionID, projectID, reqPath string, agentWorkspace bool) (string, error) {
 	if err := session.RejectDotDot(reqPath); err != nil {
@@ -298,9 +282,6 @@ func (h *FileHandler) Read(c *gin.Context) {
 	var req model.FileReadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 
@@ -347,9 +328,6 @@ func (h *FileHandler) Write(c *gin.Context) {
 	var req model.FileWriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 
@@ -431,9 +409,6 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
 
 	if session.IsSkillsPath(req.File) && !req.EnableAgentWorkspace {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
@@ -495,9 +470,6 @@ func (h *FileHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
 
 	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.ProjectID, req.File, req.EnableAgentWorkspace)
 	if err != nil {
@@ -555,9 +527,6 @@ func (h *FileHandler) Find(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
 
 	realPath, err := h.resolveFilePath(req.UserID, req.AgentID, req.SessionID, req.ProjectID, req.Path, req.EnableAgentWorkspace)
 	if err != nil {
@@ -603,9 +572,6 @@ func (h *FileHandler) Grep(c *gin.Context) {
 	var req model.FileGrepRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 
@@ -719,9 +685,6 @@ func (h *FileHandler) Glob(c *gin.Context) {
 	var req model.FileGlobRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 
@@ -842,9 +805,6 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	agentWorkspace := c.PostForm("enable_agent_workspace") == "true"
 	userID := c.PostForm("user_id")
 	projectID := c.PostForm("project_id")
-	if !authorizeProjectAccess(c, projectID) {
-		return
-	}
 
 	if session.IsSkillsPath(targetPath) && !agentWorkspace {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
@@ -921,9 +881,6 @@ func (h *FileHandler) Download(c *gin.Context) {
 	agentWorkspace := c.Query("enable_agent_workspace") == "true"
 	userID := c.Query("user_id")
 	projectID := c.Query("project_id")
-	if !authorizeProjectAccess(c, projectID) {
-		return
-	}
 
 	realPath, err := h.resolveFilePath(userID, agentID, sessionID, projectID, filePath, agentWorkspace)
 	if err != nil {
@@ -967,9 +924,6 @@ func (h *FileHandler) List(c *gin.Context) {
 	var req model.FileListRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
-		return
-	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 

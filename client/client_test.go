@@ -158,21 +158,6 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	return cli, cleanup
 }
 
-func allowProjectdataForTest(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
-	t.Setenv("SANDBOX_API_KEY", "")
-	t.Setenv("SANDBOX_PROJECT_ACCESS", "*=*")
-	middleware.LoadAPIKeysFromEnv()
-}
-
-func denyProjectdataForTest(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
-	t.Setenv("SANDBOX_API_KEY", "")
-	t.Setenv("SANDBOX_PROJECT_ACCESS", "")
-	middleware.LoadAPIKeysFromEnv()
-}
 
 // =============================================
 // Sandbox tests
@@ -2475,7 +2460,6 @@ func TestUserdataEmptyUserIDAllowed(t *testing.T) {
 // =============================================
 
 func TestProjectdataFsInfo(t *testing.T) {
-	allowProjectdataForTest(t)
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
@@ -2489,7 +2473,6 @@ func TestProjectdataFsInfo(t *testing.T) {
 }
 
 func TestProjectdataFileAPIsAndAuth(t *testing.T) {
-	allowProjectdataForTest(t)
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
@@ -2535,21 +2518,8 @@ func TestProjectdataFileAPIsAndAuth(t *testing.T) {
 	}
 }
 
-func TestProjectdataDeniedWithoutAccessRule(t *testing.T) {
-	denyProjectdataForTest(t)
-	cli, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	_, err := cli.FileWrite("a1", "pd-denied", "/projectdata/secret.txt", "secret",
-		WithFileWriteProjectID("project-1"),
-	)
-	if err == nil {
-		t.Fatal("expected projectdata write to fail without project access rule")
-	}
-}
 
 func TestProjectdataBashAndCode(t *testing.T) {
-	allowProjectdataForTest(t)
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 

@@ -98,10 +98,6 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
-
 	bashSID := "default"
 	if req.BashSID != nil && *req.BashSID != "" {
 		bashSID = *req.BashSID
@@ -173,10 +169,6 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
-
 	bashSID := "default"
 	key := h.sessionKey(req.SessionID, bashSID)
 

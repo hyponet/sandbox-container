@@ -37,10 +37,6 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
-
 	roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))

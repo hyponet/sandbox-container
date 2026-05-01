@@ -10,7 +10,7 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
 - **Userdata** — Per-user persistent directory (`/data/users/<user_id>/`) mounted to `/home/userdata`, enabling data sharing across agents for the same user
-- **Projectdata** — Per-project persistent directory (`/data/projects/<project_id>/`) mounted to `/home/projectdata`, guarded by API-key project access rules
+- **Projectdata** — Per-project persistent directory (`/data/projects/<project_id>/`) mounted to `/home/projectdata`
 - **Bwrap Sandbox** — Bubblewrap-based isolation by default, with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
 - **Audit Logging** — Full request/response logging
 
@@ -593,23 +593,6 @@ The command runs with the user's persistent directory mounted at `/home/userdata
 ## Projectdata
 
 Projectdata provides a per-project persistent directory shared across authorized requests. When a request includes an authorized `project_id`, `/data/projects/<project_id>/` is mounted read-write at `/home/projectdata` inside the sandbox. File API paths beginning with `/projectdata/...` resolve to the same host directory.
-
-### Access Control
-
-Projectdata is intentionally not enabled by merely passing a `project_id`. The server checks `project_id` against the authenticated API key:
-
-- If `SANDBOX_PROJECT_ACCESS` is set, it must grant the API key access to the requested project.
-- If `SANDBOX_PROJECT_ACCESS` is unset and `SANDBOX_API_KEY` is configured, valid API keys are treated as admin keys for projectdata.
-- If both are unset (open mode), projectdata is denied unless `SANDBOX_PROJECT_ACCESS` explicitly grants wildcard access such as `*=public-project` or `*=*`.
-
-`SANDBOX_PROJECT_ACCESS` format:
-
-```bash
-SANDBOX_API_KEY=sk-team-a,sk-team-b
-SANDBOX_PROJECT_ACCESS='sk-team-a=project-a|project-b,sk-team-b=project-c'
-```
-
-Use `*` as the API-key side for anonymous/open-mode grants, or as the project side for all projects. Project IDs are still validated and must not contain path separators or `..`.
 
 ### Supported Endpoints
 

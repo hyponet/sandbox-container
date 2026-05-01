@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
-	"github.com/hyponet/sandbox-container/middleware"
 	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
@@ -27,22 +26,6 @@ import (
 
 func setupRouter() (*gin.Engine, *session.Manager) {
 	return setupRouterWithFileOperator(&executor.DirectFileOperator{}, false)
-}
-
-func allowProjectdataForTest(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
-	t.Setenv("SANDBOX_API_KEY", "")
-	t.Setenv("SANDBOX_PROJECT_ACCESS", "*=*")
-	middleware.LoadAPIKeysFromEnv()
-}
-
-func denyProjectdataForTest(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
-	t.Setenv("SANDBOX_API_KEY", "")
-	t.Setenv("SANDBOX_PROJECT_ACCESS", "")
-	middleware.LoadAPIKeysFromEnv()
 }
 
 func setupRouterWithFileOperator(fileOp executor.FileOperator, isBwrap bool) (*gin.Engine, *session.Manager) {
@@ -572,8 +555,6 @@ func TestFileGlob_AllowsExplicitSkillsSearchInBwrap(t *testing.T) {
 }
 
 func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *testing.T) {
-	allowProjectdataForTest(t)
-
 	fileOp := newVirtualFileOperator(map[string]string{
 		"/home/app.txt":                       "workspace needle",
 		"/home/projectdata/docs/guide.md":     "project docs needle",
@@ -651,8 +632,6 @@ func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *tes
 }
 
 func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
-	allowProjectdataForTest(t)
-
 	r, _ := setupRouter()
 
 	writeBody := `{"agent_id":"a1","session_id":"project_s1","file":"/projectdata/docs/readme.md","content":"shared docs","project_id":"proj-a"}`
@@ -694,22 +673,6 @@ func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
 	}
 	if !paths["/projectdata/docs"] || !paths["/projectdata/docs/readme.md"] {
 		t.Fatalf("unexpected projectdata display paths: %v", paths)
-	}
-}
-
-func TestFileProjectdata_AccessDeniedWithoutAuthContext(t *testing.T) {
-	denyProjectdataForTest(t)
-
-	r, _ := setupRouter()
-
-	body := `{"agent_id":"a1","session_id":"project_denied","file":"/projectdata/secret.txt","content":"secret","project_id":"proj-a"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected projectdata to require auth context, got %d %s", w.Code, w.Body.String())
 	}
 }
 

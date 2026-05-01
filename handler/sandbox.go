@@ -90,10 +90,6 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
-	if !authorizeProjectAccess(c, req.ProjectID) {
-		return
-	}
-
 	var workDir string
 	directories := make(map[string]string)
 

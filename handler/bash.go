@@ -14,6 +14,7 @@ import (
 
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -24,6 +25,7 @@ import (
 type BashHandler struct {
 	mgr      *session.Manager
 	udMgr    *userdata.Manager
+	pdMgr    *projectdata.Manager
 	exec     executor.CommandExecutor
 	isBwrap  bool
 	sessions map[string]*bashSession // key: "sandboxSID:bashSID"
@@ -75,10 +77,11 @@ func (b *threadSafeBuffer) Len() int {
 	return b.buf.Len()
 }
 
-func NewBashHandler(mgr *session.Manager, udMgr *userdata.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
+func NewBashHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
 	return &BashHandler{
 		mgr:      mgr,
 		udMgr:    udMgr,
+		pdMgr:    pdMgr,
 		exec:     exec,
 		isBwrap:  isBwrap,
 		sessions: make(map[string]*bashSession),
@@ -93,6 +96,9 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	var req model.BashSessionCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
+		return
+	}
+	if !authorizeProjectAccess(c, req.ProjectID) {
 		return
 	}
 
@@ -118,7 +124,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	}
 
 	// Determine working dir within session
-	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -136,7 +142,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		log.Printf("[ERROR] CreateSession: mkdir %s: %v", workingDir, err)
 	}
 
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
 	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	bs := &bashSession{
@@ -167,12 +173,15 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
+	if !authorizeProjectAccess(c, req.ProjectID) {
+		return
+	}
 
 	bashSID := "default"
 	key := h.sessionKey(req.SessionID, bashSID)
 
 	// Determine working dir
-	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -190,7 +199,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		log.Printf("[ERROR] Exec: mkdir %s: %v", workingDir, err)
 	}
 
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
 	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	cmdID := uuid.New().String()[:8]

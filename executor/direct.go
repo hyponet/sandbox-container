@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -38,19 +39,55 @@ func (d *DirectExecutor) InitSession(sessionDir, skillsDir string) {
 }
 
 // InitUserdata creates the userdata symlink for direct execution mode.
-func (d *DirectExecutor) InitUserdata(sessionDir, userdataDir string) {
+func (d *DirectExecutor) InitUserdata(sessionDir, userdataDir string) error {
 	if userdataDir == "" {
-		return
+		return nil
 	}
 	if err := os.MkdirAll(userdataDir, 0755); err != nil {
 		log.Printf("[ERROR] InitUserdata: failed to create %s: %v", userdataDir, err)
-		return
+		return err
 	}
 	symlinkPath := filepath.Join(sessionDir, "userdata")
-	os.Remove(symlinkPath)
+	if err := replaceManagedSymlink(symlinkPath); err != nil {
+		return err
+	}
 	relUserdata, err := filepath.Rel(sessionDir, userdataDir)
 	if err != nil {
 		relUserdata = userdataDir
 	}
-	os.Symlink(relUserdata, symlinkPath)
+	return os.Symlink(relUserdata, symlinkPath)
+}
+
+// InitProjectdata creates the projectdata symlink for direct execution mode.
+func (d *DirectExecutor) InitProjectdata(sessionDir, projectdataDir string) error {
+	if projectdataDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(projectdataDir, 0755); err != nil {
+		log.Printf("[ERROR] InitProjectdata: failed to create %s: %v", projectdataDir, err)
+		return err
+	}
+	symlinkPath := filepath.Join(sessionDir, "projectdata")
+	if err := replaceManagedSymlink(symlinkPath); err != nil {
+		return err
+	}
+	relProjectdata, err := filepath.Rel(sessionDir, projectdataDir)
+	if err != nil {
+		relProjectdata = projectdataDir
+	}
+	return os.Symlink(relProjectdata, symlinkPath)
+}
+
+func replaceManagedSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("refusing to replace non-symlink path %s", path)
+	}
+	return os.Remove(path)
 }

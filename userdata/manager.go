@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/hyponet/sandbox-container/audit"
+	"github.com/hyponet/sandbox-container/internal/pathutil"
 )
 
 const DefaultRoot = "/data/users"
@@ -18,7 +19,7 @@ const DefaultRoot = "/data/users"
 type Manager struct {
 	root   string
 	inited sync.Map // userID -> struct{}, tracks users whose userdata dir is created
-	initFn func(sessionDir, userdataDir string)
+	initFn func(sessionDir, userdataDir string) error
 }
 
 // NewManager creates a new userdata manager with the given root directory.
@@ -42,12 +43,12 @@ func (m *Manager) SetRoot(path string) {
 // SetInitFn sets the callback invoked after userdata directories are set up.
 // The callback receives (sessionDir, userdataDir) and is responsible for
 // executor-specific setup (e.g. creating symlinks in direct mode).
-func (m *Manager) SetInitFn(fn func(sessionDir, userdataDir string)) {
+func (m *Manager) SetInitFn(fn func(sessionDir, userdataDir string) error) {
 	m.initFn = fn
 }
 
 // InitFn returns the init callback (for use by handler layer).
-func (m *Manager) InitFn() func(sessionDir, userdataDir string) {
+func (m *Manager) InitFn() func(sessionDir, userdataDir string) error {
 	return m.initFn
 }
 
@@ -95,46 +96,11 @@ func (m *Manager) ResolvePath(userID, reqPath string) (string, error) {
 	if err := audit.ValidateID(userID); err != nil {
 		return "", fmt.Errorf("invalid user_id: %w", err)
 	}
-	if err := rejectDotDot(reqPath); err != nil {
+	if err := pathutil.RejectDotDot(reqPath); err != nil {
 		return "", err
 	}
-	cleanPath := cleanRequestPath(reqPath)
+	cleanPath := pathutil.CleanRequestPath(reqPath)
 	relPath := strings.TrimPrefix(cleanPath, "/userdata")
 	relPath = strings.TrimPrefix(relPath, "/")
-	return resolveUnder(m.Root(userID), relPath)
-}
-
-// rejectDotDot rejects paths containing ".." components.
-func rejectDotDot(reqPath string) error {
-	for _, component := range strings.Split(reqPath, "/") {
-		if component == ".." {
-			return fmt.Errorf("path contains invalid component: %s", reqPath)
-		}
-	}
-	return nil
-}
-
-// cleanRequestPath cleans a request path and ensures it is absolute.
-func cleanRequestPath(reqPath string) string {
-	cleanPath := filepath.Clean(reqPath)
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = "/" + cleanPath
-	}
-	return cleanPath
-}
-
-// resolveUnder resolves reqPath to be within rootDir, with path traversal protection.
-func resolveUnder(rootDir, reqPath string) (string, error) {
-	cleanRoot := filepath.Clean(rootDir)
-	cleanPath := filepath.Clean(reqPath)
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = "/" + cleanPath
-	}
-	relPath := strings.TrimPrefix(cleanPath, "/")
-	realPath := filepath.Join(cleanRoot, relPath)
-	realPath = filepath.Clean(realPath)
-	if !strings.HasPrefix(realPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) && realPath != cleanRoot {
-		return "", fmt.Errorf("path escapes directory: %s", reqPath)
-	}
-	return realPath, nil
+	return pathutil.ResolveUnder(m.Root(userID), relPath)
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -30,9 +31,10 @@ func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	mgr := session.NewManager(dir, 24*time.Hour)
 	mgr.SetSessionInit(cmdExec.InitSession)
 	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
+	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
 
 	r := gin.New()
-	bashH := NewBashHandler(mgr, udMgr, cmdExec, false)
+	bashH := NewBashHandler(mgr, udMgr, pdMgr, cmdExec, false)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", bashH.Exec)

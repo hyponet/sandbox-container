@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 )
@@ -16,20 +17,22 @@ import (
 const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 const (
-	SandboxHome        = "/home"
-	SandboxSkillsDir   = "/home/skills"
-	SandboxUserdataDir = "/home/userdata"
+	SandboxHome           = "/home"
+	SandboxSkillsDir      = "/home/skills"
+	SandboxUserdataDir    = "/home/userdata"
+	SandboxProjectdataDir = "/home/projectdata"
 )
 
 // resolvedRoots holds the resolved host paths for a request.
 type resolvedRoots struct {
-	HostRoot     string // session root or workspace root
-	SkillsRoot   string // agent skills root
-	UserdataRoot string // user userdata root (empty if no userID)
+	HostRoot        string // session root or workspace root
+	SkillsRoot      string // agent skills root
+	UserdataRoot    string // user userdata root (empty if no userID)
+	ProjectdataRoot string // project projectdata root (empty if no projectID)
 }
 
 // resolveRoots resolves the host paths based on workspace mode.
-func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, agentID, sessionID string, agentWorkspace bool, userID string) (resolvedRoots, error) {
+func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, agentID, sessionID string, agentWorkspace bool, userID, projectID string) (resolvedRoots, error) {
 	var roots resolvedRoots
 	if agentWorkspace {
 		mgr.TouchWorkspace(agentID)
@@ -51,7 +54,20 @@ func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, agentID, sessio
 		roots.UserdataRoot = udMgr.Root(userID)
 		// Call userdataInit (e.g. create symlink in direct mode) for the session/workspace dir.
 		if fn := udMgr.InitFn(); fn != nil {
-			fn(roots.HostRoot, roots.UserdataRoot)
+			if err := fn(roots.HostRoot, roots.UserdataRoot); err != nil {
+				return roots, err
+			}
+		}
+	}
+	if projectID != "" {
+		if err := pdMgr.Touch(projectID); err != nil {
+			return roots, err
+		}
+		roots.ProjectdataRoot = pdMgr.Root(projectID)
+		if fn := pdMgr.InitFn(); fn != nil {
+			if err := fn(roots.HostRoot, roots.ProjectdataRoot); err != nil {
+				return roots, err
+			}
 		}
 	}
 	return roots, nil
@@ -59,9 +75,10 @@ func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, agentID, sessio
 
 // sandboxPathMapping holds the host-to-sandbox path mapping configuration.
 type sandboxPathMapping struct {
-	HostRoot     string
-	SkillsRoot   string
-	UserdataRoot string // empty means no userdata mapping
+	HostRoot        string
+	SkillsRoot      string
+	UserdataRoot    string // empty means no userdata mapping
+	ProjectdataRoot string // empty means no projectdata mapping
 }
 
 var sensitiveExecEnvKeys = map[string]struct{}{
@@ -213,6 +230,17 @@ func hostToSandboxPath(isBwrap bool, mapping sandboxPathMapping, hostPath string
 		}
 	}
 
+	if mapping.ProjectdataRoot != "" {
+		cleanProjectdata := filepath.Clean(mapping.ProjectdataRoot)
+		if cleanPath == cleanProjectdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)) {
+			rel, err := filepath.Rel(cleanProjectdata, cleanPath)
+			if err != nil {
+				return hostPath
+			}
+			return filepath.Join(SandboxProjectdataDir, rel)
+		}
+	}
+
 	return hostPath
 }
 
@@ -228,6 +256,9 @@ func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBind
 		if roots.UserdataRoot != "" {
 			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
 		}
+		if roots.ProjectdataRoot != "" {
+			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: SandboxProjectdataDir})
+		}
 		return rwBinds, roBinds
 	}
 
@@ -241,6 +272,9 @@ func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBind
 	}
 	if roots.UserdataRoot != "" {
 		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: roots.UserdataRoot})
+	}
+	if roots.ProjectdataRoot != "" {
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: roots.ProjectdataRoot})
 	}
 	return rwBinds, roBinds
 }

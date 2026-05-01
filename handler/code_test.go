@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -29,9 +30,10 @@ func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	mgr := session.NewManager(dir, 24*time.Hour)
 	mgr.SetSessionInit(cmdExec.InitSession)
 	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
+	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
 
 	r := gin.New()
-	codeH := NewCodeHandler(mgr, udMgr, cmdExec, false)
+	codeH := NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, false)
 	r.POST("/v1/code/execute", codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -21,12 +22,13 @@ import (
 type CodeHandler struct {
 	mgr     *session.Manager
 	udMgr   *userdata.Manager
+	pdMgr   *projectdata.Manager
 	exec    executor.CommandExecutor
 	isBwrap bool
 }
 
-func NewCodeHandler(mgr *session.Manager, udMgr *userdata.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
-	return &CodeHandler{mgr: mgr, udMgr: udMgr, exec: exec, isBwrap: isBwrap}
+func NewCodeHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
+	return &CodeHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr, exec: exec, isBwrap: isBwrap}
 }
 
 func (h *CodeHandler) Execute(c *gin.Context) {
@@ -35,8 +37,11 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
+	if !authorizeProjectAccess(c, req.ProjectID) {
+		return
+	}
 
-	roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+	roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
@@ -54,7 +59,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		log.Printf("[ERROR] Execute: mkdir %s: %v", workingDir, err)
 	}
 
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot}
+	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
 	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
 
 	timeout := 30

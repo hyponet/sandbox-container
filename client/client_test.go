@@ -17,6 +17,7 @@ import (
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -48,19 +49,23 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	os.MkdirAll(userdataDir, 0755)
 	udMgr := userdata.NewManager(userdataDir)
 	udMgr.SetInitFn(cmdExec.InitUserdata)
+	projectdataDir := filepath.Join(dir, "projects")
+	os.MkdirAll(projectdataDir, 0755)
+	pdMgr := projectdata.NewManager(projectdataDir)
+	pdMgr.SetInitFn(cmdExec.InitProjectdata)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
 
 	// Sandbox
-	sandboxH := handler.NewSandboxHandler(mgr, udMgr, false)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr, false)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", sandboxH.FsInfo)
 
 	// Bash
-	bashH := handler.NewBashHandler(mgr, udMgr, cmdExec, false)
+	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec, false)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -73,7 +78,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// File
-	fileH := handler.NewFileHandler(mgr, udMgr, &executor.DirectFileOperator{}, false)
+	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, &executor.DirectFileOperator{}, false)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -89,7 +94,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Code
-	codeH := handler.NewCodeHandler(mgr, udMgr, cmdExec, false)
+	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, false)
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
@@ -151,6 +156,22 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	return cli, cleanup
+}
+
+func allowProjectdataForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
+	t.Setenv("SANDBOX_API_KEY", "")
+	t.Setenv("SANDBOX_PROJECT_ACCESS", "*=*")
+	middleware.LoadAPIKeysFromEnv()
+}
+
+func denyProjectdataForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
+	t.Setenv("SANDBOX_API_KEY", "")
+	t.Setenv("SANDBOX_PROJECT_ACCESS", "")
+	middleware.LoadAPIKeysFromEnv()
 }
 
 // =============================================
@@ -2446,5 +2467,115 @@ func TestUserdataEmptyUserIDAllowed(t *testing.T) {
 	_, err := cli.FileWrite("a1", "ud-val2", "test.txt", "data")
 	if err != nil {
 		t.Fatalf("FileWrite without user_id should succeed for non-userdata paths: %v", err)
+	}
+}
+
+// =============================================
+// Projectdata integration tests
+// =============================================
+
+func TestProjectdataFsInfo(t *testing.T) {
+	allowProjectdataForTest(t)
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.GetFsInfo("a1", "pd-fs1", WithFsInfoProjectID("project-1"))
+	if err != nil {
+		t.Fatalf("GetFsInfo with project_id failed: %v", err)
+	}
+	if result.Directories["projectdata"] == "" {
+		t.Fatalf("expected projectdata directory, got %v", result.Directories)
+	}
+}
+
+func TestProjectdataFileAPIsAndAuth(t *testing.T) {
+	allowProjectdataForTest(t)
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "pd-s1", "/projectdata/docs/readme.md", "project docs",
+		WithFileWriteProjectID("project-1"),
+	); err != nil {
+		t.Fatalf("FileWrite to projectdata failed: %v", err)
+	}
+
+	readResult, err := cli.FileRead("a2", "pd-s2", "/projectdata/docs/readme.md",
+		WithFileReadProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileRead shared projectdata failed: %v", err)
+	}
+	if readResult.Content != "project docs" {
+		t.Fatalf("expected shared content, got %q", readResult.Content)
+	}
+
+	listResult, err := cli.FileList("a1", "pd-s1", "/projectdata",
+		WithFileListProjectID("project-1"),
+		WithRecursive(true),
+	)
+	if err != nil {
+		t.Fatalf("FileList projectdata failed: %v", err)
+	}
+	paths := map[string]bool{}
+	for _, file := range listResult.Files {
+		paths[file.Path] = true
+	}
+	if !paths["/projectdata/docs"] || !paths["/projectdata/docs/readme.md"] {
+		t.Fatalf("unexpected projectdata list paths: %v", paths)
+	}
+
+	data, err := cli.FileDownload("a1", "pd-s1", "/projectdata/docs/readme.md",
+		WithFileDownloadProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("FileDownload projectdata failed: %v", err)
+	}
+	if string(data) != "project docs" {
+		t.Fatalf("expected downloaded project docs, got %q", string(data))
+	}
+}
+
+func TestProjectdataDeniedWithoutAccessRule(t *testing.T) {
+	denyProjectdataForTest(t)
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.FileWrite("a1", "pd-denied", "/projectdata/secret.txt", "secret",
+		WithFileWriteProjectID("project-1"),
+	)
+	if err == nil {
+		t.Fatal("expected projectdata write to fail without project access rule")
+	}
+}
+
+func TestProjectdataBashAndCode(t *testing.T) {
+	allowProjectdataForTest(t)
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "pd-runtime", "/projectdata/value.txt", "42",
+		WithFileWriteProjectID("project-1"),
+	); err != nil {
+		t.Fatalf("setup FileWrite failed: %v", err)
+	}
+
+	bashResult, err := cli.BashExec("a1", "pd-runtime", "cat projectdata/value.txt",
+		WithBashProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("BashExec with projectdata failed: %v", err)
+	}
+	if bashResult.Stdout == nil || *bashResult.Stdout != "42" {
+		t.Fatalf("expected bash stdout 42, got %v", bashResult.Stdout)
+	}
+
+	codeResult, err := cli.CodeExecute("a1", "pd-runtime", "python", `print(open('projectdata/value.txt').read().strip())`,
+		WithCodeProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("CodeExecute with projectdata failed: %v", err)
+	}
+	if codeResult.Stdout == nil || strings.TrimSpace(*codeResult.Stdout) != "42" {
+		t.Fatalf("expected code stdout 42, got %v", codeResult.Stdout)
 	}
 }

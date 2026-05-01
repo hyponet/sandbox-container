@@ -103,17 +103,18 @@ func (c *Client) BashCloseSession(agentID, sessionID, bashSessionID string) erro
 // --- Internal request types (with JSON tags for serialization) ---
 
 type bashExecRequest struct {
-	AgentID         string            `json:"agent_id"`
-	SessionID       string            `json:"session_id"`
-	Command         string            `json:"command"`
-	ExecDir         *string           `json:"exec_dir,omitempty"`
-	Env             map[string]string `json:"env,omitempty"`
-	AsyncMode       bool              `json:"async_mode"`
-	Timeout         *float64          `json:"timeout,omitempty"`
-	HardTimeout     *float64          `json:"hard_timeout,omitempty"`
+	AgentID              string            `json:"agent_id"`
+	SessionID            string            `json:"session_id"`
+	Command              string            `json:"command"`
+	ExecDir              *string           `json:"exec_dir,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	AsyncMode            bool              `json:"async_mode"`
+	Timeout              *float64          `json:"timeout,omitempty"`
+	HardTimeout          *float64          `json:"hard_timeout,omitempty"`
 	MaxOutputLength      int               `json:"max_output_length"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
 	UserID               string            `json:"user_id,omitempty"`
+	ProjectID            string            `json:"project_id,omitempty"`
 }
 
 type bashOutputRequest struct {
@@ -140,12 +141,13 @@ type bashKillRequest struct {
 }
 
 type bashSessionCreateRequest struct {
-	AgentID   string  `json:"agent_id"`
-	SessionID string  `json:"session_id"`
+	AgentID              string  `json:"agent_id"`
+	SessionID            string  `json:"session_id"`
 	BashSID              *string `json:"bash_session_id,omitempty"`
 	ExecDir              *string `json:"exec_dir,omitempty"`
 	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
 	UserID               string  `json:"user_id,omitempty"`
+	ProjectID            string  `json:"project_id,omitempty"`
 }
 
 type bashSessionCloseRequest struct {
@@ -225,7 +227,17 @@ func WithBashUserID(userID string) BashExecOption {
 	return func(r *bashExecRequest) { r.UserID = userID }
 }
 
+// WithBashProjectID sets the project ID for projectdata access in BashExec.
+func WithBashProjectID(projectID string) BashExecOption {
+	return func(r *bashExecRequest) { r.ProjectID = projectID }
+}
+
 // WithCreateSessionUserID sets the user ID for userdata access in BashCreateSession.
 func WithCreateSessionUserID(userID string) BashCreateSessionOption {
 	return func(r *bashSessionCreateRequest) { r.UserID = userID }
+}
+
+// WithCreateSessionProjectID sets the project ID for projectdata access in BashCreateSession.
+func WithCreateSessionProjectID(projectID string) BashCreateSessionOption {
+	return func(r *bashSessionCreateRequest) { r.ProjectID = projectID }
 }

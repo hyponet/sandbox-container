@@ -180,6 +180,9 @@ func (c *Client) FileUpload(agentID, sessionID, path string, reader io.Reader, f
 	if ur.UserID != "" {
 		w.WriteField("user_id", ur.UserID)
 	}
+	if ur.ProjectID != "" {
+		w.WriteField("project_id", ur.ProjectID)
+	}
 
 	part, err := w.CreateFormFile("file", filename)
 	if err != nil {
@@ -195,6 +198,9 @@ func (c *Client) FileUpload(agentID, sessionID, path string, reader io.Reader, f
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", w.FormDataContentType())
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -228,10 +234,16 @@ func (c *Client) FileDownload(agentID, sessionID, path string, opts ...FileDownl
 	if fd.UserID != "" {
 		params.Set("user_id", fd.UserID)
 	}
+	if fd.ProjectID != "" {
+		params.Set("project_id", fd.ProjectID)
+	}
 
 	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/file/download?"+params.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -250,99 +262,107 @@ func (c *Client) FileDownload(agentID, sessionID, path string, opts ...FileDownl
 // --- Internal request types ---
 
 type fileReadRequest struct {
-	AgentID   string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	File      string `json:"file"`
-	StartLine *int   `json:"start_line,omitempty"`
-	EndLine   *int   `json:"end_line,omitempty"`
+	AgentID              string `json:"agent_id"`
+	SessionID            string `json:"session_id"`
+	File                 string `json:"file"`
+	StartLine            *int   `json:"start_line,omitempty"`
+	EndLine              *int   `json:"end_line,omitempty"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
 }
 
 type fileWriteRequest struct {
-	AgentID         string `json:"agent_id"`
-	SessionID       string `json:"session_id"`
-	File            string `json:"file"`
-	Content         string `json:"content"`
-	Encoding        string `json:"encoding,omitempty"`
-	Append          bool   `json:"append"`
-	LeadingNewline  bool   `json:"leading_newline"`
-	TrailingNewline bool   `json:"trailing_newline"`
+	AgentID              string `json:"agent_id"`
+	SessionID            string `json:"session_id"`
+	File                 string `json:"file"`
+	Content              string `json:"content"`
+	Encoding             string `json:"encoding,omitempty"`
+	Append               bool   `json:"append"`
+	LeadingNewline       bool   `json:"leading_newline"`
+	TrailingNewline      bool   `json:"trailing_newline"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
 }
 
 type fileReplaceRequest struct {
-	AgentID   string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	File      string `json:"file"`
-	OldStr    string `json:"old_str"`
-	NewStr    string `json:"new_str"`
+	AgentID              string `json:"agent_id"`
+	SessionID            string `json:"session_id"`
+	File                 string `json:"file"`
+	OldStr               string `json:"old_str"`
+	NewStr               string `json:"new_str"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
 }
 
 type fileSearchRequest struct {
-	AgentID   string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	File      string `json:"file"`
-	Regex     string `json:"regex"`
+	AgentID              string `json:"agent_id"`
+	SessionID            string `json:"session_id"`
+	File                 string `json:"file"`
+	Regex                string `json:"regex"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
 }
 
 type fileFindRequest struct {
-	AgentID   string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	Path      string `json:"path"`
-	Glob      string `json:"glob"`
+	AgentID              string `json:"agent_id"`
+	SessionID            string `json:"session_id"`
+	Path                 string `json:"path"`
+	Glob                 string `json:"glob"`
 	EnableAgentWorkspace bool   `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string `json:"user_id,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
 }
 
 type fileGrepRequest struct {
-	AgentID         string   `json:"agent_id"`
-	SessionID       string   `json:"session_id"`
-	Path            string   `json:"path"`
-	Pattern         string   `json:"pattern"`
-	Include         []string `json:"include,omitempty"`
-	Exclude         []string `json:"exclude,omitempty"`
-	CaseInsensitive bool     `json:"case_insensitive"`
-	FixedStrings    bool     `json:"fixed_strings"`
-	ContextBefore   int      `json:"context_before"`
-	ContextAfter    int      `json:"context_after"`
-	MaxResults      int      `json:"max_results"`
-	Recursive       *bool    `json:"recursive,omitempty"`
+	AgentID              string   `json:"agent_id"`
+	SessionID            string   `json:"session_id"`
+	Path                 string   `json:"path"`
+	Pattern              string   `json:"pattern"`
+	Include              []string `json:"include,omitempty"`
+	Exclude              []string `json:"exclude,omitempty"`
+	CaseInsensitive      bool     `json:"case_insensitive"`
+	FixedStrings         bool     `json:"fixed_strings"`
+	ContextBefore        int      `json:"context_before"`
+	ContextAfter         int      `json:"context_after"`
+	MaxResults           int      `json:"max_results"`
+	Recursive            *bool    `json:"recursive,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string   `json:"user_id,omitempty"`
+	ProjectID            string   `json:"project_id,omitempty"`
 }
 
 type fileGlobRequest struct {
-	AgentID         string   `json:"agent_id"`
-	SessionID       string   `json:"session_id"`
-	Path            string   `json:"path"`
-	Pattern         string   `json:"pattern"`
-	Exclude         []string `json:"exclude,omitempty"`
-	IncludeHidden   bool     `json:"include_hidden"`
-	FilesOnly       *bool    `json:"files_only,omitempty"`
-	IncludeMetadata *bool    `json:"include_metadata,omitempty"`
-	MaxResults      int      `json:"max_results"`
+	AgentID              string   `json:"agent_id"`
+	SessionID            string   `json:"session_id"`
+	Path                 string   `json:"path"`
+	Pattern              string   `json:"pattern"`
+	Exclude              []string `json:"exclude,omitempty"`
+	IncludeHidden        bool     `json:"include_hidden"`
+	FilesOnly            *bool    `json:"files_only,omitempty"`
+	IncludeMetadata      *bool    `json:"include_metadata,omitempty"`
+	MaxResults           int      `json:"max_results"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string   `json:"user_id,omitempty"`
+	ProjectID            string   `json:"project_id,omitempty"`
 }
 
 type fileListRequest struct {
-	AgentID            string   `json:"agent_id"`
-	SessionID          string   `json:"session_id"`
-	Path               string   `json:"path"`
-	Recursive          bool     `json:"recursive"`
-	ShowHidden         *bool    `json:"show_hidden,omitempty"`
-	FileTypes          []string `json:"file_types,omitempty"`
-	MaxDepth           *int     `json:"max_depth,omitempty"`
-	IncludeSize        *bool    `json:"include_size,omitempty"`
-	IncludePermissions *bool    `json:"include_permissions,omitempty"`
+	AgentID              string   `json:"agent_id"`
+	SessionID            string   `json:"session_id"`
+	Path                 string   `json:"path"`
+	Recursive            bool     `json:"recursive"`
+	ShowHidden           *bool    `json:"show_hidden,omitempty"`
+	FileTypes            []string `json:"file_types,omitempty"`
+	MaxDepth             *int     `json:"max_depth,omitempty"`
+	IncludeSize          *bool    `json:"include_size,omitempty"`
+	IncludePermissions   *bool    `json:"include_permissions,omitempty"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
-	UserID              string `json:"user_id,omitempty"`
+	UserID               string   `json:"user_id,omitempty"`
+	ProjectID            string   `json:"project_id,omitempty"`
 }
 
 // --- Functional options ---
@@ -463,7 +483,8 @@ type FileUploadOption func(*fileUploadOptions)
 
 type fileUploadOptions struct {
 	EnableAgentWorkspace bool
-	UserID              string
+	UserID               string
+	ProjectID            string
 }
 
 // WithUploadAgentWorkspace enables agent workspace mode for FileUpload.
@@ -476,7 +497,8 @@ type FileDownloadOption func(*fileDownloadOptions)
 
 type fileDownloadOptions struct {
 	EnableAgentWorkspace bool
-	UserID              string
+	UserID               string
+	ProjectID            string
 }
 
 // WithDownloadAgentWorkspace enables agent workspace mode for FileDownload.
@@ -489,9 +511,19 @@ func WithFileReadUserID(userID string) FileReadOption {
 	return func(r *fileReadRequest) { r.UserID = userID }
 }
 
+// WithFileReadProjectID sets the project ID for projectdata access in FileRead.
+func WithFileReadProjectID(projectID string) FileReadOption {
+	return func(r *fileReadRequest) { r.ProjectID = projectID }
+}
+
 // WithFileWriteUserID sets the user ID for userdata access in FileWrite.
 func WithFileWriteUserID(userID string) FileWriteOption {
 	return func(r *fileWriteRequest) { r.UserID = userID }
+}
+
+// WithFileWriteProjectID sets the project ID for projectdata access in FileWrite.
+func WithFileWriteProjectID(projectID string) FileWriteOption {
+	return func(r *fileWriteRequest) { r.ProjectID = projectID }
 }
 
 // WithFileReplaceUserID sets the user ID for userdata access in FileReplace.
@@ -499,9 +531,19 @@ func WithFileReplaceUserID(userID string) FileReplaceOption {
 	return func(r *fileReplaceRequest) { r.UserID = userID }
 }
 
+// WithFileReplaceProjectID sets the project ID for projectdata access in FileReplace.
+func WithFileReplaceProjectID(projectID string) FileReplaceOption {
+	return func(r *fileReplaceRequest) { r.ProjectID = projectID }
+}
+
 // WithFileSearchUserID sets the user ID for userdata access in FileSearch.
 func WithFileSearchUserID(userID string) FileSearchOption {
 	return func(r *fileSearchRequest) { r.UserID = userID }
+}
+
+// WithFileSearchProjectID sets the project ID for projectdata access in FileSearch.
+func WithFileSearchProjectID(projectID string) FileSearchOption {
+	return func(r *fileSearchRequest) { r.ProjectID = projectID }
 }
 
 // WithFileFindUserID sets the user ID for userdata access in FileFind.
@@ -509,9 +551,19 @@ func WithFileFindUserID(userID string) FileFindOption {
 	return func(r *fileFindRequest) { r.UserID = userID }
 }
 
+// WithFileFindProjectID sets the project ID for projectdata access in FileFind.
+func WithFileFindProjectID(projectID string) FileFindOption {
+	return func(r *fileFindRequest) { r.ProjectID = projectID }
+}
+
 // WithFileGrepUserID sets the user ID for userdata access in FileGrep.
 func WithFileGrepUserID(userID string) FileGrepOption {
 	return func(r *fileGrepRequest) { r.UserID = userID }
+}
+
+// WithFileGrepProjectID sets the project ID for projectdata access in FileGrep.
+func WithFileGrepProjectID(projectID string) FileGrepOption {
+	return func(r *fileGrepRequest) { r.ProjectID = projectID }
 }
 
 // WithFileGlobUserID sets the user ID for userdata access in FileGlob.
@@ -519,9 +571,19 @@ func WithFileGlobUserID(userID string) FileGlobOption {
 	return func(r *fileGlobRequest) { r.UserID = userID }
 }
 
+// WithFileGlobProjectID sets the project ID for projectdata access in FileGlob.
+func WithFileGlobProjectID(projectID string) FileGlobOption {
+	return func(r *fileGlobRequest) { r.ProjectID = projectID }
+}
+
 // WithFileListUserID sets the user ID for userdata access in FileList.
 func WithFileListUserID(userID string) FileListOption {
 	return func(r *fileListRequest) { r.UserID = userID }
+}
+
+// WithFileListProjectID sets the project ID for projectdata access in FileList.
+func WithFileListProjectID(projectID string) FileListOption {
+	return func(r *fileListRequest) { r.ProjectID = projectID }
 }
 
 // WithFileUploadUserID sets the user ID for userdata access in FileUpload.
@@ -529,7 +591,17 @@ func WithFileUploadUserID(userID string) FileUploadOption {
 	return func(o *fileUploadOptions) { o.UserID = userID }
 }
 
+// WithFileUploadProjectID sets the project ID for projectdata access in FileUpload.
+func WithFileUploadProjectID(projectID string) FileUploadOption {
+	return func(o *fileUploadOptions) { o.ProjectID = projectID }
+}
+
 // WithFileDownloadUserID sets the user ID for userdata access in FileDownload.
 func WithFileDownloadUserID(userID string) FileDownloadOption {
 	return func(o *fileDownloadOptions) { o.UserID = userID }
+}
+
+// WithFileDownloadProjectID sets the project ID for projectdata access in FileDownload.
+func WithFileDownloadProjectID(projectID string) FileDownloadOption {
+	return func(o *fileDownloadOptions) { o.ProjectID = projectID }
 }

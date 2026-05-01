@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -14,11 +15,12 @@ import (
 type SandboxHandler struct {
 	mgr     *session.Manager
 	udMgr   *userdata.Manager
+	pdMgr   *projectdata.Manager
 	isBwrap bool
 }
 
-func NewSandboxHandler(mgr *session.Manager, udMgr *userdata.Manager, isBwrap bool) *SandboxHandler {
-	return &SandboxHandler{mgr: mgr, udMgr: udMgr, isBwrap: isBwrap}
+func NewSandboxHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, isBwrap bool) *SandboxHandler {
+	return &SandboxHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr, isBwrap: isBwrap}
 }
 
 func (h *SandboxHandler) GetContext(c *gin.Context) {
@@ -88,6 +90,9 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
+	if !authorizeProjectAccess(c, req.ProjectID) {
+		return
+	}
 
 	var workDir string
 	directories := make(map[string]string)
@@ -102,8 +107,15 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 			}
 			directories["userdata"] = SandboxUserdataDir
 		}
+		if req.ProjectID != "" {
+			if err := h.pdMgr.Touch(req.ProjectID); err != nil {
+				c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+				return
+			}
+			directories["projectdata"] = SandboxProjectdataDir
+		}
 	} else {
-		roots, err := resolveRoots(h.mgr, h.udMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID)
+		roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
@@ -112,6 +124,9 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 		directories["skills"] = roots.SkillsRoot
 		if roots.UserdataRoot != "" {
 			directories["userdata"] = roots.UserdataRoot
+		}
+		if roots.ProjectdataRoot != "" {
+			directories["projectdata"] = roots.ProjectdataRoot
 		}
 	}
 

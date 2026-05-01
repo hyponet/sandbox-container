@@ -26,6 +26,13 @@ func setKeys(keys string) {
 
 func clearKeys() {
 	os.Unsetenv("SANDBOX_API_KEY")
+	os.Unsetenv("SANDBOX_PROJECT_ACCESS")
+	LoadAPIKeysFromEnv()
+}
+
+func setKeysAndProjects(keys, access string) {
+	os.Setenv("SANDBOX_API_KEY", keys)
+	os.Setenv("SANDBOX_PROJECT_ACCESS", access)
 	LoadAPIKeysFromEnv()
 }
 
@@ -146,5 +153,75 @@ func TestAuthRequired_EmptyBearer(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("empty bearer: expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuthorizeProjectAccess_ConfiguredRules(t *testing.T) {
+	setKeysAndProjects("sk-one,sk-two", "sk-one=proj-a|proj-b, sk-two=proj-c")
+	defer clearKeys()
+
+	r := gin.New()
+	r.Use(AuthRequired())
+	r.GET("/project", func(c *gin.Context) {
+		if err := AuthorizeProjectAccess(c, c.Query("project_id")); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	})
+
+	tests := []struct {
+		name      string
+		key       string
+		projectID string
+		want      int
+	}{
+		{name: "allowed", key: "sk-one", projectID: "proj-a", want: http.StatusOK},
+		{name: "denied", key: "sk-one", projectID: "proj-c", want: http.StatusForbidden},
+		{name: "other key allowed", key: "sk-two", projectID: "proj-c", want: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/project?project_id="+tt.projectID, nil)
+			req.Header.Set("Authorization", "Bearer "+tt.key)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != tt.want {
+				t.Fatalf("expected %d, got %d: %s", tt.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestAuthorizeProjectAccess_OpenModeRequiresExplicitWildcard(t *testing.T) {
+	clearKeys()
+
+	r := gin.New()
+	r.Use(AuthRequired())
+	r.GET("/project", func(c *gin.Context) {
+		if err := AuthorizeProjectAccess(c, "proj-a"); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/project", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 in open mode without project rules, got %d", w.Code)
+	}
+
+	os.Setenv("SANDBOX_PROJECT_ACCESS", "*=proj-a")
+	LoadAPIKeysFromEnv()
+	defer clearKeys()
+
+	req = httptest.NewRequest(http.MethodGet, "/project", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected wildcard project access, got %d: %s", w.Code, w.Body.String())
 	}
 }

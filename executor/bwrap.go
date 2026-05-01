@@ -61,7 +61,10 @@ func (b *BwrapExecutor) Prepare(opts ExecOptions, name string, args ...string) *
 func (b *BwrapExecutor) InitSession(sessionDir, skillsDir string) {}
 
 // InitUserdata is a no-op for bwrap mode (userdata access is handled via bind mounts).
-func (b *BwrapExecutor) InitUserdata(sessionDir, userdataDir string) {}
+func (b *BwrapExecutor) InitUserdata(sessionDir, userdataDir string) error { return nil }
+
+// InitProjectdata is a no-op for bwrap mode (projectdata access is handled via bind mounts).
+func (b *BwrapExecutor) InitProjectdata(sessionDir, projectdataDir string) error { return nil }
 
 // buildArgs constructs the bwrap argument list (everything before "--").
 func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []string {

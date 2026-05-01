@@ -40,6 +40,7 @@ type codeExecRequest struct {
 	Env                  map[string]string `json:"env,omitempty"`
 	EnableAgentWorkspace bool              `json:"enable_agent_workspace"`
 	UserID               string            `json:"user_id,omitempty"`
+	ProjectID            string            `json:"project_id,omitempty"`
 }
 
 // --- Functional options ---
@@ -70,4 +71,9 @@ func WithCodeAgentWorkspace() CodeExecOption {
 // WithCodeUserID sets the user ID for userdata access in CodeExecute.
 func WithCodeUserID(userID string) CodeExecOption {
 	return func(r *codeExecRequest) { r.UserID = userID }
+}
+
+// WithCodeProjectID sets the project ID for projectdata access in CodeExecute.
+func WithCodeProjectID(projectID string) CodeExecOption {
+	return func(r *codeExecRequest) { r.ProjectID = projectID }
 }

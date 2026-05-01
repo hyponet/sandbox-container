@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/executor"
+	"github.com/hyponet/sandbox-container/middleware"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -27,6 +29,22 @@ func setupRouter() (*gin.Engine, *session.Manager) {
 	return setupRouterWithFileOperator(&executor.DirectFileOperator{}, false)
 }
 
+func allowProjectdataForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
+	t.Setenv("SANDBOX_API_KEY", "")
+	t.Setenv("SANDBOX_PROJECT_ACCESS", "*=*")
+	middleware.LoadAPIKeysFromEnv()
+}
+
+func denyProjectdataForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { middleware.LoadAPIKeysFromEnv() })
+	t.Setenv("SANDBOX_API_KEY", "")
+	t.Setenv("SANDBOX_PROJECT_ACCESS", "")
+	middleware.LoadAPIKeysFromEnv()
+}
+
 func setupRouterWithFileOperator(fileOp executor.FileOperator, isBwrap bool) (*gin.Engine, *session.Manager) {
 	gin.SetMode(gin.TestMode)
 	dir := tTempDir()
@@ -35,10 +53,11 @@ func setupRouterWithFileOperator(fileOp executor.FileOperator, isBwrap bool) (*g
 		mgr.SetSessionInit((&executor.DirectExecutor{}).InitSession)
 	}
 	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
+	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
 
 	r := gin.New()
 
-	fileH := NewFileHandler(mgr, udMgr, fileOp, isBwrap)
+	fileH := NewFileHandler(mgr, udMgr, pdMgr, fileOp, isBwrap)
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -549,6 +568,148 @@ func TestFileGlob_AllowsExplicitSkillsSearchInBwrap(t *testing.T) {
 	file := files[0].(map[string]interface{})
 	if file["path"] != "/skills/test-skill/guide.md" {
 		t.Fatalf("expected /skills/test-skill/guide.md, got %v", file)
+	}
+}
+
+func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *testing.T) {
+	allowProjectdataForTest(t)
+
+	fileOp := newVirtualFileOperator(map[string]string{
+		"/home/app.txt":                       "workspace needle",
+		"/home/projectdata/docs/guide.md":     "project docs needle",
+		"/home/projectdata/docs/internal.txt": "project internal needle",
+	})
+	r, _ := setupRouterWithFileOperator(fileOp, true)
+
+	t.Run("implicit root grep skips projectdata", func(t *testing.T) {
+		body := `{"agent_id":"a1","session_id":"bwrap_project_implicit","path":"/","pattern":"needle","project_id":"proj-a"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/file/grep", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("implicit grep failed: %d %s", w.Code, w.Body.String())
+		}
+		var resp map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		matches := resp["data"].(map[string]interface{})["matches"].([]interface{})
+		if len(matches) != 1 || matches[0].(map[string]interface{})["file"] != "/app.txt" {
+			t.Fatalf("expected only workspace match, got %v", matches)
+		}
+	})
+
+	tests := []struct {
+		name string
+		path string
+		body string
+		want string
+	}{
+		{name: "find", path: "/v1/file/find", body: `{"agent_id":"a1","session_id":"bwrap_project_find","path":"/projectdata","glob":"*.md","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
+		{name: "grep", path: "/v1/file/grep", body: `{"agent_id":"a1","session_id":"bwrap_project_grep","path":"/projectdata","pattern":"project docs","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
+		{name: "glob", path: "/v1/file/glob", body: `{"agent_id":"a1","session_id":"bwrap_project_glob","path":"/projectdata","pattern":"**/*.md","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
+		{name: "list", path: "/v1/file/list", body: `{"agent_id":"a1","session_id":"bwrap_project_list","path":"/projectdata","recursive":true,"project_id":"proj-a"}`, want: "/projectdata/docs"},
+	}
+
+	for _, tt := range tests {
+		t.Run("explicit "+tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s failed: %d %s", tt.name, w.Code, w.Body.String())
+			}
+
+			var resp map[string]interface{}
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			data := resp["data"].(map[string]interface{})
+			switch tt.name {
+			case "find":
+				files := data["files"].([]interface{})
+				if len(files) != 1 || files[0] != tt.want {
+					t.Fatalf("expected %s, got %v", tt.want, files)
+				}
+			case "grep":
+				matches := data["matches"].([]interface{})
+				if len(matches) != 1 || matches[0].(map[string]interface{})["file"] != tt.want {
+					t.Fatalf("expected %s, got %v", tt.want, matches)
+				}
+			case "glob":
+				files := data["files"].([]interface{})
+				if len(files) != 1 || files[0].(map[string]interface{})["path"] != tt.want {
+					t.Fatalf("expected %s, got %v", tt.want, files)
+				}
+			case "list":
+				files := data["files"].([]interface{})
+				if len(files) == 0 || files[0].(map[string]interface{})["path"] != tt.want {
+					t.Fatalf("expected first path %s, got %v", tt.want, files)
+				}
+			}
+		})
+	}
+}
+
+func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
+	allowProjectdataForTest(t)
+
+	r, _ := setupRouter()
+
+	writeBody := `{"agent_id":"a1","session_id":"project_s1","file":"/projectdata/docs/readme.md","content":"shared docs","project_id":"proj-a"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(writeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("write projectdata failed: %d %s", w.Code, w.Body.String())
+	}
+
+	readBody := `{"agent_id":"a2","session_id":"project_s2","file":"/projectdata/docs/readme.md","project_id":"proj-a"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(readBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("read shared projectdata failed: %d %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["data"].(map[string]interface{})["content"] != "shared docs" {
+		t.Fatalf("unexpected read content: %v", resp)
+	}
+
+	listBody := `{"agent_id":"a1","session_id":"project_s1","path":"/projectdata","recursive":true,"project_id":"proj-a"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/file/list", bytes.NewBufferString(listBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list projectdata failed: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	files := resp["data"].(map[string]interface{})["files"].([]interface{})
+	paths := map[string]bool{}
+	for _, entry := range files {
+		paths[entry.(map[string]interface{})["path"].(string)] = true
+	}
+	if !paths["/projectdata/docs"] || !paths["/projectdata/docs/readme.md"] {
+		t.Fatalf("unexpected projectdata display paths: %v", paths)
+	}
+}
+
+func TestFileProjectdata_AccessDeniedWithoutAuthContext(t *testing.T) {
+	denyProjectdataForTest(t)
+
+	r, _ := setupRouter()
+
+	body := `{"agent_id":"a1","session_id":"project_denied","file":"/projectdata/secret.txt","content":"secret","project_id":"proj-a"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected projectdata to require auth context, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1280,9 +1441,10 @@ func TestFileWrite_SkillsAliasReadOnly_Default(t *testing.T) {
 func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	_, mgr := setupRouter()
 	udMgr := userdata.NewManager("/tmp/test-users")
-	h := NewFileHandler(mgr, udMgr, &executor.DirectFileOperator{}, false)
+	pdMgr := projectdata.NewManager("/tmp/test-projects")
+	h := NewFileHandler(mgr, udMgr, pdMgr, &executor.DirectFileOperator{}, false)
 
-	sessionOpts, err := h.fileOpOpts("a1", "s1", "", false)
+	sessionOpts, err := h.fileOpOpts("a1", "s1", "", "", false)
 	if err != nil {
 		t.Fatalf("fileOpOpts: %v", err)
 	}
@@ -1293,7 +1455,7 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
 	}
 
-	workspaceOpts, err := h.fileOpOpts("a1", "s1", "", true)
+	workspaceOpts, err := h.fileOpOpts("a1", "s1", "", "", true)
 	if err != nil {
 		t.Fatalf("fileOpOpts: %v", err)
 	}

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -100,3 +101,50 @@ func TestDirectExecutor_InitSession(t *testing.T) {
 	}
 }
 
+func TestDirectExecutor_InitProjectdataRefusesNonSymlinkCollision(t *testing.T) {
+	d := &DirectExecutor{}
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "session")
+	projectdataDir := filepath.Join(dir, "projects", "p1")
+
+	if err := os.MkdirAll(filepath.Join(sessionDir, "projectdata"), 0755); err != nil {
+		t.Fatalf("mkdir collision: %v", err)
+	}
+
+	err := d.InitProjectdata(sessionDir, projectdataDir)
+	if err == nil {
+		t.Fatal("expected error for non-symlink projectdata collision")
+	}
+	info, statErr := os.Lstat(filepath.Join(sessionDir, "projectdata"))
+	if statErr != nil {
+		t.Fatalf("collision path should remain: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected collision directory to remain, got mode %v", info.Mode())
+	}
+}
+
+func TestDirectExecutor_InitProjectdataReplacesSymlink(t *testing.T) {
+	d := &DirectExecutor{}
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "session")
+	projectdataDir := filepath.Join(dir, "projects", "p1")
+
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	if err := os.Symlink("old-target", filepath.Join(sessionDir, "projectdata")); err != nil {
+		t.Fatalf("create old symlink: %v", err)
+	}
+
+	if err := d.InitProjectdata(sessionDir, projectdataDir); err != nil {
+		t.Fatalf("InitProjectdata: %v", err)
+	}
+	target, err := os.Readlink(filepath.Join(sessionDir, "projectdata"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != filepath.Join("..", "projects", "p1") {
+		t.Fatalf("unexpected symlink target %q", target)
+	}
+}

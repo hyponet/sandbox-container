@@ -12,6 +12,7 @@ import (
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/handler"
 	"github.com/hyponet/sandbox-container/middleware"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
 	"github.com/hyponet/sandbox-container/userdata"
 
@@ -108,6 +109,9 @@ func main() {
 	udMgr := userdata.NewManager(userdata.DefaultRoot)
 	udMgr.SetInitFn(cmdExec.InitUserdata)
 
+	pdMgr := projectdata.NewManager(projectdata.DefaultRoot)
+	pdMgr.SetInitFn(cmdExec.InitProjectdata)
+
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
@@ -115,14 +119,14 @@ func main() {
 	auditMW := middleware.AuditLogger(auditW)
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
-	sandboxH := handler.NewSandboxHandler(mgr, udMgr, isBwrap)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr, isBwrap)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", auth, sandboxH.FsInfo)
 
 	// Bash APIs
-	bashH := handler.NewBashHandler(mgr, udMgr, cmdExec, isBwrap)
+	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec, isBwrap)
 	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -136,7 +140,7 @@ func main() {
 
 	// File APIs
 	fileOp := executor.NewFileOperator(cmdExec)
-	fileH := handler.NewFileHandler(mgr, udMgr, fileOp, isBwrap)
+	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, fileOp, isBwrap)
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
@@ -152,7 +156,7 @@ func main() {
 	}
 
 	// Code APIs
-	codeH := handler.NewCodeHandler(mgr, udMgr, cmdExec, isBwrap)
+	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, isBwrap)
 	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 
@@ -165,6 +169,9 @@ func main() {
 	}
 	if err := os.MkdirAll(userdata.DefaultRoot, 0755); err != nil {
 		log.Fatalf("Failed to create userdata directory %s: %v", userdata.DefaultRoot, err)
+	}
+	if err := os.MkdirAll(projectdata.DefaultRoot, 0755); err != nil {
+		log.Fatalf("Failed to create projectdata directory %s: %v", projectdata.DefaultRoot, err)
 	}
 	skillH := handler.NewSkillHandler(mgr)
 

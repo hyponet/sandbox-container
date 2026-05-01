@@ -35,5 +35,8 @@ type CommandExecutor interface {
 	InitSession(sessionDir, skillsDir string)
 
 	// InitUserdata is called when a userID is provided to set up userdata access.
-	InitUserdata(sessionDir, userdataDir string)
+	InitUserdata(sessionDir, userdataDir string) error
+
+	// InitProjectdata is called when a projectID is provided to set up projectdata access.
+	InitProjectdata(sessionDir, projectdataDir string) error
 }

@@ -411,6 +411,36 @@ func WithCaseInsensitive(ci bool) FileGrepOption {
 	return func(r *fileGrepRequest) { r.CaseInsensitive = ci }
 }
 
+// WithGrepExclude sets file exclude patterns for grep.
+func WithGrepExclude(patterns []string) FileGrepOption {
+	return func(r *fileGrepRequest) { r.Exclude = patterns }
+}
+
+// WithFixedStrings treats the pattern as a literal string.
+func WithFixedStrings(v bool) FileGrepOption {
+	return func(r *fileGrepRequest) { r.FixedStrings = v }
+}
+
+// WithContextBefore sets the number of lines before each match to include.
+func WithContextBefore(n int) FileGrepOption {
+	return func(r *fileGrepRequest) { r.ContextBefore = n }
+}
+
+// WithContextAfter sets the number of lines after each match to include.
+func WithContextAfter(n int) FileGrepOption {
+	return func(r *fileGrepRequest) { r.ContextAfter = n }
+}
+
+// WithGrepMaxResults limits the number of grep results returned.
+func WithGrepMaxResults(n int) FileGrepOption {
+	return func(r *fileGrepRequest) { r.MaxResults = n }
+}
+
+// WithGrepRecursive enables recursive directory search for grep.
+func WithGrepRecursive(v bool) FileGrepOption {
+	return func(r *fileGrepRequest) { r.Recursive = &v }
+}
+
 // FileGlobOption is a functional option for FileGlob.
 type FileGlobOption func(*fileGlobRequest)
 
@@ -419,12 +449,57 @@ func WithGlobIncludeHidden(hidden bool) FileGlobOption {
 	return func(r *fileGlobRequest) { r.IncludeHidden = hidden }
 }
 
+// WithGlobExclude sets file exclude patterns for glob.
+func WithGlobExclude(patterns []string) FileGlobOption {
+	return func(r *fileGlobRequest) { r.Exclude = patterns }
+}
+
+// WithFilesOnly filters glob results to only include files (not directories).
+func WithFilesOnly(v bool) FileGlobOption {
+	return func(r *fileGlobRequest) { r.FilesOnly = &v }
+}
+
+// WithIncludeMetadata includes file metadata (size, modified time) in glob results.
+func WithIncludeMetadata(v bool) FileGlobOption {
+	return func(r *fileGlobRequest) { r.IncludeMetadata = &v }
+}
+
+// WithGlobMaxResults limits the number of glob results returned.
+func WithGlobMaxResults(n int) FileGlobOption {
+	return func(r *fileGlobRequest) { r.MaxResults = n }
+}
+
 // FileListOption is a functional option for FileList.
 type FileListOption func(*fileListRequest)
 
 // WithRecursive enables recursive listing.
 func WithRecursive(recursive bool) FileListOption {
 	return func(r *fileListRequest) { r.Recursive = recursive }
+}
+
+// WithShowHidden includes hidden files in listing results.
+func WithShowHidden(v bool) FileListOption {
+	return func(r *fileListRequest) { r.ShowHidden = &v }
+}
+
+// WithFileTypes filters listing results by file extensions (e.g. []string{".go", ".py"}).
+func WithFileTypes(types []string) FileListOption {
+	return func(r *fileListRequest) { r.FileTypes = types }
+}
+
+// WithMaxDepth limits the depth of recursive listing.
+func WithMaxDepth(n int) FileListOption {
+	return func(r *fileListRequest) { r.MaxDepth = &n }
+}
+
+// WithIncludeSize includes file sizes in listing results.
+func WithIncludeSize(v bool) FileListOption {
+	return func(r *fileListRequest) { r.IncludeSize = &v }
+}
+
+// WithIncludePermissions includes file permissions in listing results.
+func WithIncludePermissions(v bool) FileListOption {
+	return func(r *fileListRequest) { r.IncludePermissions = &v }
 }
 
 // --- Agent Workspace Options ---

@@ -31,7 +31,7 @@ type CommandExecutor interface {
 	Prepare(opts ExecOptions, name string, args ...string) *exec.Cmd
 
 	// InitSession is called after the session/workspace directory is created.
-	// It performs executor-specific initialization (e.g. symlinks for DirectExecutor).
+	// It performs executor-specific initialization (e.g. no-op for BwrapExecutor).
 	InitSession(sessionDir, skillsDir string)
 
 	// InitUserdata is called when a userID is provided to set up userdata access.

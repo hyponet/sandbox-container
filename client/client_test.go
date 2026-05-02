@@ -43,7 +43,10 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
 	mgr.SetAuditWriter(auditW)
 	auditMW := middleware.AuditLogger(auditW)
-	cmdExec := &executor.DirectExecutor{}
+	cmdExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
+	if err != nil {
+		t.Fatalf("bwrap not available: %v", err)
+	}
 	mgr.SetSessionInit(cmdExec.InitSession)
 	userdataDir := filepath.Join(dir, "users")
 	os.MkdirAll(userdataDir, 0755)
@@ -58,14 +61,14 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	r.Use(gin.Recovery())
 
 	// Sandbox
-	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr, false)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", sandboxH.FsInfo)
 
 	// Bash
-	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec, false)
+	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -78,7 +81,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// File
-	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, &executor.DirectFileOperator{}, false)
+	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, executor.NewFileOperator(cmdExec))
 	f := r.Group("/v1/file")
 	{
 		f.POST("/read", fileH.Read)
@@ -94,7 +97,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Code
-	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, false)
+	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec)
 	r.POST("/v1/code/execute", auditMW, codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
@@ -187,25 +190,12 @@ func TestGetFsInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFsInfo failed: %v", err)
 	}
-	if result.WorkDir == "" {
-		t.Error("expected non-empty work_dir")
+	// In bwrap mode, paths are sandbox-internal
+	if result.WorkDir != "/home" {
+		t.Errorf("expected work_dir '/home', got %q", result.WorkDir)
 	}
-	if _, err := os.Stat(result.WorkDir); err != nil {
-		t.Fatalf("expected work_dir to exist, stat %q: %v", result.WorkDir, err)
-	}
-	if result.Directories["skills"] == "" {
-		t.Errorf("expected non-empty skills directory, got %v", result.Directories)
-	}
-	if _, err := os.Stat(result.Directories["skills"]); err != nil {
-		t.Fatalf("expected skills directory to exist, stat %q: %v", result.Directories["skills"], err)
-	}
-	linkPath := filepath.Join(result.WorkDir, "skills")
-	linkInfo, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("expected skills entry in work_dir, lstat %q: %v", linkPath, err)
-	}
-	if linkInfo.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %q to be a symlink, mode=%v", linkPath, linkInfo.Mode())
+	if result.Directories["skills"] != "/home/skills" {
+		t.Errorf("expected skills '/home/skills', got %v", result.Directories["skills"])
 	}
 }
 
@@ -217,25 +207,11 @@ func TestGetFsInfoAgentWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFsInfo with AgentWorkspace failed: %v", err)
 	}
-	if result.WorkDir == "" {
-		t.Error("expected non-empty work_dir")
+	if result.WorkDir != "/home" {
+		t.Errorf("expected work_dir '/home', got %q", result.WorkDir)
 	}
-	if _, err := os.Stat(result.WorkDir); err != nil {
-		t.Fatalf("expected work_dir to exist, stat %q: %v", result.WorkDir, err)
-	}
-	if result.Directories["skills"] == "" {
-		t.Errorf("expected non-empty skills directory, got %v", result.Directories)
-	}
-	if _, err := os.Stat(result.Directories["skills"]); err != nil {
-		t.Fatalf("expected skills directory to exist, stat %q: %v", result.Directories["skills"], err)
-	}
-	linkPath := filepath.Join(result.WorkDir, "skills")
-	linkInfo, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("expected skills entry in work_dir, lstat %q: %v", linkPath, err)
-	}
-	if linkInfo.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %q to be a symlink, mode=%v", linkPath, linkInfo.Mode())
+	if result.Directories["skills"] != "/home/skills" {
+		t.Errorf("expected skills '/home/skills', got %v", result.Directories["skills"])
 	}
 }
 
@@ -1923,8 +1899,9 @@ func TestClient_BashExec_AgentWorkspace(t *testing.T) {
 	}
 	stdout := *result.Stdout
 
-	if !strings.Contains(stdout, "workspace") {
-		t.Errorf("expected stdout to contain 'workspace', got %q", stdout)
+	// In bwrap, workspace is mounted at /home
+	if !strings.Contains(stdout, "/home") {
+		t.Errorf("expected stdout to contain '/home', got %q", stdout)
 	}
 	if strings.Contains(stdout, "sessions") {
 		t.Errorf("expected stdout NOT to contain 'sessions', got %q", stdout)
@@ -2009,11 +1986,9 @@ func TestGetFsInfoWithUserID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFsInfo with UserID failed: %v", err)
 	}
-	if result.Directories["userdata"] == "" {
-		t.Errorf("expected non-empty userdata directory, got %v", result.Directories)
-	}
-	if _, err := os.Stat(result.Directories["userdata"]); err != nil {
-		t.Fatalf("expected userdata directory to exist, stat %q: %v", result.Directories["userdata"], err)
+	// In bwrap mode, userdata is at /home/userdata
+	if result.Directories["userdata"] != "/home/userdata" {
+		t.Errorf("expected userdata '/home/userdata', got %v", result.Directories["userdata"])
 	}
 }
 
@@ -3117,7 +3092,10 @@ func TestProjectdataBashAndCode(t *testing.T) {
 
 		auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
 		mgr.SetAuditWriter(auditW)
-		cmdExec := &executor.DirectExecutor{}
+		cmdExec, berr := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
+		if berr != nil {
+			t.Fatalf("bwrap not available: %v", berr)
+		}
 		mgr.SetSessionInit(cmdExec.InitSession)
 		userdataDir := filepath.Join(dir, "users")
 		os.MkdirAll(userdataDir, 0755)
@@ -3140,10 +3118,10 @@ func TestProjectdataBashAndCode(t *testing.T) {
 		r.Use(gin.Recovery())
 		auth := middleware.AuthRequired()
 
-		sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr, false)
+		sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr)
 		r.GET("/v1/sandbox", sandboxH.GetContext)
 
-		bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec, false)
+		bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
 		r.POST("/v1/bash/exec", auth, bashH.Exec)
 
 		server := httptest.NewServer(r)

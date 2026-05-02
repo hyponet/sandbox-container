@@ -21,7 +21,11 @@ import (
 )
 
 func setupBashRouter() (*gin.Engine, *session.Manager) {
-	return setupBashRouterWithExecutor(&executor.DirectExecutor{})
+	bwrapExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
+	if err != nil {
+		panic("bwrap not available: " + err.Error())
+	}
+	return setupBashRouterWithExecutor(bwrapExec)
 }
 
 func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
@@ -34,7 +38,7 @@ func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
 
 	r := gin.New()
-	bashH := NewBashHandler(mgr, udMgr, pdMgr, cmdExec, false)
+	bashH := NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
 	bash := r.Group("/v1/bash")
 	{
 		bash.POST("/exec", bashH.Exec)
@@ -390,7 +394,7 @@ func TestBashListSessions(t *testing.T) {
 }
 
 func TestBashExec_AgentWorkspace(t *testing.T) {
-	r, mgr := setupBashRouter()
+	r, _ := setupBashRouter()
 
 	body := `{"agent_id": "a1", "session_id": "bash_dsi", "command": "pwd", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -407,10 +411,9 @@ func TestBashExec_AgentWorkspace(t *testing.T) {
 	data := resp["data"].(map[string]interface{})
 	stdout := data["stdout"].(string)
 
-	// The working directory should be the workspace root, not a sessions path
-	wsRoot := mgr.WorkspaceRoot("a1")
-	if !strings.Contains(stdout, wsRoot) {
-		t.Errorf("expected stdout to contain workspace path %q, got %q", wsRoot, stdout)
+	// The working directory should be the sandbox home, not a sessions path
+	if !strings.Contains(stdout, "/home") {
+		t.Errorf("expected stdout to contain /home (sandbox), got %q", stdout)
 	}
 	if strings.Contains(stdout, "sessions") {
 		t.Errorf("stdout should NOT contain 'sessions' when enable_agent_workspace is true, got %q", stdout)

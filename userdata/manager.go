@@ -42,7 +42,7 @@ func (m *Manager) SetRoot(path string) {
 
 // SetInitFn sets the callback invoked after userdata directories are set up.
 // The callback receives (sessionDir, userdataDir) and is responsible for
-// executor-specific setup (e.g. creating symlinks in direct mode).
+// executor-specific setup (e.g. bind mount preparation).
 func (m *Manager) SetInitFn(fn func(sessionDir, userdataDir string) error) {
 	m.initFn = fn
 }

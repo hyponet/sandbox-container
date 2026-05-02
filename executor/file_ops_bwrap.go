@@ -79,7 +79,7 @@ func (b *BwrapFileOperator) ReadFile(ctx context.Context, opts FileOpOptions, pa
 func (b *BwrapFileOperator) WriteFile(ctx context.Context, opts FileOpOptions, path string, data []byte, perm os.FileMode) error {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	stdin := strings.NewReader(encoded)
-	script := fmt.Sprintf("base64 -d > %s && chmod %o %s", shellQuote(path), perm, shellQuote(path))
+	script := fmt.Sprintf("mkdir -p %s && base64 -d > %s && chmod %o %s", shellQuote(filepath.Dir(path)), shellQuote(path), perm, shellQuote(path))
 	_, stderr, err := b.run(ctx, opts, stdin, "bash", "-c", script)
 	return mapError(stderr, err)
 }
@@ -256,7 +256,7 @@ func (b *BwrapFileOperator) CreateFile(ctx context.Context, opts FileOpOptions, 
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
 	stdin := strings.NewReader(encoded)
-	script := fmt.Sprintf("base64 -d > %s", shellQuote(path))
+	script := fmt.Sprintf("mkdir -p %s && base64 -d > %s", shellQuote(filepath.Dir(path)), shellQuote(path))
 	_, stderr, errRun := b.run(ctx, opts, stdin, "bash", "-c", script)
 	if errRun != nil {
 		return 0, mapError(stderr, errRun)

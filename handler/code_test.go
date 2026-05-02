@@ -20,7 +20,11 @@ import (
 )
 
 func setupCodeRouter() (*gin.Engine, *session.Manager) {
-	return setupCodeRouterWithExecutor(&executor.DirectExecutor{})
+	bwrapExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
+	if err != nil {
+		panic("bwrap not available: " + err.Error())
+	}
+	return setupCodeRouterWithExecutor(bwrapExec)
 }
 
 func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
@@ -33,7 +37,7 @@ func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
 
 	r := gin.New()
-	codeH := NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, false)
+	codeH := NewCodeHandler(mgr, udMgr, pdMgr, cmdExec)
 	r.POST("/v1/code/execute", codeH.Execute)
 	r.GET("/v1/code/info", codeH.Info)
 
@@ -202,9 +206,9 @@ func TestCodeExecuteMissingLanguage(t *testing.T) {
 }
 
 func TestCodeExecute_AgentWorkspace(t *testing.T) {
-	r, mgr := setupCodeRouter()
+	r, _ := setupCodeRouter()
 
-	// Execute with enable_agent_workspace — working dir should be workspace root
+	// Execute with enable_agent_workspace — working dir should be /home (sandbox root)
 	body := `{"agent_id": "a1", "session_id": "code_ws", "language": "python", "code": "import os; print(os.getcwd())", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -220,9 +224,9 @@ func TestCodeExecute_AgentWorkspace(t *testing.T) {
 	data := resp["data"].(map[string]interface{})
 	stdout, _ := data["stdout"].(string)
 
-	wsRoot := mgr.WorkspaceRoot("a1")
-	if !strings.Contains(stdout, filepath.Base(wsRoot)) {
-		t.Errorf("expected stdout to reference workspace dir, got %q", stdout)
+	// In bwrap, workspace is mounted at /home
+	if !strings.Contains(stdout, "/home") {
+		t.Errorf("expected stdout to contain /home (sandbox), got %q", stdout)
 	}
 }
 

@@ -220,11 +220,7 @@ func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]st
 }
 
 // hostToSandboxPath translates a host path to the sandbox-internal path.
-// In direct mode it returns the path unchanged.
-func hostToSandboxPath(isBwrap bool, mapping sandboxPathMapping, hostPath string) string {
-	if !isBwrap {
-		return hostPath
-	}
+func hostToSandboxPath(mapping sandboxPathMapping, hostPath string) string {
 	cleanPath := filepath.Clean(hostPath)
 	cleanRoot := filepath.Clean(mapping.HostRoot)
 	cleanSkills := filepath.Clean(mapping.SkillsRoot)
@@ -270,29 +266,15 @@ func hostToSandboxPath(isBwrap bool, mapping sandboxPathMapping, hostPath string
 	return hostPath
 }
 
-func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
-	if isBwrap {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxHome})
-		// Agent skills are always read-only; user/project skills are writable via their own mounts.
-		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
-		if roots.UserdataRoot != "" {
-			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
-		}
-		if roots.ProjectdataRoot != "" {
-			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: SandboxProjectdataDir})
-		}
-		return rwBinds, roBinds
-	}
-
-	// Direct mode: identity mapping (Src == Dest).
-	// Agent skills are always read-only.
-	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: roots.HostRoot})
-	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
+func commandExecBinds(roots resolvedRoots, agentWorkspace bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
+	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxHome})
+	// Agent skills are always read-only; user/project skills are writable via their own mounts.
+	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
 	if roots.UserdataRoot != "" {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: roots.UserdataRoot})
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
 	}
 	if roots.ProjectdataRoot != "" {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: roots.ProjectdataRoot})
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: SandboxProjectdataDir})
 	}
 	return rwBinds, roBinds
 }

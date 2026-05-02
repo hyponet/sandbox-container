@@ -20,15 +20,14 @@ import (
 )
 
 type CodeHandler struct {
-	mgr     *session.Manager
-	udMgr   *userdata.Manager
-	pdMgr   *projectdata.Manager
-	exec    executor.CommandExecutor
-	isBwrap bool
+	mgr   *session.Manager
+	udMgr *userdata.Manager
+	pdMgr *projectdata.Manager
+	exec  executor.CommandExecutor
 }
 
-func NewCodeHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor, isBwrap bool) *CodeHandler {
-	return &CodeHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr, exec: exec, isBwrap: isBwrap}
+func NewCodeHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor) *CodeHandler {
+	return &CodeHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr, exec: exec}
 }
 
 func (h *CodeHandler) Execute(c *gin.Context) {
@@ -56,7 +55,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	}
 
 	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
+	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	timeout := 30
 	if req.Timeout != nil && *req.Timeout > 0 {
@@ -81,7 +80,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace, h.isBwrap)
+	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,

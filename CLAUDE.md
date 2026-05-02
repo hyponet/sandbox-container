@@ -39,39 +39,38 @@ main.go → gin router with middleware chain
   ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager + executor.CommandExecutor)
   ├── executor/    - Command execution & file operation abstraction
   │     ├── executor.go         - CommandExecutor interface + BindMount type (Src/Dest)
-  │     ├── direct.go           - DirectExecutor (no sandbox, creates skills symlink in InitSession)
   │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox for commands, InitSession no-op)
-  │     ├── file_ops.go         - FileOperator interface + factory (auto-selects Direct or Bwrap)
-  │     ├── file_ops_direct.go  - DirectFileOperator (os.* calls)
+  │     ├── file_ops.go         - FileOperator interface + NewFileOperator constructor
   │     └── file_ops_bwrap.go   - BwrapFileOperator (file ops inside bwrap sandbox)
   ├── model/       - Shared request/response structs
   └── client/      - Go SDK for consuming the API (httptest-based integration tests)
 ```
 
-**Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → Executor (Direct or Bwrap) → Response
+**Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → BwrapExecutor → Response
 
-**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. In direct mode, skills are accessed via symlink `sessions/<sid>/skills → ../../skills` created by `DirectExecutor.InitSession`. In bwrap mode, no symlinks are created; skills are accessed via read-only bind mount at `/home/skills`.
+**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. Skills are accessed via read-only bind mount at `/home/skills`.
 
-**Userdata:** When a request includes `user_id`, the user's persistent directory `/data/users/<user_id>/` is mounted to `/home/userdata` (read-write). This enables data sharing across agents for the same user. In direct mode, a `userdata` symlink is created in the session/workspace directory. In bwrap mode, the directory is bind-mounted at runtime. Userdata paths (`/userdata/...`) are resolved and validated separately by `ResolveUserdataPath`.
+**Userdata:** When a request includes `user_id`, the user's persistent directory `/data/users/<user_id>/` is bind-mounted to `/home/userdata` (read-write). This enables data sharing across agents for the same user.
 
-**Bwrap isolation:** By default, both command execution and file operations run inside bubblewrap sandboxes. Set `SANDBOX_ISOLATION_MODE=none` to opt into direct execution. `NewFileOperator()` auto-detects the executor type and returns `BwrapFileOperator` (sandboxed) or `DirectFileOperator` accordingly. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks.
+**Projectdata:** When a request includes `project_id`, the project's persistent directory `/data/projects/<project_id>/` is bind-mounted to `/home/projectdata` (read-write). This enables data sharing across agents for the same project.
+
+**Bwrap isolation:** All command execution and file operations run inside bubblewrap sandboxes. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks. File Handler maps request paths directly to sandbox paths via `resolveSandboxPath` (e.g., `/file.txt` → `/home/file.txt`, `/skills/...` → `/home/skills/...`).
 
 **Bwrap security features:**
 - Namespace isolation: PID (`--unshare-pid`), UTS (`--unshare-uts`), IPC (`--unshare-ipc`), optional network (`--unshare-net`)
-- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only); userdata dirs mapped to `/home/userdata` (read-write when `user_id` provided)
-- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory, `/home/skills` for skills access, and `/home/userdata` for user data access
+- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only); userdata dirs mapped to `/home/userdata` (read-write when `user_id` provided); projectdata dirs mapped to `/home/projectdata` (read-write when `project_id` provided)
+- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory, `/home/skills` for skills access, `/home/userdata` for user data, and `/home/projectdata` for project data
 - Process: `--die-with-parent`, `--new-session`
 - Runtime path resolution: auto-mounts `/usr/local`, `/opt`, `/run/current-system`, `/nix/store` as needed
 
-**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `DirectExecutor.InitSession` creates a `skills` symlink with a relative path. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts. Similarly, `InitUserdata(sessionDir, userdataDir)` is called when a `user_id` is present: `DirectExecutor.InitUserdata` creates a `userdata` symlink, while `BwrapExecutor.InitUserdata` is a no-op (handled via bind mounts at runtime).
+**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts. Similarly, `InitUserdata(sessionDir, userdataDir)` is called when a `user_id` is present: `BwrapExecutor.InitUserdata` is a no-op (handled via bind mounts at runtime).
 
 **Async bash:** Commands run in async mode write output to thread-safe buffers; output is read incrementally via offset.
 
 ## Environment Variables
 
 - `SANDBOX_API_KEY` - Comma-separated API keys for Bearer token auth. If unset, auth is disabled.
-- `SANDBOX_ISOLATION_MODE` - Execution isolation mode: `bwrap` (default, bubblewrap sandbox) or `none` (direct execution). In bwrap mode, both command execution and file operations run inside bubblewrap sandboxes with namespace isolation and filesystem restrictions.
-- `SANDBOX_BWRAP_NETWORK` - Network policy in bwrap mode: `host` (default, allows network access) or `isolated` (unshares network namespace).
+- `SANDBOX_BWRAP_NETWORK` - Network policy: `host` (default, allows network access) or `isolated` (unshares network namespace).
 - `SANDBOX_BWRAP_EXTRA_RO_BINDS` - Comma-separated list of additional read-only bind mount paths in bwrap mode.
 - `SANDBOX_BWRAP_PROC_BIND` - When set (any value), uses `--bind /proc /proc` instead of `--proc /proc` in bwrap mode. Use this on systems where new procfs mounts are restricted (e.g., "Operation not permitted" errors with `--proc`).
 - `SANDBOX_SSRF_PROTECTION` - Enable SSRF protection for skill import URLs (default: enabled).

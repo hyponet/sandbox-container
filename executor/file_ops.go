@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"io"
-	"log"
 	"os"
 	"time"
 )
@@ -42,13 +41,7 @@ type FileOperator interface {
 	ServeFile(ctx context.Context, opts FileOpOptions, path string) (localPath string, cleanup func(), err error)
 }
 
-// NewFileOperator returns a BwrapFileOperator when the executor is bwrap-based,
-// otherwise a DirectFileOperator.
-func NewFileOperator(cmdExec CommandExecutor) FileOperator {
-	if bwrap, ok := cmdExec.(*BwrapExecutor); ok {
-		log.Println("File operator: bwrap")
-		return &BwrapFileOperator{exec: bwrap}
-	}
-	log.Println("File operator: direct")
-	return &DirectFileOperator{}
+// NewFileOperator returns a BwrapFileOperator for the given executor.
+func NewFileOperator(exec *BwrapExecutor) *BwrapFileOperator {
+	return &BwrapFileOperator{exec: exec}
 }

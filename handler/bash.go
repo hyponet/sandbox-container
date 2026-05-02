@@ -27,7 +27,6 @@ type BashHandler struct {
 	udMgr    *userdata.Manager
 	pdMgr    *projectdata.Manager
 	exec     executor.CommandExecutor
-	isBwrap  bool
 	sessions map[string]*bashSession // key: "sandboxSID:bashSID"
 	mu       sync.RWMutex
 }
@@ -77,13 +76,12 @@ func (b *threadSafeBuffer) Len() int {
 	return b.buf.Len()
 }
 
-func NewBashHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor, isBwrap bool) *BashHandler {
+func NewBashHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, exec executor.CommandExecutor) *BashHandler {
 	return &BashHandler{
 		mgr:      mgr,
 		udMgr:    udMgr,
 		pdMgr:    pdMgr,
 		exec:     exec,
-		isBwrap:  isBwrap,
 		sessions: make(map[string]*bashSession),
 	}
 }
@@ -139,7 +137,7 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 	}
 
 	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
+	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	bs := &bashSession{
 		sandboxSID: req.SessionID,
@@ -192,7 +190,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 	}
 
 	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(h.isBwrap, mapping, workingDir)
+	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	cmdID := uuid.New().String()[:8]
 	timeout := 30.0
@@ -207,7 +205,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Build command
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
-	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace, h.isBwrap)
+	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,

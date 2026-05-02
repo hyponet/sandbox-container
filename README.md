@@ -37,7 +37,7 @@ The server listens on port `9090`. Health check endpoint: `GET /v1/sandbox`.
 go run .
 ```
 
-By default the service starts in `bwrap` mode and requires a working `bwrap` binary on the host. Set `SANDBOX_ISOLATION_MODE=none` to opt out of bubblewrap isolation for local debugging or unsupported environments.
+By default the service requires a working `bwrap` binary on the host.
 
 ## API Overview
 
@@ -140,7 +140,6 @@ POST /v1/bash/exec
 | `env` | map | No | Environment variables for the runtime process |
 | `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
 | `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home/userdata` (default: empty) |
-| `project_id` | string | No | Project identifier for projectdata mount; mounts `/data/projects/<project_id>/` to `/home/projectdata` when authorized (default: empty) |
 | `project_id` | string | No | Project identifier for projectdata mount; mounts `/data/projects/<project_id>/` to `/home/projectdata` when authorized (default: empty) |
 
 ### File Operations
@@ -364,8 +363,8 @@ c.SkillAgentCacheDelete("agent-1", "my-skill")
 
 // Filesystem info
 fsInfo, _ := c.GetFsInfo("agent-1", "session-1")
-// fsInfo.WorkDir = "/home" (bwrap) or session root (direct)
-// fsInfo.Directories["skills"] = "/home/skills" (bwrap) or skills root (direct)
+// fsInfo.WorkDir = "/home"
+// fsInfo.Directories["skills"] = "/home/skills"
 
 // Filesystem info with userdata
 fsInfo, _ := c.GetFsInfo("agent-1", "session-1", client.WithFsInfoUserID("user-123"))
@@ -419,14 +418,8 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
       skills/                     # Agent-level skill cache (copied from global)
         <skill-id>/
       workspace/                  # Persistent workspace (used when disable_session_isolation=true)
-        skills -> ../skills       # Symlink to agent's skills cache (direct mode only)
-        userdata -> ../../users/<user_id>  # Symlink to userdata (direct mode only, when user_id provided)
-        projectdata -> ../../projects/<project_id>  # Symlink to projectdata (direct mode only, when project_id provided)
       sessions/
         <session_id>/             # Session working directory
-          skills -> ../../skills  # Symlink to agent's skills cache (direct mode only)
-          userdata -> ../../../users/<user_id>  # Symlink to userdata (direct mode only, when user_id provided)
-          projectdata -> ../../../projects/<project_id>  # Symlink to projectdata (direct mode only, when project_id provided)
 ```
 
 - Default TTL: 24 hours
@@ -435,7 +428,7 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
 
 ## Bwrap Isolation
 
-By default, all command execution and file operations run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes. This provides OS-level isolation on top of the session directory isolation. Set `SANDBOX_ISOLATION_MODE=none` to disable bubblewrap and use direct execution instead.
+All command execution and file operations run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes. This provides OS-level isolation on top of the session directory isolation.
 
 ### Path Remapping
 
@@ -448,7 +441,7 @@ In bwrap mode, the host filesystem paths are remapped inside the sandbox to hide
 | User persistent data (`/data/users/<user_id>/`) | `/home/userdata` | Read-write (only when `user_id` provided) |
 | Project persistent data (`/data/projects/<project_id>/`) | `/home/projectdata` | Read-write (only when authorized `project_id` provided) |
 
-This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. When `user_id` is provided, user data is accessible at `/home/userdata`. When an authorized `project_id` is provided, project data is accessible at `/home/projectdata`. No symlinks are created in bwrap mode — access is provided entirely through bind mounts.
+This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. When `user_id` is provided, user data is accessible at `/home/userdata`. When an authorized `project_id` is provided, project data is accessible at `/home/projectdata`. Access is provided entirely through bind mounts.
 
 ### Security Features
 
@@ -463,7 +456,6 @@ This means code and commands inside the sandbox see `/home` as their working dir
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SANDBOX_ISOLATION_MODE` | Isolation mode: `bwrap` (default) or `none` to disable bubblewrap | `bwrap` |
 | `SANDBOX_BWRAP_NETWORK` | `host` (allow network) or `isolated` (no network) | `host` |
 | `SANDBOX_BWRAP_EXTRA_RO_BINDS` | Comma-separated additional read-only bind mount paths | — |
 | `SANDBOX_BWRAP_PROC_BIND` | Set any value to use `--bind /proc /proc` instead of `--proc /proc` (for restricted systems) | — |
@@ -473,7 +465,6 @@ This means code and commands inside the sandbox see `/home` as their working dir
 ```bash
 docker run -d \
   -p 9090:9090 \
-  -e SANDBOX_ISOLATION_MODE=bwrap \
   -e SANDBOX_BWRAP_NETWORK=isolated \
   -v sandbox-data:/data/agents \
   -v sandbox-skills:/data/skills \
@@ -501,7 +492,7 @@ Files in the workspace persist across sessions and are **not** subject to TTL-ba
 
 - When `disable_session_isolation` is `false` (default), paths resolve under the session directory as usual.
 - When `disable_session_isolation` is `true`, non-skills paths resolve under `/data/agents/<agent_id>/workspace/`. Skills paths (`/skills/...`) continue to resolve to the agent's skills cache directory.
-- In direct mode, the workspace directory is created on first access with a `skills` symlink pointing to the agent's skills cache. In bwrap mode, skills are exposed inside the sandbox at `/home/skills` via bind mount instead.
+- Skills are exposed inside the sandbox at `/home/skills` via bind mount.
 
 ### Supported Endpoints
 
@@ -546,8 +537,7 @@ Userdata provides a per-user persistent directory that is shared across all agen
 
 ### How It Works
 
-- **Bwrap mode:** The userdata directory is bind-mounted at `/home/userdata` at runtime. No symlinks are needed.
-- **Direct mode:** A `userdata` symlink is created in the session/workspace directory, pointing to `/data/users/<user_id>/` via a relative path.
+- The userdata directory is bind-mounted at `/home/userdata` at runtime.
 - File API paths starting with `/userdata/...` resolve to the user's persistent directory.
 
 ### Supported Endpoints

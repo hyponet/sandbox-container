@@ -20,52 +20,26 @@ import (
 )
 
 const (
-	isolationModeNone    = "none"
-	isolationModeBwrap   = "bwrap"
 	bwrapNetworkHost     = "host"
 	bwrapNetworkIsolated = "isolated"
 )
 
-func newCommandExecutor() (executor.CommandExecutor, bool) {
-	mode, err := parseIsolationMode(os.Getenv("SANDBOX_ISOLATION_MODE"))
+func newCommandExecutor() *executor.BwrapExecutor {
+	networkMode, err := parseBwrapNetworkMode(os.Getenv("SANDBOX_BWRAP_NETWORK"))
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	switch mode {
-	case isolationModeBwrap:
-		networkMode, err := parseBwrapNetworkMode(os.Getenv("SANDBOX_BWRAP_NETWORK"))
-		if err != nil {
-			log.Fatal(err)
-		}
-		cfg := executor.BwrapConfig{
-			NetworkMode:      networkMode,
-			ExtraROBinds:     splitCommaEnv("SANDBOX_BWRAP_EXTRA_RO_BINDS"),
-			ProcBindFallback: os.Getenv("SANDBOX_BWRAP_PROC_BIND") != "",
-		}
-		bwrapExec, err := executor.NewBwrapExecutor(cfg)
-		if err != nil {
-			log.Fatalf("Failed to initialize bwrap executor: %v", err)
-		}
-		log.Println("Isolation mode: bwrap")
-		return bwrapExec, true
-	default:
-		log.Println("Isolation mode: none (direct execution)")
-		return &executor.DirectExecutor{}, false
+	cfg := executor.BwrapConfig{
+		NetworkMode:      networkMode,
+		ExtraROBinds:     splitCommaEnv("SANDBOX_BWRAP_EXTRA_RO_BINDS"),
+		ProcBindFallback: os.Getenv("SANDBOX_BWRAP_PROC_BIND") != "",
 	}
-}
-
-func parseIsolationMode(raw string) (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(raw))
-	if mode == "" {
-		return isolationModeBwrap, nil
+	bwrapExec, err := executor.NewBwrapExecutor(cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize bwrap executor: %v", err)
 	}
-	switch mode {
-	case isolationModeNone, isolationModeBwrap:
-		return mode, nil
-	default:
-		return "", fmt.Errorf("invalid SANDBOX_ISOLATION_MODE %q: expected one of [%s, %s]", raw, isolationModeNone, isolationModeBwrap)
-	}
+	log.Println("Isolation mode: bwrap")
+	return bwrapExec
 }
 
 func parseBwrapNetworkMode(raw string) (string, error) {
@@ -103,7 +77,7 @@ func main() {
 	mgr := session.NewManager("/data/agents", 24*time.Hour)
 	mgr.SetAuditWriter(auditW)
 
-	cmdExec, isBwrap := newCommandExecutor()
+	cmdExec := newCommandExecutor()
 	mgr.SetSessionInit(cmdExec.InitSession)
 
 	udMgr := userdata.NewManager(userdata.DefaultRoot)
@@ -119,14 +93,14 @@ func main() {
 	auditMW := middleware.AuditLogger(auditW)
 
 	// Sandbox APIs (no session required, no auth for healthcheck)
-	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr, isBwrap)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr)
 	r.GET("/v1/sandbox", sandboxH.GetContext)
 	r.GET("/v1/sandbox/packages/python", sandboxH.GetPythonPackages)
 	r.GET("/v1/sandbox/packages/nodejs", sandboxH.GetNodejsPackages)
 	r.POST("/v1/sandbox/fsinfo", auth, sandboxH.FsInfo)
 
 	// Bash APIs
-	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec, isBwrap)
+	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
 	bash := r.Group("/v1/bash", auth)
 	{
 		bash.POST("/exec", auditMW, bashH.Exec)
@@ -140,7 +114,7 @@ func main() {
 
 	// File APIs
 	fileOp := executor.NewFileOperator(cmdExec)
-	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, fileOp, isBwrap)
+	fileH := handler.NewFileHandler(mgr, udMgr, pdMgr, fileOp)
 	f := r.Group("/v1/file", auth)
 	{
 		f.POST("/read", fileH.Read)
@@ -156,7 +130,7 @@ func main() {
 	}
 
 	// Code APIs
-	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec, isBwrap)
+	codeH := handler.NewCodeHandler(mgr, udMgr, pdMgr, cmdExec)
 	r.POST("/v1/code/execute", auth, auditMW, codeH.Execute)
 	r.GET("/v1/code/info", auth, codeH.Info)
 

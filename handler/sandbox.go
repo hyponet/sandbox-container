@@ -13,14 +13,13 @@ import (
 )
 
 type SandboxHandler struct {
-	mgr     *session.Manager
-	udMgr   *userdata.Manager
-	pdMgr   *projectdata.Manager
-	isBwrap bool
+	mgr   *session.Manager
+	udMgr *userdata.Manager
+	pdMgr *projectdata.Manager
 }
 
-func NewSandboxHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager, isBwrap bool) *SandboxHandler {
-	return &SandboxHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr, isBwrap: isBwrap}
+func NewSandboxHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager) *SandboxHandler {
+	return &SandboxHandler{mgr: mgr, udMgr: udMgr, pdMgr: pdMgr}
 }
 
 func (h *SandboxHandler) GetContext(c *gin.Context) {
@@ -93,37 +92,21 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 	var workDir string
 	directories := make(map[string]string)
 
-	if h.isBwrap {
-		workDir = SandboxHome
-		directories["skills"] = SandboxSkillsDir
-		if req.UserID != "" {
-			if err := h.udMgr.Touch(req.UserID); err != nil {
-				c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
-				return
-			}
-			directories["userdata"] = SandboxUserdataDir
-		}
-		if req.ProjectID != "" {
-			if err := h.pdMgr.Touch(req.ProjectID); err != nil {
-				c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
-				return
-			}
-			directories["projectdata"] = SandboxProjectdataDir
-		}
-	} else {
-		roots, err := resolveRoots(h.mgr, h.udMgr, h.pdMgr, req.AgentID, req.SessionID, req.EnableAgentWorkspace, req.UserID, req.ProjectID)
-		if err != nil {
+	workDir = SandboxHome
+	directories["skills"] = SandboxSkillsDir
+	if req.UserID != "" {
+		if err := h.udMgr.Touch(req.UserID); err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
 		}
-		workDir = roots.HostRoot
-		directories["skills"] = roots.SkillsRoot
-		if roots.UserdataRoot != "" {
-			directories["userdata"] = roots.UserdataRoot
+		directories["userdata"] = SandboxUserdataDir
+	}
+	if req.ProjectID != "" {
+		if err := h.pdMgr.Touch(req.ProjectID); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+			return
 		}
-		if roots.ProjectdataRoot != "" {
-			directories["projectdata"] = roots.ProjectdataRoot
-		}
+		directories["projectdata"] = SandboxProjectdataDir
 	}
 
 	c.JSON(http.StatusOK, model.OkResponse(model.FsInfoResponse{

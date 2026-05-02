@@ -13,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,7 +32,7 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 	mgr.SetGlobalSkillsRoot(globalSkillsDir)
 
 	r := gin.New()
-	skillH := NewSkillHandler(mgr)
+	skillH := NewSkillHandler(mgr, nil, nil)
 
 	agents := r.Group("/v1/skills/agents")
 	{
@@ -39,6 +42,57 @@ func setupSkillRouter() (*gin.Engine, *session.Manager) {
 	}
 
 	return r, mgr
+}
+
+func setupSkillRouterWithLayers() (*gin.Engine, *session.Manager, *userdata.Manager, *projectdata.Manager) {
+	gin.SetMode(gin.TestMode)
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("sandbox-skill-layers-test-%d-%d", time.Now().UnixNano(), os.Getpid()))
+	os.MkdirAll(dir, 0755)
+	globalSkillsDir := filepath.Join(dir, "global-skills")
+	os.MkdirAll(globalSkillsDir, 0755)
+
+	mgr := session.NewManager(filepath.Join(dir, "agents"), 24*time.Hour)
+	mgr.SetGlobalSkillsRoot(globalSkillsDir)
+	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
+	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
+
+	r := gin.New()
+	skillH := NewSkillHandler(mgr, udMgr, pdMgr)
+
+	agents := r.Group("/v1/skills/agents")
+	{
+		agents.POST("/:agent_id/list", skillH.AgentList)
+		agents.POST("/:agent_id/load", skillH.AgentLoad)
+		agents.DELETE("/:agent_id/cache", skillH.AgentCacheDelete)
+	}
+
+	return r, mgr, udMgr, pdMgr
+}
+
+func writeLayerSkill(t *testing.T, root, name, content string) {
+	t.Helper()
+	skillDir := filepath.Join(root, "skills", name)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write SKILLS.md: %v", err)
+	}
+}
+
+func writeGlobalSkill(t *testing.T, mgr *session.Manager, name, content string) {
+	t.Helper()
+	skillDir := mgr.GlobalSkillPath(name)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir global skill dir: %v", err)
+	}
+	now := time.Now().UnixNano()
+	if err := writeSkillMeta(skillDir, &model.SkillMetaJSON{Name: name, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("write skill meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write global SKILLS.md: %v", err)
+	}
 }
 
 // setupSkillRouterWithGlobalRoutes sets up a router with both global skills routes
@@ -58,8 +112,8 @@ func setupSkillRouterWithGlobalRoutes() (*gin.Engine, *session.Manager) {
 	mgr.SetRegistryRoot(registryDir)
 
 	r := gin.New()
-	skillH := NewSkillHandler(mgr)
-	registryH := NewRegistryHandler(mgr)
+	skillH := NewSkillHandler(mgr, nil, nil)
+	registryH := NewRegistryHandler(mgr, nil, nil)
 	registryH.SetSSRFProtection(false) // disable SSRF for tests using httptest (loopback)
 
 	// Registry routes for creating/managing skills globally
@@ -241,6 +295,91 @@ func TestAgentSkillList(t *testing.T) {
 	}
 	if strings.Contains(fm, "---") {
 		t.Error("frontmatter should not contain --- delimiters")
+	}
+}
+
+func TestAgentSkillListLoad_LayerPriorityAndFullUserProjectDiscovery(t *testing.T) {
+	r, mgr, udMgr, pdMgr := setupSkillRouterWithLayers()
+
+	writeLayerSkill(t, udMgr.Root("u1"), "shared", "---\nname: shared\n---\nuser shared")
+	writeLayerSkill(t, udMgr.Root("u1"), "user-only", "---\nname: user-only\n---\nuser only")
+	writeLayerSkill(t, pdMgr.Root("p1"), "shared", "---\nname: shared\n---\nproject shared")
+	writeLayerSkill(t, pdMgr.Root("p1"), "project-only", "---\nname: project-only\n---\nproject only")
+	writeGlobalSkill(t, mgr, "shared", "---\nname: shared\n---\nagent shared")
+	writeGlobalSkill(t, mgr, "agent-only", "---\nname: agent-only\n---\nagent only")
+
+	body := `{"skill_ids":["shared","agent-only"],"user_id":"u1","project_id":"p1"}`
+	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var listResp struct {
+		Success bool                       `json:"success"`
+		Data    model.AgentSkillListResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if got := len(listResp.Data.Skills); got != 4 {
+		t.Fatalf("expected 4 skills, got %d: %+v", got, listResp.Data.Skills)
+	}
+
+	byName := make(map[string]model.SkillSummary)
+	for _, skill := range listResp.Data.Skills {
+		byName[skill.Name] = skill
+	}
+	assertSkillSummary := func(name, source, path string, writable bool) {
+		t.Helper()
+		skill, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing skill %s in %+v", name, listResp.Data.Skills)
+		}
+		if skill.Source != source || skill.Path != path || skill.Writable != writable {
+			t.Fatalf("skill %s = source:%s path:%s writable:%v", name, skill.Source, skill.Path, skill.Writable)
+		}
+	}
+	assertSkillSummary("shared", "user", "/userdata/skills/shared", true)
+	assertSkillSummary("user-only", "user", "/userdata/skills/user-only", true)
+	assertSkillSummary("project-only", "project", "/projectdata/skills/project-only", true)
+	assertSkillSummary("agent-only", "agent", "/skills/agent-only", false)
+
+	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/load", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("load failed: %d %s", w.Code, w.Body.String())
+	}
+	var loadResp struct {
+		Success bool                       `json:"success"`
+		Data    model.AgentSkillLoadResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &loadResp); err != nil {
+		t.Fatalf("unmarshal load response: %v", err)
+	}
+	loaded := make(map[string]model.SkillContent)
+	for _, skill := range loadResp.Data.Skills {
+		loaded[skill.Name] = skill
+	}
+	if loaded["shared"].Source != "user" || loaded["shared"].Content != "user shared" {
+		t.Fatalf("expected shared to load from user layer, got %+v", loaded["shared"])
+	}
+	if loaded["user-only"].Content != "user only" || loaded["project-only"].Content != "project only" || loaded["agent-only"].Content != "agent only" {
+		t.Fatalf("unexpected loaded skills: %+v", loaded)
+	}
+}
+
+func TestAgentSkillListLoad_RejectInvalidLayerIDs(t *testing.T) {
+	r, _, _, _ := setupSkillRouterWithLayers()
+
+	for _, path := range []string{"/v1/skills/agents/a1/list", "/v1/skills/agents/a1/load"} {
+		w := doRequest(t, r, http.MethodPost, path, `{"skill_ids":["s"],"user_id":"../evil"}`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 for invalid user_id, got %d %s", path, w.Code, w.Body.String())
+		}
+
+		w = doRequest(t, r, http.MethodPost, path, `{"skill_ids":["s"],"project_id":"../evil"}`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 for invalid project_id, got %d %s", path, w.Code, w.Body.String())
+		}
 	}
 }
 

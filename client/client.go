@@ -66,16 +66,27 @@ func agentListCacheKey(agentID string, req *agentSkillRequest) string {
 	sort.Strings(ids)
 
 	var b strings.Builder
-	b.WriteString(agentID)
-	b.WriteByte('\x00')
-	b.WriteString(strings.Join(ids, "\x00"))
+	writeCacheKeyPart(&b, "agent", agentID)
+	for _, id := range ids {
+		writeCacheKeyPart(&b, "skill", id)
+	}
 	if req.Cleanup {
-		b.WriteString("\x00cleanup")
+		writeCacheKeyPart(&b, "flag", "cleanup")
 	}
 	if req.EnableAgentWorkspace {
-		b.WriteString("\x00workspace")
+		writeCacheKeyPart(&b, "flag", "workspace")
+	}
+	if req.UserID != "" {
+		writeCacheKeyPart(&b, "user", req.UserID)
+	}
+	if req.ProjectID != "" {
+		writeCacheKeyPart(&b, "project", req.ProjectID)
 	}
 	return b.String()
+}
+
+func writeCacheKeyPart(b *strings.Builder, label, value string) {
+	fmt.Fprintf(b, "%s:%d:%s;", label, len(value), value)
 }
 
 // WithAPIKey sets the API key for authentication.
@@ -177,7 +188,9 @@ func (c *Client) evictExpiredAgentListCacheLocked() {
 
 // invalidateAgentListCache removes all cached SkillAgentList entries for the given agent.
 func (c *Client) invalidateAgentListCache(agentID string) {
-	prefix := agentID + "\x00"
+	var prefixBuilder strings.Builder
+	writeCacheKeyPart(&prefixBuilder, "agent", agentID)
+	prefix := prefixBuilder.String()
 	c.agentListMu.Lock()
 	for key := range c.agentListCache {
 		if strings.HasPrefix(key, prefix) {

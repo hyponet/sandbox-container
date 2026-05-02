@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,7 +34,7 @@ func setupRegistryRouter() (*gin.Engine, *session.Manager) {
 	mgr.SetRegistryRoot(registryDir)
 
 	r := gin.New()
-	registryH := NewRegistryHandler(mgr)
+	registryH := NewRegistryHandler(mgr, nil, nil)
 	registryH.SetSSRFProtection(false)
 
 	registry := r.Group("/v1/registry")
@@ -63,7 +65,7 @@ func setupRegistryRouter() (*gin.Engine, *session.Manager) {
 	}
 
 	// Also set up agent skill routes for testing agent sync
-	skillH := NewSkillHandler(mgr)
+	skillH := NewSkillHandler(mgr, nil, nil)
 	agents := r.Group("/v1/skills/agents")
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
@@ -71,6 +73,45 @@ func setupRegistryRouter() (*gin.Engine, *session.Manager) {
 	}
 
 	return r, mgr
+}
+
+func setupRegistryRouterWithLayers() (*gin.Engine, *session.Manager, *userdata.Manager, *projectdata.Manager) {
+	gin.SetMode(gin.TestMode)
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("sandbox-registry-layers-test-%d-%d", time.Now().UnixNano(), os.Getpid()))
+	os.MkdirAll(dir, 0755)
+	globalSkillsDir := filepath.Join(dir, "global-skills")
+	os.MkdirAll(globalSkillsDir, 0755)
+	registryDir := filepath.Join(dir, "registry")
+	os.MkdirAll(registryDir, 0755)
+
+	mgr := session.NewManager(filepath.Join(dir, "agents"), 24*time.Hour)
+	mgr.SetGlobalSkillsRoot(globalSkillsDir)
+	mgr.SetRegistryRoot(registryDir)
+	udMgr := userdata.NewManager(filepath.Join(dir, "users"))
+	pdMgr := projectdata.NewManager(filepath.Join(dir, "projects"))
+
+	r := gin.New()
+	registryH := NewRegistryHandler(mgr, udMgr, pdMgr)
+	registryH.SetSSRFProtection(false)
+
+	registry := r.Group("/v1/registry")
+	{
+		registry.POST("/create", registryH.Create)
+		registry.POST("/commit", registryH.Commit)
+	}
+
+	return r, mgr, udMgr, pdMgr
+}
+
+func writeRegistryLayerSkill(t *testing.T, root, name, content string) {
+	t.Helper()
+	skillDir := filepath.Join(root, "skills", name)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir layer skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write SKILLS.md: %v", err)
+	}
 }
 
 func doRequest(t *testing.T, r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
@@ -833,6 +874,80 @@ func TestRegistryCommit_AutoCreateSkill(t *testing.T) {
 	// Verify registry entry was auto-created
 	if _, err := os.Stat(mgr.RegistrySkillPath("new-skill")); err != nil {
 		t.Fatalf("registry entry should be auto-created: %v", err)
+	}
+}
+
+func TestRegistryCommit_FromUserAndProjectSources(t *testing.T) {
+	r, mgr, udMgr, pdMgr := setupRegistryRouterWithLayers()
+
+	writeRegistryLayerSkill(t, udMgr.Root("u1"), "user-skill", "---\nname: user-skill\n---\nuser commit")
+	writeRegistryLayerSkill(t, pdMgr.Root("p1"), "project-skill", "---\nname: project-skill\n---\nproject commit")
+
+	w := doRequest(t, r, "POST", "/v1/registry/commit",
+		`{"name":"user-skill","source":"user","user_id":"u1","description":"from user"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user commit failed: %d %s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	data, _ := json.Marshal(resp.Data)
+	var userResult model.RegistryCommitResult
+	if err := json.Unmarshal(data, &userResult); err != nil {
+		t.Fatalf("unmarshal user commit result: %v", err)
+	}
+	if userResult.Version.Source != "user:u1" {
+		t.Fatalf("expected user source, got %s", userResult.Version.Source)
+	}
+	userContent, err := os.ReadFile(filepath.Join(mgr.RegistrySkillPath("user-skill"), userResult.Version.Version, "SKILLS.md"))
+	if err != nil {
+		t.Fatalf("read committed user skill: %v", err)
+	}
+	if !strings.Contains(string(userContent), "user commit") {
+		t.Fatalf("expected user skill content, got %q", string(userContent))
+	}
+
+	w = doRequest(t, r, "POST", "/v1/registry/commit",
+		`{"name":"project-skill","source":"project","project_id":"p1","description":"from project"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("project commit failed: %d %s", w.Code, w.Body.String())
+	}
+	resp = parseResponse(t, w)
+	data, _ = json.Marshal(resp.Data)
+	var projectResult model.RegistryCommitResult
+	if err := json.Unmarshal(data, &projectResult); err != nil {
+		t.Fatalf("unmarshal project commit result: %v", err)
+	}
+	if projectResult.Version.Source != "project:p1" {
+		t.Fatalf("expected project source, got %s", projectResult.Version.Source)
+	}
+	projectContent, err := os.ReadFile(filepath.Join(mgr.RegistrySkillPath("project-skill"), projectResult.Version.Version, "SKILLS.md"))
+	if err != nil {
+		t.Fatalf("read committed project skill: %v", err)
+	}
+	if !strings.Contains(string(projectContent), "project commit") {
+		t.Fatalf("expected project skill content, got %q", string(projectContent))
+	}
+}
+
+func TestRegistryCommit_RejectInvalidSourceAndIDs(t *testing.T) {
+	r, _, _, _ := setupRegistryRouterWithLayers()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "invalid source", body: `{"name":"s","source":"typo","agent_id":"a1"}`},
+		{name: "missing agent id", body: `{"name":"s","source":"agent"}`},
+		{name: "invalid user id", body: `{"name":"s","source":"user","user_id":"../evil"}`},
+		{name: "invalid project id", body: `{"name":"s","source":"project","project_id":"../evil"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := doRequest(t, r, "POST", "/v1/registry/commit", tt.body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

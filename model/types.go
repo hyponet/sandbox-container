@@ -611,12 +611,16 @@ type AgentSkillRequest struct {
 	SkillIDs             []string `json:"skill_ids" binding:"required"`
 	Cleanup              bool     `json:"cleanup"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID               string   `json:"user_id"`
+	ProjectID            string   `json:"project_id"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.
 type SkillSummary struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
+	Source      string `json:"source"`
+	Writable    bool   `json:"writable"`
 	Frontmatter string `json:"frontmatter"`
 }
 
@@ -628,6 +632,8 @@ type AgentSkillListResult struct {
 // SkillContent holds the body (post-frontmatter) of a SKILLS.md.
 type SkillContent struct {
 	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Path    string `json:"path"`
 	Content string `json:"content"`
 }
 
@@ -818,7 +824,10 @@ type RegistryActivateResult struct {
 
 type RegistryCommitRequest struct {
 	Name        string `json:"name" binding:"required"`
-	AgentID     string `json:"agent_id" binding:"required"`
+	AgentID     string `json:"agent_id"`
+	Source      string `json:"source"`
+	UserID      string `json:"user_id"`
+	ProjectID   string `json:"project_id"`
 	Description string `json:"description"`
 	Activate    bool   `json:"activate"`
 }

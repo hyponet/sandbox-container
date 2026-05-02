@@ -67,6 +67,18 @@ func TestAgentListCacheKey_NoCommaCollision(t *testing.T) {
 	}
 }
 
+func TestAgentListCacheKey_LengthPrefixedParts(t *testing.T) {
+	req1 := &agentSkillRequest{SkillIDs: []string{"x"}, UserID: "a", ProjectID: "bc"}
+	req2 := &agentSkillRequest{SkillIDs: []string{"x"}, UserID: "ab", ProjectID: "c"}
+
+	k1 := agentListCacheKey("agent", req1)
+	k2 := agentListCacheKey("agent", req2)
+
+	if k1 == k2 {
+		t.Error("user/project cache key parts should not collide")
+	}
+}
+
 // =============================================
 // Cache hit / miss / expiry (integration tests)
 // =============================================

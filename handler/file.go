@@ -54,10 +54,10 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID, userID, projectID string, a
 	if agentWorkspace {
 		if h.isBwrap {
 			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: SandboxHome})
-			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
+			opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
 		} else {
 			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: h.mgr.WorkspaceRoot(agentID)})
-			opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: h.mgr.SkillsRoot(agentID)})
+			opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: h.mgr.SkillsRoot(agentID)})
 		}
 	} else {
 		if h.isBwrap {
@@ -172,7 +172,7 @@ func (h *FileHandler) validateWritablePath(agentID, sessionID, userID, projectID
 		return err
 	}
 
-	if !agentWorkspace && pathWithinRoots(resolved, h.mgr.SkillsRoot(agentID)) {
+	if pathWithinRoots(resolved, h.mgr.SkillsRoot(agentID)) {
 		return errSkillsReadOnly
 	}
 
@@ -180,7 +180,6 @@ func (h *FileHandler) validateWritablePath(agentID, sessionID, userID, projectID
 	if agentWorkspace {
 		allowedRoots = []string{
 			filepath.Clean(h.mgr.WorkspaceRoot(agentID)),
-			filepath.Clean(h.mgr.SkillsRoot(agentID)),
 		}
 	}
 	if userID != "" {
@@ -331,7 +330,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 		return
 	}
 
-	if session.IsSkillsPath(req.File) && !req.EnableAgentWorkspace {
+	if session.IsSkillsPath(req.File) {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
@@ -410,7 +409,7 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	if session.IsSkillsPath(req.File) && !req.EnableAgentWorkspace {
+	if session.IsSkillsPath(req.File) {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}
@@ -806,7 +805,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	userID := c.PostForm("user_id")
 	projectID := c.PostForm("project_id")
 
-	if session.IsSkillsPath(targetPath) && !agentWorkspace {
+	if session.IsSkillsPath(targetPath) {
 		c.JSON(http.StatusForbidden, model.ErrResponse("skills directory is read-only"))
 		return
 	}

@@ -173,10 +173,10 @@ func main() {
 	if err := os.MkdirAll(projectdata.DefaultRoot, 0755); err != nil {
 		log.Fatalf("Failed to create projectdata directory %s: %v", projectdata.DefaultRoot, err)
 	}
-	skillH := handler.NewSkillHandler(mgr)
+	skillH := handler.NewSkillHandler(mgr, udMgr, pdMgr)
 
 	// Skill Registry APIs
-	registryH := handler.NewRegistryHandler(mgr)
+	registryH := handler.NewRegistryHandler(mgr, udMgr, pdMgr)
 	registry := r.Group("/v1/registry", auth, auditMW)
 	{
 		// Skill-level management

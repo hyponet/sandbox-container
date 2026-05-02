@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -43,15 +45,19 @@ func validateVersionID(version string) error {
 // RegistryHandler handles skill registry API endpoints.
 type RegistryHandler struct {
 	mgr            *session.Manager
+	udMgr          *userdata.Manager
+	pdMgr          *projectdata.Manager
 	mu             sync.RWMutex
 	httpClient     *http.Client
 	ssrfProtection bool
 }
 
 // NewRegistryHandler creates a new RegistryHandler.
-func NewRegistryHandler(mgr *session.Manager) *RegistryHandler {
+func NewRegistryHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager) *RegistryHandler {
 	return &RegistryHandler{
 		mgr:            mgr,
+		udMgr:          udMgr,
+		pdMgr:          pdMgr,
 		ssrfProtection: isSSRFProtectionEnabled(),
 	}
 }
@@ -1232,10 +1238,47 @@ func (h *RegistryHandler) Commit(c *gin.Context) {
 		return
 	}
 
-	// Locate source from agent skills directory
-	sourceDir := filepath.Join(h.mgr.SkillsRoot(req.AgentID), req.Name)
+	// Resolve source directory based on source type.
+	var sourceDir string
+	sourceLabel := "agent:" + req.AgentID
+
+	switch req.Source {
+	case "user":
+		if err := validateRequiredID("user_id", req.UserID); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+			return
+		}
+		if h.udMgr == nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse("userdata manager not available"))
+			return
+		}
+		sourceDir = filepath.Join(h.udMgr.Root(req.UserID), "skills", req.Name)
+		sourceLabel = "user:" + req.UserID
+	case "project":
+		if err := validateRequiredID("project_id", req.ProjectID); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+			return
+		}
+		if h.pdMgr == nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse("projectdata manager not available"))
+			return
+		}
+		sourceDir = filepath.Join(h.pdMgr.Root(req.ProjectID), "skills", req.Name)
+		sourceLabel = "project:" + req.ProjectID
+	case "agent", "":
+		if err := validateRequiredID("agent_id", req.AgentID); err != nil {
+			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+			return
+		}
+		sourceDir = filepath.Join(h.mgr.SkillsRoot(req.AgentID), req.Name)
+		sourceLabel = "agent:" + req.AgentID
+	default:
+		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid source: "+req.Source))
+		return
+	}
+
 	if _, err := os.Stat(sourceDir); err != nil {
-		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found in agent workspace: "+req.Name))
+		c.JSON(http.StatusNotFound, model.ErrResponse("skill not found: "+req.Name))
 		return
 	}
 
@@ -1300,7 +1343,7 @@ func (h *RegistryHandler) Commit(c *gin.Context) {
 		Version:     version,
 		Description: req.Description,
 		CreatedAt:   now,
-		Source:      "agent:" + req.AgentID,
+		Source:      sourceLabel,
 	}
 
 	meta.Versions = append(meta.Versions, versionEntry)

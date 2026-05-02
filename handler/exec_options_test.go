@@ -69,7 +69,7 @@ func TestBashExecBindModes(t *testing.T) {
 			wantWorkspaceWritable: false,
 		},
 		{
-			name:                  "workspace mode makes skills writable",
+			name:                  "workspace mode keeps skills read-only",
 			body:                  `{"agent_id":"a1","session_id":"bash-workspace","command":"true","enable_agent_workspace":true}`,
 			sessionID:             "bash-workspace",
 			wantWorkspaceWritable: true,
@@ -95,11 +95,12 @@ func TestBashExecBindModes(t *testing.T) {
 				if !containsExecPath(cmdExec.opts.RWBinds, mgr.WorkspaceRoot("a1")) {
 					t.Fatalf("expected workspace root to be writable, got %v", cmdExec.opts.RWBinds)
 				}
-				if !containsExecPath(cmdExec.opts.RWBinds, skillsRoot) {
-					t.Fatalf("expected skills root to be writable in workspace mode, got %v", cmdExec.opts.RWBinds)
+				// Skills are always read-only, even in workspace mode
+				if containsExecPath(cmdExec.opts.RWBinds, skillsRoot) {
+					t.Fatalf("did not expect skills root to be writable in workspace mode, got %v", cmdExec.opts.RWBinds)
 				}
-				if containsExecPath(cmdExec.opts.ROBinds, skillsRoot) {
-					t.Fatalf("did not expect skills root to remain read-only in workspace mode, got %v", cmdExec.opts.ROBinds)
+				if !containsExecPath(cmdExec.opts.ROBinds, skillsRoot) {
+					t.Fatalf("expected skills root to be read-only in workspace mode, got %v", cmdExec.opts.ROBinds)
 				}
 				return
 			}
@@ -131,7 +132,7 @@ func TestCodeExecuteBindModes(t *testing.T) {
 			wantWorkspaceWritable: false,
 		},
 		{
-			name:                  "workspace mode makes skills writable",
+			name:                  "workspace mode keeps skills read-only",
 			body:                  `{"agent_id":"a1","session_id":"code-workspace","language":"python","code":"print(1)","enable_agent_workspace":true}`,
 			sessionID:             "code-workspace",
 			wantWorkspaceWritable: true,
@@ -157,11 +158,12 @@ func TestCodeExecuteBindModes(t *testing.T) {
 				if !containsExecPath(cmdExec.opts.RWBinds, mgr.WorkspaceRoot("a1")) {
 					t.Fatalf("expected workspace root to be writable, got %v", cmdExec.opts.RWBinds)
 				}
-				if !containsExecPath(cmdExec.opts.RWBinds, skillsRoot) {
-					t.Fatalf("expected skills root to be writable in workspace mode, got %v", cmdExec.opts.RWBinds)
+				// Skills are always read-only, even in workspace mode
+				if containsExecPath(cmdExec.opts.RWBinds, skillsRoot) {
+					t.Fatalf("did not expect skills root to be writable in workspace mode, got %v", cmdExec.opts.RWBinds)
 				}
-				if containsExecPath(cmdExec.opts.ROBinds, skillsRoot) {
-					t.Fatalf("did not expect skills root to remain read-only in workspace mode, got %v", cmdExec.opts.ROBinds)
+				if !containsExecPath(cmdExec.opts.ROBinds, skillsRoot) {
+					t.Fatalf("expected skills root to be read-only in workspace mode, got %v", cmdExec.opts.ROBinds)
 				}
 				return
 			}

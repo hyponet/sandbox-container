@@ -19,9 +19,11 @@ type SkillUploadEntry struct {
 type AgentSkillOption func(*agentSkillRequest)
 
 type agentSkillRequest struct {
-	SkillIDs            []string `json:"skill_ids"`
-	Cleanup             bool     `json:"cleanup"`
-	EnableAgentWorkspace bool    `json:"enable_agent_workspace"`
+	SkillIDs             []string `json:"skill_ids"`
+	Cleanup              bool     `json:"cleanup"`
+	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
+	UserID               string   `json:"user_id,omitempty"`
+	ProjectID            string   `json:"project_id,omitempty"`
 }
 
 // WithCleanup enables cleanup of skills not in the requested list.
@@ -32,6 +34,16 @@ func WithCleanup() AgentSkillOption {
 // WithAgentSkillWorkspace enables agent workspace mode for agent skill operations.
 func WithAgentSkillWorkspace() AgentSkillOption {
 	return func(r *agentSkillRequest) { r.EnableAgentWorkspace = true }
+}
+
+// WithUserID sets the user ID for multi-layer skill resolution.
+func WithUserID(userID string) AgentSkillOption {
+	return func(r *agentSkillRequest) { r.UserID = userID }
+}
+
+// WithProjectID sets the project ID for multi-layer skill resolution.
+func WithProjectID(projectID string) AgentSkillOption {
+	return func(r *agentSkillRequest) { r.ProjectID = projectID }
 }
 
 // SkillAgentList syncs skills to agent cache and returns frontmatter summaries.

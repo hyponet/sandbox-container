@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/hyponet/sandbox-container/model"
+	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
+	"github.com/hyponet/sandbox-container/userdata"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,15 +40,19 @@ var defaultHTTPClient = &http.Client{
 // SkillHandler handles agent skill API endpoints.
 type SkillHandler struct {
 	mgr            *session.Manager
+	udMgr          *userdata.Manager
+	pdMgr          *projectdata.Manager
 	mu             sync.RWMutex
 	httpClient     *http.Client
 	ssrfProtection bool
 }
 
 // NewSkillHandler creates a new SkillHandler with SSRF protection from env.
-func NewSkillHandler(mgr *session.Manager) *SkillHandler {
+func NewSkillHandler(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectdata.Manager) *SkillHandler {
 	return &SkillHandler{
 		mgr:            mgr,
+		udMgr:          udMgr,
+		pdMgr:          pdMgr,
 		ssrfProtection: isSSRFProtectionEnabled(),
 	}
 }
@@ -392,6 +398,40 @@ func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 	return copyDir(globalDir, agentDir)
 }
 
+// resolvedSkill holds the result of multi-layer skill resolution.
+type resolvedSkill struct {
+	HostDir     string // absolute host path to skill directory
+	SandboxPath string // sandbox-visible path (e.g. "/userdata/skills/X")
+	Source      string // "user", "project", or "agent"
+	Writable    bool
+}
+
+// scanLayerSkills scans a directory for all valid skills (subdirectories containing SKILLS.md).
+func scanLayerSkills(dir, sandboxPrefix, source string, writable bool) []resolvedSkill {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var results []resolvedSkill
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillID := entry.Name()
+		skillDir := filepath.Join(dir, skillID)
+		if _, err := os.Stat(filepath.Join(skillDir, "SKILLS.md")); err != nil {
+			continue
+		}
+		results = append(results, resolvedSkill{
+			HostDir:     skillDir,
+			SandboxPath: sandboxPrefix + "/" + skillID,
+			Source:      source,
+			Writable:    writable,
+		})
+	}
+	return results
+}
+
 // syncSkillToAgent validates a skill ID, checks the global store, and syncs to agent cache
 // if needed. Returns the agent-local skill directory path.
 // When agentWorkspace is true, skips version checking and uses the local copy as-is.
@@ -462,6 +502,9 @@ func (h *SkillHandler) cleanupAgentSkillCache(agentID string, requestedIDs []str
 }
 
 // AgentList syncs skills to agent cache and returns frontmatter summaries.
+// Skills are resolved across three layers with priority: user > project > agent.
+// User and project skills are discovered by scanning directories (independent of skill_ids).
+// Agent skills are synced from the global store based on skill_ids (console-configured).
 func (h *SkillHandler) AgentList(c *gin.Context) {
 	agentID := c.Param("agent_id")
 
@@ -470,10 +513,58 @@ func (h *SkillHandler) AgentList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
+	if err := validateOptionalUserProjectIDs(req.UserID, req.ProjectID); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
 
-	skills := make([]model.SkillSummary, 0, len(req.SkillIDs))
+	seen := make(map[string]bool)
+	skills := make([]model.SkillSummary, 0)
 
+	// Phase 1: Scan user skills (independent of skill_ids)
+	if req.UserID != "" && h.udMgr != nil {
+		userSkillsDir := filepath.Join(h.udMgr.Root(req.UserID), "skills")
+		for _, rs := range scanLayerSkills(userSkillsDir, "/userdata/skills", "user", true) {
+			skillID := filepath.Base(rs.HostDir)
+			content, err := readSkillsMD(rs.HostDir, skillID)
+			if err != nil {
+				continue
+			}
+			fm, _ := splitFrontmatter(content)
+			skills = append(skills, model.SkillSummary{
+				Name: skillID, Path: rs.SandboxPath,
+				Source: rs.Source, Writable: rs.Writable, Frontmatter: fm,
+			})
+			seen[skillID] = true
+		}
+	}
+
+	// Phase 1b: Scan project skills (independent of skill_ids)
+	if req.ProjectID != "" && h.pdMgr != nil {
+		projSkillsDir := filepath.Join(h.pdMgr.Root(req.ProjectID), "skills")
+		for _, rs := range scanLayerSkills(projSkillsDir, "/projectdata/skills", "project", true) {
+			skillID := filepath.Base(rs.HostDir)
+			if seen[skillID] {
+				continue // user layer already provides this skill
+			}
+			content, err := readSkillsMD(rs.HostDir, skillID)
+			if err != nil {
+				continue
+			}
+			fm, _ := splitFrontmatter(content)
+			skills = append(skills, model.SkillSummary{
+				Name: skillID, Path: rs.SandboxPath,
+				Source: rs.Source, Writable: rs.Writable, Frontmatter: fm,
+			})
+			seen[skillID] = true
+		}
+	}
+
+	// Phase 2: Process agent skills from skill_ids (console-configured)
 	for _, skillID := range req.SkillIDs {
+		if seen[skillID] {
+			continue // higher-priority layer already provides this skill
+		}
 		agentDir, err := h.syncSkillToAgent(agentID, skillID, req.EnableAgentWorkspace)
 		if err != nil {
 			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
@@ -487,11 +578,9 @@ func (h *SkillHandler) AgentList(c *gin.Context) {
 		}
 
 		fm, _ := splitFrontmatter(content)
-
 		skills = append(skills, model.SkillSummary{
-			Name:        skillID,
-			Path:        "/skills/" + skillID,
-			Frontmatter: fm,
+			Name: skillID, Path: "/skills/" + skillID,
+			Source: "agent", Writable: false, Frontmatter: fm,
 		})
 	}
 
@@ -503,6 +592,7 @@ func (h *SkillHandler) AgentList(c *gin.Context) {
 }
 
 // AgentLoad syncs skills to agent cache and returns SKILLS.md body (post-frontmatter).
+// Skills are resolved across three layers with priority: user > project > agent.
 func (h *SkillHandler) AgentLoad(c *gin.Context) {
 	agentID := c.Param("agent_id")
 
@@ -511,10 +601,56 @@ func (h *SkillHandler) AgentLoad(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse("invalid request: "+err.Error()))
 		return
 	}
+	if err := validateOptionalUserProjectIDs(req.UserID, req.ProjectID); err != nil {
+		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
+		return
+	}
 
-	skills := make([]model.SkillContent, 0, len(req.SkillIDs))
+	seen := make(map[string]bool)
+	skills := make([]model.SkillContent, 0)
 
+	// Phase 1: Scan user skills (independent of skill_ids)
+	if req.UserID != "" && h.udMgr != nil {
+		userSkillsDir := filepath.Join(h.udMgr.Root(req.UserID), "skills")
+		for _, rs := range scanLayerSkills(userSkillsDir, "/userdata/skills", "user", true) {
+			skillID := filepath.Base(rs.HostDir)
+			content, err := readSkillsMD(rs.HostDir, skillID)
+			if err != nil {
+				continue
+			}
+			_, body := splitFrontmatter(content)
+			skills = append(skills, model.SkillContent{
+				Name: skillID, Source: rs.Source, Path: rs.SandboxPath, Content: body,
+			})
+			seen[skillID] = true
+		}
+	}
+
+	// Phase 1b: Scan project skills (independent of skill_ids)
+	if req.ProjectID != "" && h.pdMgr != nil {
+		projSkillsDir := filepath.Join(h.pdMgr.Root(req.ProjectID), "skills")
+		for _, rs := range scanLayerSkills(projSkillsDir, "/projectdata/skills", "project", true) {
+			skillID := filepath.Base(rs.HostDir)
+			if seen[skillID] {
+				continue
+			}
+			content, err := readSkillsMD(rs.HostDir, skillID)
+			if err != nil {
+				continue
+			}
+			_, body := splitFrontmatter(content)
+			skills = append(skills, model.SkillContent{
+				Name: skillID, Source: rs.Source, Path: rs.SandboxPath, Content: body,
+			})
+			seen[skillID] = true
+		}
+	}
+
+	// Phase 2: Process agent skills from skill_ids (console-configured)
 	for _, skillID := range req.SkillIDs {
+		if seen[skillID] {
+			continue
+		}
 		agentDir, err := h.syncSkillToAgent(agentID, skillID, req.EnableAgentWorkspace)
 		if err != nil {
 			log.Printf("[WARN] agent %s: skip skill %s: sync failed: %v", agentID, skillID, err)
@@ -528,10 +664,8 @@ func (h *SkillHandler) AgentLoad(c *gin.Context) {
 		}
 
 		_, body := splitFrontmatter(content)
-
 		skills = append(skills, model.SkillContent{
-			Name:    skillID,
-			Content: body,
+			Name: skillID, Source: "agent", Path: "/skills/" + skillID, Content: body,
 		})
 	}
 

@@ -340,18 +340,46 @@ func (c *Client) RegistryActivate(name, version string) (*RegistryActivateResult
 	return &result, nil
 }
 
-// RegistryCommit captures an agent's skill as a new version in the registry.
-func (c *Client) RegistryCommit(name, agentID, description string, activate bool) (*RegistryCommitResult, error) {
-	req := struct {
-		Name        string `json:"name"`
-		AgentID     string `json:"agent_id"`
-		Description string `json:"description"`
-		Activate    bool   `json:"activate"`
-	}{
+// RegistryCommitOption is a functional option for RegistryCommit.
+type RegistryCommitOption func(*registryCommitRequest)
+
+type registryCommitRequest struct {
+	Name        string `json:"name"`
+	AgentID     string `json:"agent_id"`
+	Description string `json:"description"`
+	Activate    bool   `json:"activate"`
+	Source      string `json:"source,omitempty"`
+	UserID      string `json:"user_id,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
+}
+
+// WithCommitSource sets the source layer for the commit ("user", "project", or "agent").
+func WithCommitSource(source string) RegistryCommitOption {
+	return func(r *registryCommitRequest) { r.Source = source }
+}
+
+// WithCommitUserID sets the user ID for committing from the user layer.
+func WithCommitUserID(userID string) RegistryCommitOption {
+	return func(r *registryCommitRequest) { r.UserID = userID }
+}
+
+// WithCommitProjectID sets the project ID for committing from the project layer.
+func WithCommitProjectID(projectID string) RegistryCommitOption {
+	return func(r *registryCommitRequest) { r.ProjectID = projectID }
+}
+
+// RegistryCommit captures a skill as a new version in the registry.
+// By default, commits from the agent skills directory. Use WithCommitSource("user")
+// or WithCommitSource("project") to commit from user/project layers.
+func (c *Client) RegistryCommit(name, agentID, description string, activate bool, opts ...RegistryCommitOption) (*RegistryCommitResult, error) {
+	req := registryCommitRequest{
 		Name:        name,
 		AgentID:     agentID,
 		Description: description,
 		Activate:    activate,
+	}
+	for _, o := range opts {
+		o(&req)
 	}
 
 	var result RegistryCommitResult

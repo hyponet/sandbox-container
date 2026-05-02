@@ -67,7 +67,7 @@ type ToolSpec struct {
 }
 
 type ToolCategory struct {
-	Category string         `json:"category"`
+	Category string          `json:"category"`
 	Tools    []AvailableTool `json:"tools"`
 }
 
@@ -349,6 +349,8 @@ type AgentSkillCacheDeleteResult struct {
 type SkillSummary struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
+	Source      string `json:"source"`
+	Writable    bool   `json:"writable"`
 	Frontmatter string `json:"frontmatter"`
 }
 
@@ -358,6 +360,8 @@ type AgentSkillListResult struct {
 
 type SkillContent struct {
 	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Path    string `json:"path"`
 	Content string `json:"content"`
 }
 
@@ -370,11 +374,11 @@ type AgentSkillLoadResult struct {
 // =============================================
 
 type RegistryMetaJSON struct {
-	Name          string                `json:"name"`
-	Description   string                `json:"description"`
-	CreatedAt     int64                 `json:"created_at"`
-	UpdatedAt     int64                 `json:"updated_at"`
-	ActiveVersion string                `json:"active_version"`
+	Name          string                 `json:"name"`
+	Description   string                 `json:"description"`
+	CreatedAt     int64                  `json:"created_at"`
+	UpdatedAt     int64                  `json:"updated_at"`
+	ActiveVersion string                 `json:"active_version"`
 	Versions      []RegistryVersionEntry `json:"versions"`
 }
 

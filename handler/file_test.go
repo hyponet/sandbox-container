@@ -1152,66 +1152,41 @@ func TestFileRead_AgentWorkspace(t *testing.T) {
 }
 
 func TestFileWrite_AgentWorkspace_Skills(t *testing.T) {
-	r, mgr := setupRouter()
+	r, _ := setupRouter()
 
 	// Pre-create the skills directory with a skill
-	skillsDir := mgr.SkillsRoot("a1")
+	skillsDir := filepath.Join(os.TempDir(), "sandbox-file-test-"+t.Name(), "agents", "a1", "skills")
 	os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0755)
 
-	// Write to skills path with enable_agent_workspace=true
+	// Write to skills path with enable_agent_workspace=true — skills are always RO
 	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/skills/my-skill/new-file.txt", "content": "skill data", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("write to skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
-	}
-
-	// Verify the file was created in the skills directory
-	data, err := os.ReadFile(filepath.Join(skillsDir, "my-skill", "new-file.txt"))
-	if err != nil {
-		t.Fatalf("file not found in skills dir: %v", err)
-	}
-	if string(data) != "skill data" {
-		t.Errorf("expected 'skill data', got %q", string(data))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for skills write even with agent_workspace, got %d %s", w.Code, w.Body.String())
 	}
 }
 
 func TestFileReplace_AgentWorkspace_Skills(t *testing.T) {
-	r, mgr := setupRouter()
+	r, _ := setupRouter()
 
 	// Pre-create a skill file in the skills directory
-	skillsDir := mgr.SkillsRoot("a1")
+	skillsDir := filepath.Join(os.TempDir(), "sandbox-file-test-"+t.Name(), "agents", "a1", "skills")
 	os.MkdirAll(filepath.Join(skillsDir, "replace-skill"), 0755)
 	os.WriteFile(filepath.Join(skillsDir, "replace-skill", "config.txt"), []byte("foo bar foo"), 0644)
 
-	// Replace in skills path with enable_agent_workspace=true
+	// Replace in skills path with enable_agent_workspace=true — skills are always RO
 	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("replace in skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	data := resp["data"].(map[string]interface{})
-	if int(data["replaced_count"].(float64)) != 2 {
-		t.Errorf("expected 2 replacements, got %v", data["replaced_count"])
-	}
-
-	// Verify file content on disk
-	content, err := os.ReadFile(filepath.Join(skillsDir, "replace-skill", "config.txt"))
-	if err != nil {
-		t.Fatalf("failed to read skills file: %v", err)
-	}
-	if string(content) != "baz bar baz" {
-		t.Errorf("expected 'baz bar baz', got %q", string(content))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for skills replace even with agent_workspace, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1249,10 +1224,10 @@ func TestFileUpload_AgentWorkspace(t *testing.T) {
 }
 
 func TestFileUpload_AgentWorkspace_Skills(t *testing.T) {
-	r, mgr := setupRouter()
+	r, _ := setupRouter()
 
 	// Pre-create skills directory
-	skillsDir := mgr.SkillsRoot("a1")
+	skillsDir := filepath.Join(os.TempDir(), "sandbox-file-test-"+t.Name(), "agents", "a1", "skills")
 	os.MkdirAll(filepath.Join(skillsDir, "upload-skill"), 0755)
 
 	var buf bytes.Buffer
@@ -1270,46 +1245,26 @@ func TestFileUpload_AgentWorkspace_Skills(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("upload to skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
-	}
-
-	// Verify the file was created in the skills directory
-	data, err := os.ReadFile(filepath.Join(skillsDir, "upload-skill", "uploaded.txt"))
-	if err != nil {
-		t.Fatalf("file not found in skills dir: %v", err)
-	}
-	if string(data) != "uploaded to skills" {
-		t.Errorf("expected 'uploaded to skills', got %q", string(data))
+	// Skills are always read-only regardless of agent_workspace
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for skills upload even with agent_workspace, got %d %s", w.Code, w.Body.String())
 	}
 }
 
 // TestFileWrite_AgentWorkspace_SkillsAndWorkspace verifies that enable_agent_workspace=true
-// enables both skills writing and workspace-mode path resolution in a single flag.
+// enables workspace-mode path resolution, but skills remain read-only.
 func TestFileWrite_AgentWorkspace_SkillsAndWorkspace(t *testing.T) {
 	r, mgr := setupRouter()
 
-	// Pre-create skills directory
-	skillsDir := mgr.SkillsRoot("a1")
-	os.MkdirAll(filepath.Join(skillsDir, "both-skill"), 0755)
-
-	// Write to skills path with enable_agent_workspace — should allow skills write
+	// Write to skills path with enable_agent_workspace — skills are always RO
 	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/skills/both-skill/combined.txt", "content": "both flags", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("write skills with enable_agent_workspace failed: %d %s", w.Code, w.Body.String())
-	}
-
-	data, err := os.ReadFile(filepath.Join(skillsDir, "both-skill", "combined.txt"))
-	if err != nil {
-		t.Fatalf("file not found in skills dir: %v", err)
-	}
-	if string(data) != "both flags" {
-		t.Errorf("expected 'both flags', got %q", string(data))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for skills write even with agent_workspace, got %d %s", w.Code, w.Body.String())
 	}
 
 	// Write to a non-skills path — should resolve to workspace dir, not session dir
@@ -1324,7 +1279,7 @@ func TestFileWrite_AgentWorkspace_SkillsAndWorkspace(t *testing.T) {
 	}
 
 	wsRoot := mgr.WorkspaceRoot("a1")
-	data, err = os.ReadFile(filepath.Join(wsRoot, "workspace-both.txt"))
+	data, err := os.ReadFile(filepath.Join(wsRoot, "workspace-both.txt"))
 	if err != nil {
 		t.Fatalf("file not found in workspace dir: %v", err)
 	}
@@ -1422,13 +1377,11 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fileOpOpts: %v", err)
 	}
-	if len(workspaceOpts.RWBinds) != 2 {
+	if len(workspaceOpts.RWBinds) != 1 || workspaceOpts.RWBinds[0].Src != mgr.WorkspaceRoot("a1") {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}
-	if workspaceOpts.RWBinds[0].Src != mgr.WorkspaceRoot("a1") || workspaceOpts.RWBinds[1].Src != mgr.SkillsRoot("a1") {
-		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
-	}
-	if len(workspaceOpts.ROBinds) != 0 {
+	// Skills are always read-only, even in workspace mode
+	if len(workspaceOpts.ROBinds) != 1 || workspaceOpts.ROBinds[0].Src != mgr.SkillsRoot("a1") {
 		t.Fatalf("workspace ROBinds = %v", workspaceOpts.ROBinds)
 	}
 }

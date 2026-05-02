@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/hyponet/sandbox-container/audit"
 	"github.com/hyponet/sandbox-container/executor"
 	"github.com/hyponet/sandbox-container/projectdata"
 	"github.com/hyponet/sandbox-container/session"
@@ -22,6 +24,30 @@ const (
 	SandboxUserdataDir    = "/home/userdata"
 	SandboxProjectdataDir = "/home/projectdata"
 )
+
+func validateOptionalUserProjectIDs(userID, projectID string) error {
+	if userID != "" {
+		if err := validateRequiredID("user_id", userID); err != nil {
+			return err
+		}
+	}
+	if projectID != "" {
+		if err := validateRequiredID("project_id", projectID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRequiredID(field, id string) error {
+	if id == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if err := audit.ValidateID(id); err != nil {
+		return fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return nil
+}
 
 // resolvedRoots holds the resolved host paths for a request.
 type resolvedRoots struct {
@@ -247,12 +273,8 @@ func hostToSandboxPath(isBwrap bool, mapping sandboxPathMapping, hostPath string
 func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
 	if isBwrap {
 		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxHome})
+		// Agent skills are always read-only; user/project skills are writable via their own mounts.
 		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
-		if agentWorkspace {
-			// workspace mode also needs skills writable
-			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
-			roBinds = nil
-		}
 		if roots.UserdataRoot != "" {
 			rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
 		}
@@ -263,13 +285,9 @@ func commandExecBinds(roots resolvedRoots, agentWorkspace, isBwrap bool) (rwBind
 	}
 
 	// Direct mode: identity mapping (Src == Dest).
-	// In workspace mode, skills are writable so they go into rwBinds (no roBinds needed).
+	// Agent skills are always read-only.
 	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: roots.HostRoot})
-	if agentWorkspace {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
-	} else {
-		roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
-	}
+	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: roots.SkillsRoot})
 	if roots.UserdataRoot != "" {
 		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: roots.UserdataRoot})
 	}

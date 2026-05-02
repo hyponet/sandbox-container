@@ -99,7 +99,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	r.GET("/v1/code/info", codeH.Info)
 
 	// Registry (replaces old global skills routes)
-	registryH := handler.NewRegistryHandler(mgr)
+	registryH := handler.NewRegistryHandler(mgr, nil, nil)
 	registryH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
 	registry := r.Group("/v1/registry", auditMW)
 	{
@@ -129,7 +129,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Agent skills
-	skillH := handler.NewSkillHandler(mgr)
+	skillH := handler.NewSkillHandler(mgr, nil, nil)
 	agents := r.Group("/v1/skills/agents", auditMW)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
@@ -1895,21 +1895,15 @@ func TestClient_FileWrite_AgentWorkspace_Skills(t *testing.T) {
 		t.Errorf("expected 403 error, got %v", err)
 	}
 
-	// Write to skills path WITH AgentWorkspace — should succeed
+	// Write to skills path WITH AgentWorkspace — skills are always read-only
 	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "allowed",
 		WithFileWriteAgentWorkspace(),
 	)
-	if err != nil {
-		t.Fatalf("FileWrite with AgentWorkspace failed: %v", err)
+	if err == nil {
+		t.Error("expected write to skills with AgentWorkspace to be blocked")
 	}
-
-	// Read back and verify content
-	readResult, err := cli.FileRead("a1", "sw-s1", "/skills/sw-test/new.txt")
-	if err != nil {
-		t.Fatalf("FileRead of skills file failed: %v", err)
-	}
-	if readResult.Content != "allowed" {
-		t.Errorf("expected 'allowed', got %q", readResult.Content)
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 error, got %v", err)
 	}
 }
 

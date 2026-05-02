@@ -1513,6 +1513,59 @@ func TestAgentSkillList_SkillDirWithoutSkillsMD(t *testing.T) {
 	}
 }
 
+// TestAgentSkillList_SkillMDVariants verifies that scanLayerSkills discovers
+// skills using any accepted filename variant (SKILLS.md, SKILLS.MD, SKILL.md).
+func TestAgentSkillList_SkillMDVariants(t *testing.T) {
+	r, _, _, pdMgr := setupSkillRouterWithLayers()
+
+	// Create skills with different filename variants
+	for _, tc := range []struct {
+		name     string
+		filename string
+	}{
+		{"skill-upper", "SKILLS.md"},
+		{"skill-allupper", "SKILLS.MD"},
+		{"skill-singular", "SKILL.md"},
+	} {
+		dir := filepath.Join(pdMgr.Root("p1"), "skills", tc.name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", tc.name, err)
+		}
+		content := fmt.Sprintf("---\nname: %s\n---\nbody of %s", tc.name, tc.name)
+		if err := os.WriteFile(filepath.Join(dir, tc.filename), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s/%s: %v", tc.name, tc.filename, err)
+		}
+	}
+
+	body := `{"skill_ids":[],"project_id":"p1"}`
+	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
+	}
+	var listResp struct {
+		Success bool                       `json:"success"`
+		Data    model.AgentSkillListResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := len(listResp.Data.Skills); got != 3 {
+		t.Fatalf("expected 3 skills (all filename variants), got %d", got)
+	}
+	found := map[string]bool{}
+	for _, s := range listResp.Data.Skills {
+		found[s.Name] = true
+		if s.Source != "project" {
+			t.Errorf("skill %s: expected source=project, got %s", s.Name, s.Source)
+		}
+	}
+	for _, name := range []string{"skill-upper", "skill-allupper", "skill-singular"} {
+		if !found[name] {
+			t.Errorf("skill %s not found in list results", name)
+		}
+	}
+}
+
 func TestAgentSkillList_NonexistentUserProjectDirs(t *testing.T) {
 	r, _, _, _ := setupSkillRouterWithLayers()
 

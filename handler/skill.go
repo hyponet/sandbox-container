@@ -320,7 +320,7 @@ func splitFrontmatter(content string) (frontmatter, body string) {
 // readSkillsMD reads the SKILLS.md (case-insensitive) from a skill directory.
 // Returns the file path, content, and any error.
 func readSkillsMD(skillDir, skillID string) (string, error) {
-	for _, name := range []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"} {
+	for _, name := range skillsMDNames {
 		p := filepath.Join(skillDir, name)
 		if content, err := os.ReadFile(p); err == nil {
 			return string(content), nil
@@ -331,7 +331,7 @@ func readSkillsMD(skillDir, skillID string) (string, error) {
 
 // findSkillsMDFile reads the SKILLS.md and returns both its path and content.
 func findSkillsMDFile(skillDir string) (path string, content string, err error) {
-	for _, name := range []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"} {
+	for _, name := range skillsMDNames {
 		p := filepath.Join(skillDir, name)
 		if data, readErr := os.ReadFile(p); readErr == nil {
 			return p, string(data), nil
@@ -398,6 +398,19 @@ func (h *SkillHandler) copySkillToAgent(globalDir, agentDir string) error {
 	return copyDir(globalDir, agentDir)
 }
 
+// skillsMDNames lists accepted filenames for the skill definition file.
+var skillsMDNames = []string{"SKILLS.md", "SKILLS.MD", "SKILL.md"}
+
+// hasSkillsMD checks whether a skill directory contains a recognised SKILLS.md variant.
+func hasSkillsMD(skillDir string) bool {
+	for _, name := range skillsMDNames {
+		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvedSkill holds the result of multi-layer skill resolution.
 type resolvedSkill struct {
 	HostDir     string // absolute host path to skill directory
@@ -419,7 +432,7 @@ func scanLayerSkills(dir, sandboxPrefix, source string, writable bool) []resolve
 		}
 		skillID := entry.Name()
 		skillDir := filepath.Join(dir, skillID)
-		if _, err := os.Stat(filepath.Join(skillDir, "SKILLS.md")); err != nil {
+		if !hasSkillsMD(skillDir) {
 			continue
 		}
 		results = append(results, resolvedSkill{

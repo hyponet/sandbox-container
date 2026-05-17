@@ -23,7 +23,9 @@ func (c *captureExecutor) Prepare(opts executor.ExecOptions, name string, args .
 	c.args = append([]string(nil), args...)
 
 	cmd := exec.CommandContext(opts.Ctx, "sh", "-c", "printf ''")
-	cmd.Dir = opts.WorkingDir
+	// The captured working directory is a sandbox path and may not exist on the host.
+	// These tests assert the prepared options, not host-side chdir behavior.
+	cmd.Dir = "/"
 	cmd.Env = append([]string(nil), opts.Env...)
 	return cmd
 }
@@ -178,5 +180,41 @@ func TestCodeExecuteBindModes(t *testing.T) {
 				t.Fatalf("expected skills root to be read-only outside workspace mode, got %v", cmdExec.opts.ROBinds)
 			}
 		})
+	}
+}
+
+func TestBashExecDirUsesSandboxHomeContract(t *testing.T) {
+	cmdExec := &captureExecutor{}
+	r, _ := setupBashRouterWithExecutor(cmdExec)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec",
+		bytes.NewBufferString(`{"agent_id":"a1","session_id":"bash-execdir","command":"pwd","exec_dir":"/subdir"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("exec failed: %d %s", w.Code, w.Body.String())
+	}
+	if got := cmdExec.opts.WorkingDir; got != "/home/subdir" {
+		t.Fatalf("working dir = %q, want %q", got, "/home/subdir")
+	}
+}
+
+func TestCodeCwdUsesSandboxHomeContract(t *testing.T) {
+	cmdExec := &captureExecutor{}
+	r, _ := setupCodeRouterWithExecutor(cmdExec)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute",
+		bytes.NewBufferString(`{"agent_id":"a1","session_id":"code-cwd","language":"python","code":"print(1)","cwd":"/subdir"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute failed: %d %s", w.Code, w.Body.String())
+	}
+	if got := cmdExec.opts.WorkingDir; got != "/home/subdir" {
+		t.Fatalf("working dir = %q, want %q", got, "/home/subdir")
 	}
 }

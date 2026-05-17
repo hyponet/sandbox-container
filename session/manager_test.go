@@ -35,9 +35,9 @@ func TestResolvePath(t *testing.T) {
 		{"nested path", "a1", "sess1", "/a/b/c", filepath.Join(dir, "a1", "sessions", "sess1", "a", "b", "c"), false},
 		{"path traversal", "a1", "sess1", "/../../../etc/passwd", "", true},
 		{"dotdot escape", "a1", "sess1", "/foo/../../bar", "", true},
-		{"skills path", "a1", "sess1", "/skills/foo/bar.txt", filepath.Join(dir, "a1", "skills", "foo", "bar.txt"), false},
-		{"skills root", "a1", "sess1", "/skills", filepath.Join(dir, "a1", "skills"), false},
-		{"skills nested", "a1", "sess1", "/skills/a/b/c", filepath.Join(dir, "a1", "skills", "a", "b", "c"), false},
+			{"skills path", "a1", "sess1", "/agents/skills/foo/bar.txt", filepath.Join(dir, "a1", "skills", "foo", "bar.txt"), false},
+			{"skills root", "a1", "sess1", "/agents/skills", filepath.Join(dir, "a1", "skills"), false},
+			{"skills nested", "a1", "sess1", "/agents/skills/a/b/c", filepath.Join(dir, "a1", "skills", "a", "b", "c"), false},
 	}
 
 	for _, tt := range tests {
@@ -169,13 +169,13 @@ func TestIsSkillsPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"/skills", true},
-		{"/skills/", true},
-		{"/skills/foo", true},
-		{"/skills/foo/bar.txt", true},
-		{"/home/user", false},
-		{"/", false},
-		{"/skillsfile", false},
+			{"/agents/skills", true},
+			{"/agents/skills/", true},
+			{"/agents/skills/foo", true},
+			{"/agents/skills/foo/bar.txt", true},
+			{"/home/user", false},
+			{"/", false},
+			{"/agents/skillsfile", false},
 	}
 
 	for _, tt := range tests {

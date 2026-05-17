@@ -52,17 +52,17 @@ func (h *FileHandler) fileOpOpts(agentID, sessionID, userID, projectID string, a
 	var opts executor.FileOpOptions
 	if agentWorkspace {
 		h.mgr.TouchWorkspace(agentID)
-		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: SandboxHome})
+		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.WorkspaceRoot(agentID), Dest: SandboxRoot})
 	} else {
 		h.mgr.Touch(agentID, sessionID)
-		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SessionRoot(agentID, sessionID), Dest: SandboxHome})
+		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.mgr.SessionRoot(agentID, sessionID), Dest: SandboxRoot})
 	}
 	opts.ROBinds = append(opts.ROBinds, executor.BindMount{Src: h.mgr.SkillsRoot(agentID), Dest: SandboxSkillsDir})
 	if userID != "" {
 		if err := h.udMgr.Touch(userID); err != nil {
 			return opts, fmt.Errorf("userdata touch: %w", err)
 		}
-		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.udMgr.Root(userID), Dest: SandboxUserdataDir})
+		opts.RWBinds = append(opts.RWBinds, executor.BindMount{Src: h.udMgr.Root(userID), Dest: SandboxHome})
 	}
 	if projectID != "" {
 		if err := h.pdMgr.Touch(projectID); err != nil {
@@ -83,14 +83,6 @@ func (h *FileHandler) shouldSkipImplicitSkillsPath(path string, isSkillsSearch b
 	return cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator))
 }
 
-// shouldSkipImplicitUserdataPath returns true for paths under /home/userdata,
-// so that userdata bind-mount entries are excluded from directory listings unless explicitly targeted.
-func (h *FileHandler) shouldSkipImplicitUserdataPath(path string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanUserdata := filepath.Clean(SandboxUserdataDir)
-	return cleanPath == cleanUserdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator))
-}
-
 func (h *FileHandler) shouldSkipImplicitProjectdataPath(path string) bool {
 	cleanPath := filepath.Clean(path)
 	cleanProjectdata := filepath.Clean(SandboxProjectdataDir)
@@ -98,13 +90,10 @@ func (h *FileHandler) shouldSkipImplicitProjectdataPath(path string) bool {
 }
 
 func (h *FileHandler) shouldSkipImplicitVirtualPath(path string, display displayPathContext) bool {
-	if h.shouldSkipImplicitSkillsPath(path, display.prefix == "/skills") {
+	if h.shouldSkipImplicitSkillsPath(path, display.prefix == SandboxSkillsDir) {
 		return true
 	}
-	if h.shouldSkipImplicitUserdataPath(path) && display.prefix != "/userdata" {
-		return true
-	}
-	if h.shouldSkipImplicitProjectdataPath(path) && display.prefix != "/projectdata" {
+	if h.shouldSkipImplicitProjectdataPath(path) && display.prefix != "/home/project" {
 		return true
 	}
 	return false
@@ -120,19 +109,20 @@ func writePathStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// validatePathRequirements checks that user_id/project_id are provided when needed.
-func validatePathRequirements(reqPath, userID, projectID string) error {
-	if userdata.IsPath(reqPath) && userID == "" {
-		return fmt.Errorf("user_id is required for /userdata/ paths")
-	}
-	if projectdata.IsPath(reqPath) && projectID == "" {
-		return fmt.Errorf("project_id is required for /projectdata/ paths")
-	}
+func validatePathRequirements(reqPath string) error {
+	// Names like /skills, /userdata, and /projectdata are intentionally not
+	// treated as reserved aliases. They behave like ordinary directories unless
+	// the request already targets a canonical special root such as /agents/skills
+	// or /home/project.
+	_ = reqPath
 	return nil
 }
 
 // resolveSandboxPath maps a request path to the sandbox-internal path.
 func resolveSandboxPath(reqPath string) (string, error) {
+	if err := validatePathRequirements(reqPath); err != nil {
+		return "", err
+	}
 	if err := session.RejectDotDot(reqPath); err != nil {
 		return "", err
 	}
@@ -141,12 +131,8 @@ func resolveSandboxPath(reqPath string) (string, error) {
 		cleanPath = "/" + cleanPath
 	}
 	switch {
-	case cleanPath == "/userdata" || strings.HasPrefix(cleanPath, "/userdata/"):
-		return filepath.Join(SandboxUserdataDir, strings.TrimPrefix(cleanPath, "/userdata")), nil
-	case cleanPath == "/projectdata" || strings.HasPrefix(cleanPath, "/projectdata/"):
-		return filepath.Join(SandboxProjectdataDir, strings.TrimPrefix(cleanPath, "/projectdata")), nil
-	case cleanPath == "/skills" || strings.HasPrefix(cleanPath, "/skills/"):
-		return filepath.Join(SandboxSkillsDir, strings.TrimPrefix(cleanPath, "/skills")), nil
+	case cleanPath == SandboxSkillsDir || strings.HasPrefix(cleanPath, SandboxSkillsDir+"/"):
+		return cleanPath, nil
 	case cleanPath == "/home" || strings.HasPrefix(cleanPath, "/home/"):
 		return cleanPath, nil
 	default:
@@ -177,7 +163,7 @@ func (h *FileHandler) Read(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.File, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.File); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -231,7 +217,7 @@ func (h *FileHandler) Write(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.File, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.File); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -309,7 +295,7 @@ func (h *FileHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.File, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.File); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -368,7 +354,7 @@ func (h *FileHandler) Search(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.File, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.File); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -428,7 +414,7 @@ func (h *FileHandler) Find(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.Path, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.Path); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -478,7 +464,7 @@ func (h *FileHandler) Grep(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.Path, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.Path); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -594,7 +580,7 @@ func (h *FileHandler) Glob(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.Path, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.Path); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -720,7 +706,7 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(targetPath, userID, projectID); err != nil {
+	if err := validatePathRequirements(targetPath); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -790,7 +776,7 @@ func (h *FileHandler) Download(c *gin.Context) {
 	userID := c.Query("user_id")
 	projectID := c.Query("project_id")
 
-	if err := validatePathRequirements(filePath, userID, projectID); err != nil {
+	if err := validatePathRequirements(filePath); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -838,7 +824,7 @@ func (h *FileHandler) List(c *gin.Context) {
 		return
 	}
 
-	if err := validatePathRequirements(req.Path, req.UserID, req.ProjectID); err != nil {
+	if err := validatePathRequirements(req.Path); err != nil {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
@@ -979,15 +965,12 @@ func (h *FileHandler) List(c *gin.Context) {
 func resolveDisplayContextForSandboxPath(sandboxPath string) displayPathContext {
 	cleanPath := filepath.Clean(sandboxPath)
 	cleanSkills := filepath.Clean(SandboxSkillsDir)
-	cleanUserdata := filepath.Clean(SandboxUserdataDir)
 	cleanProjectdata := filepath.Clean(SandboxProjectdataDir)
 	switch {
 	case cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator)):
-		return displayPathContext{baseRoot: SandboxSkillsDir, prefix: "/skills"}
-	case cleanPath == cleanUserdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator)):
-		return displayPathContext{baseRoot: SandboxUserdataDir, prefix: "/userdata"}
+		return displayPathContext{baseRoot: SandboxSkillsDir, prefix: SandboxSkillsDir}
 	case cleanPath == cleanProjectdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)):
-		return displayPathContext{baseRoot: SandboxProjectdataDir, prefix: "/projectdata"}
+		return displayPathContext{baseRoot: SandboxProjectdataDir, prefix: "/home/project"}
 	default:
 		return displayPathContext{baseRoot: SandboxHome, prefix: ""}
 	}

@@ -27,9 +27,9 @@ func (h *SandboxHandler) GetContext(c *gin.Context) {
 	tz := getTimezone()
 
 	_ = getHostname // available if needed
-	workspace := "/"
+	workspace := SandboxHome
 	resp := model.SandboxResponse{
-		HomeDir:   "/",
+		HomeDir:   SandboxHome,
 		Workspace: &workspace,
 		Version:   "1.0.0",
 		Detail: model.SandboxDetail{
@@ -38,7 +38,7 @@ func (h *SandboxHandler) GetContext(c *gin.Context) {
 				OSVersion:     getOSVersion(),
 				Arch:          runtime.GOARCH,
 				User:          user,
-				HomeDir:       "/",
+				HomeDir:       SandboxHome,
 				Workspace:     &workspace,
 				Timezone:      tz,
 				OccupiedPorts: []string{},
@@ -99,7 +99,7 @@ func (h *SandboxHandler) FsInfo(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
 		}
-		directories["userdata"] = SandboxUserdataDir
+		directories["userdata"] = SandboxHome
 	}
 	if req.ProjectID != "" {
 		if err := h.pdMgr.Touch(req.ProjectID); err != nil {

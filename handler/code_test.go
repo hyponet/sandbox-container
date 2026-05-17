@@ -19,12 +19,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func setupCodeRouter() (*gin.Engine, *session.Manager) {
-	bwrapExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
-	if err != nil {
-		panic("bwrap not available: " + err.Error())
-	}
-	return setupCodeRouterWithExecutor(bwrapExec)
+func setupCodeRouter(t *testing.T) (*gin.Engine, *session.Manager) {
+	t.Helper()
+	return setupCodeRouterWithExecutor(newTestBwrapExecutorOrSkip(t))
 }
 
 func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
@@ -45,7 +42,7 @@ func setupCodeRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 }
 
 func TestCodeExecutePython(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code1", "language": "python", "code": "print(2+2)"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -67,7 +64,7 @@ func TestCodeExecutePython(t *testing.T) {
 }
 
 func TestCodeExecuteJavaScript(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code2", "language": "javascript", "code": "console.log(2+2)"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -89,7 +86,7 @@ func TestCodeExecuteJavaScript(t *testing.T) {
 }
 
 func TestCodeExecuteNoSessionID(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"language": "python", "code": "print(1)"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -103,7 +100,7 @@ func TestCodeExecuteNoSessionID(t *testing.T) {
 }
 
 func TestCodeExecuteUnsupportedLang(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code3", "language": "rust", "code": "fn main() {}"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -117,7 +114,7 @@ func TestCodeExecuteUnsupportedLang(t *testing.T) {
 }
 
 func TestCodeInfo(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/code/info", nil)
 	w := httptest.NewRecorder()
@@ -137,7 +134,7 @@ func TestCodeInfo(t *testing.T) {
 }
 
 func TestCodeExecuteJSAlias(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code4", "language": "js", "code": "console.log(42)"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -159,7 +156,7 @@ func TestCodeExecuteJSAlias(t *testing.T) {
 }
 
 func TestCodeExecuteError(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code5", "language": "python", "code": "raise ValueError('test error')"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -192,7 +189,7 @@ func TestCodeExecuteError(t *testing.T) {
 }
 
 func TestCodeExecuteMissingLanguage(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code6", "code": "print(1)"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))
@@ -206,7 +203,7 @@ func TestCodeExecuteMissingLanguage(t *testing.T) {
 }
 
 func TestCodeExecute_AgentWorkspace(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	// Execute with enable_agent_workspace — working dir should be /home (sandbox root)
 	body := `{"agent_id": "a1", "session_id": "code_ws", "language": "python", "code": "import os; print(os.getcwd())", "enable_agent_workspace": true}`
@@ -231,7 +228,7 @@ func TestCodeExecute_AgentWorkspace(t *testing.T) {
 }
 
 func TestCodeExecutePWDMatchesWorkingDir(t *testing.T) {
-	r, _ := setupCodeRouter()
+	r, _ := setupCodeRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "code_pwd", "language": "python", "code": "import os; print('match' if os.getcwd() == os.environ.get('PWD') else 'mismatch')", "cwd": "/subdir"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", bytes.NewBufferString(body))

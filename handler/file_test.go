@@ -141,6 +141,30 @@ func hostPathForSandbox(opts executor.FileOpOptions, sandboxPath string) string 
 	return ""
 }
 
+func hasBindForDest(opts executor.FileOpOptions, dest string) bool {
+	cleanDest := filepath.Clean(dest)
+	for _, bind := range opts.RWBinds {
+		if filepath.Clean(bind.Dest) == cleanDest {
+			return true
+		}
+	}
+	return false
+}
+
+func isSharedSandboxPath(opts executor.FileOpOptions, cleanPath string) bool {
+	cleanProjectdata := filepath.Clean(SandboxProjectdataDir)
+	if strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)) {
+		return hasBindForDest(opts, SandboxProjectdataDir)
+	}
+
+	cleanHome := filepath.Clean(SandboxHome)
+	if strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanHome+string(os.PathSeparator)) {
+		return hasBindForDest(opts, SandboxHome)
+	}
+
+	return false
+}
+
 func (v *virtualFileOperator) ReadFile(_ context.Context, opts executor.FileOpOptions, path string) ([]byte, error) {
 	ns := v.getNS(opts)
 	cleanPath := filepath.Clean(path)
@@ -150,12 +174,7 @@ func (v *virtualFileOperator) ReadFile(_ context.Context, opts executor.FileOpOp
 			return []byte(content), nil
 		}
 	}
-	// For paths under projectdata/userdata, search all namespaces (shared data)
-	cleanProjectdata := filepath.Clean(SandboxProjectdataDir)
-	cleanUserdata := filepath.Clean(SandboxUserdataDir)
-	isSharedPath := strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)) ||
-		strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator))
-	if isSharedPath {
+	if isSharedSandboxPath(opts, cleanPath) {
 		for otherNS, files := range v.nsFiles {
 			if otherNS == ns {
 				continue
@@ -461,12 +480,7 @@ func (v *virtualFileOperator) infoForPath(opts executor.FileOpOptions, path stri
 	if info, ok := v.infoForPathInNS(ns, cleanPath); ok {
 		return info, true
 	}
-	// For shared paths (projectdata/userdata), search all namespaces
-	cleanProjectdata := filepath.Clean(SandboxProjectdataDir)
-	cleanUserdata := filepath.Clean(SandboxUserdataDir)
-	isSharedPath := strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)) ||
-		strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator))
-	if isSharedPath {
+	if isSharedSandboxPath(opts, cleanPath) {
 		for otherNS := range v.nsFiles {
 			if otherNS == ns {
 				continue
@@ -725,11 +739,11 @@ func TestFileGlobRecursiveRespectsHiddenFlag(t *testing.T) {
 
 func TestFileRecursiveAPIs_SkipImplicitSkillsInBwrap(t *testing.T) {
 	fileOp := newVirtualFileOperator(map[string]string{
-		"/home/README.md":                   "root docs",
-		"/home/project/app.txt":             "needle in workspace",
-		"/home/project/main.go":             "package main",
-		"/home/skills/test-skill/guide.md":  "skill docs",
-		"/home/skills/test-skill/notes.txt": "needle in skills",
+		"/home/README.md":                     "root docs",
+		"/home/src/app.txt":                   "needle in workspace",
+		"/home/src/main.go":                   "package main",
+		"/agents/skills/test-skill/guide.md":  "skill docs",
+		"/agents/skills/test-skill/notes.txt": "needle in skills",
 	})
 	r, _ := setupRouterWithFileOperator(fileOp)
 
@@ -760,7 +774,7 @@ func TestFileRecursiveAPIs_SkipImplicitSkillsInBwrap(t *testing.T) {
 					t.Fatalf("expected 1 grep match, got %v", matches)
 				}
 				match := matches[0].(map[string]interface{})
-				if match["file"] != "/project/app.txt" {
+				if match["file"] != "/src/app.txt" {
 					t.Fatalf("expected workspace grep match, got %v", match)
 				}
 			},
@@ -788,7 +802,7 @@ func TestFileRecursiveAPIs_SkipImplicitSkillsInBwrap(t *testing.T) {
 				files := data["files"].([]interface{})
 				for _, entry := range files {
 					file := entry.(map[string]interface{})
-					if strings.HasPrefix(file["path"].(string), "/skills") {
+					if strings.HasPrefix(file["path"].(string), SandboxSkillsDir) {
 						t.Fatalf("expected recursive list to skip implicit skills tree, got %v", files)
 					}
 				}
@@ -819,13 +833,13 @@ func TestFileRecursiveAPIs_SkipImplicitSkillsInBwrap(t *testing.T) {
 
 func TestFileGlob_AllowsExplicitSkillsSearchInBwrap(t *testing.T) {
 	fileOp := newVirtualFileOperator(map[string]string{
-		"/home/project/README.md":           "workspace docs",
-		"/home/skills/test-skill/guide.md":  "skill docs",
-		"/home/skills/test-skill/notes.txt": "skill notes",
+		"/home/project/README.md":             "workspace docs",
+		"/agents/skills/test-skill/guide.md":  "skill docs",
+		"/agents/skills/test-skill/notes.txt": "skill notes",
 	})
 	r, _ := setupRouterWithFileOperator(fileOp)
 
-	body := `{"agent_id":"a1","session_id":"bwrap_skills","path":"/skills","pattern":"**/*.md"}`
+	body := `{"agent_id":"a1","session_id":"bwrap_skills","path":"/agents/skills","pattern":"**/*.md"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/glob", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -845,16 +859,16 @@ func TestFileGlob_AllowsExplicitSkillsSearchInBwrap(t *testing.T) {
 		t.Fatalf("expected 1 explicit skills glob result, got %v", files)
 	}
 	file := files[0].(map[string]interface{})
-	if file["path"] != "/skills/test-skill/guide.md" {
-		t.Fatalf("expected /skills/test-skill/guide.md, got %v", file)
+	if file["path"] != "/agents/skills/test-skill/guide.md" {
+		t.Fatalf("expected /agents/skills/test-skill/guide.md, got %v", file)
 	}
 }
 
 func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *testing.T) {
 	fileOp := newVirtualFileOperator(map[string]string{
-		"/home/app.txt":                       "workspace needle",
-		"/home/projectdata/docs/guide.md":     "project docs needle",
-		"/home/projectdata/docs/internal.txt": "project internal needle",
+		"/home/app.txt":                   "workspace needle",
+		"/home/project/docs/guide.md":     "project docs needle",
+		"/home/project/docs/internal.txt": "project internal needle",
 	})
 	r, _ := setupRouterWithFileOperator(fileOp)
 
@@ -882,10 +896,10 @@ func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *tes
 		body string
 		want string
 	}{
-		{name: "find", path: "/v1/file/find", body: `{"agent_id":"a1","session_id":"bwrap_project_find","path":"/projectdata","glob":"*.md","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
-		{name: "grep", path: "/v1/file/grep", body: `{"agent_id":"a1","session_id":"bwrap_project_grep","path":"/projectdata","pattern":"project docs","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
-		{name: "glob", path: "/v1/file/glob", body: `{"agent_id":"a1","session_id":"bwrap_project_glob","path":"/projectdata","pattern":"**/*.md","project_id":"proj-a"}`, want: "/projectdata/docs/guide.md"},
-		{name: "list", path: "/v1/file/list", body: `{"agent_id":"a1","session_id":"bwrap_project_list","path":"/projectdata","recursive":true,"project_id":"proj-a"}`, want: "/projectdata/docs"},
+		{name: "find", path: "/v1/file/find", body: `{"agent_id":"a1","session_id":"bwrap_project_find","path":"/home/project","glob":"*.md","project_id":"proj-a"}`, want: "/home/project/docs/guide.md"},
+		{name: "grep", path: "/v1/file/grep", body: `{"agent_id":"a1","session_id":"bwrap_project_grep","path":"/home/project","pattern":"project docs","project_id":"proj-a"}`, want: "/home/project/docs/guide.md"},
+		{name: "glob", path: "/v1/file/glob", body: `{"agent_id":"a1","session_id":"bwrap_project_glob","path":"/home/project","pattern":"**/*.md","project_id":"proj-a"}`, want: "/home/project/docs/guide.md"},
+		{name: "list", path: "/v1/file/list", body: `{"agent_id":"a1","session_id":"bwrap_project_list","path":"/home/project","recursive":true,"project_id":"proj-a"}`, want: "/home/project/docs"},
 	}
 
 	for _, tt := range tests {
@@ -930,7 +944,7 @@ func TestFileRecursiveAPIs_SkipImplicitProjectdataButAllowExplicitInBwrap(t *tes
 func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
 	r, _ := setupRouter()
 
-	writeBody := `{"agent_id":"a1","session_id":"project_s1","file":"/projectdata/docs/readme.md","content":"shared docs","project_id":"proj-a"}`
+	writeBody := `{"agent_id":"a1","session_id":"project_s1","file":"/home/project/docs/readme.md","content":"shared docs","project_id":"proj-a"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(writeBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -939,7 +953,7 @@ func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
 		t.Fatalf("write projectdata failed: %d %s", w.Code, w.Body.String())
 	}
 
-	readBody := `{"agent_id":"a2","session_id":"project_s2","file":"/projectdata/docs/readme.md","project_id":"proj-a"}`
+	readBody := `{"agent_id":"a2","session_id":"project_s2","file":"/home/project/docs/readme.md","project_id":"proj-a"}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(readBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -953,7 +967,7 @@ func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
 		t.Fatalf("unexpected read content: %v", resp)
 	}
 
-	listBody := `{"agent_id":"a1","session_id":"project_s1","path":"/projectdata","recursive":true,"project_id":"proj-a"}`
+	listBody := `{"agent_id":"a1","session_id":"project_s1","path":"/home/project","recursive":true,"project_id":"proj-a"}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/file/list", bytes.NewBufferString(listBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -967,7 +981,7 @@ func TestFileProjectdata_DirectModeSharedAndDisplayPaths(t *testing.T) {
 	for _, entry := range files {
 		paths[entry.(map[string]interface{})["path"].(string)] = true
 	}
-	if !paths["/projectdata/docs"] || !paths["/projectdata/docs/readme.md"] {
+	if !paths["/home/project/docs"] || !paths["/home/project/docs/readme.md"] {
 		t.Fatalf("unexpected projectdata display paths: %v", paths)
 	}
 }
@@ -1211,7 +1225,7 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	os.WriteFile(filepath.Join(skillsDir, "test-skill", "SKILLS.MD"), []byte("---\nname: test\n---\ncontent"), 0644)
 
 	// Write to skills path should fail
-	body := `{"agent_id": "a1", "session_id": "test14", "file": "/skills/test-skill/new.txt", "content": "hack"}`
+	body := `{"agent_id": "a1", "session_id": "test14", "file": "/agents/skills/test-skill/new.txt", "content": "hack"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1222,7 +1236,7 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Replace in skills path should fail
-	body = `{"agent_id": "a1", "session_id": "test14", "file": "/skills/test-skill/SKILLS.MD", "old_str": "content", "new_str": "hacked"}`
+	body = `{"agent_id": "a1", "session_id": "test14", "file": "/agents/skills/test-skill/SKILLS.MD", "old_str": "content", "new_str": "hacked"}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -1233,7 +1247,7 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Read from skills path should work
-	body = `{"agent_id": "a1", "session_id": "test14", "file": "/skills/test-skill/SKILLS.MD"}`
+	body = `{"agent_id": "a1", "session_id": "test14", "file": "/agents/skills/test-skill/SKILLS.MD"}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/file/read", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -1251,7 +1265,7 @@ func TestSkillsPathList(t *testing.T) {
 	os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0755)
 	os.WriteFile(filepath.Join(skillsDir, "my-skill", "SKILLS.MD"), []byte("---\nname: my-skill\n---\ncontent"), 0644)
 
-	body := `{"agent_id": "a1", "session_id": "test15", "path": "/skills"}`
+	body := `{"agent_id": "a1", "session_id": "test15", "path": "/agents/skills"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/list", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1459,7 +1473,7 @@ func TestFileWrite_AgentWorkspace_Skills(t *testing.T) {
 	os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0755)
 
 	// Write to skills path with enable_agent_workspace=true — skills are always RO
-	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/skills/my-skill/new-file.txt", "content": "skill data", "enable_agent_workspace": true}`
+	body := `{"agent_id": "a1", "session_id": "test_sw", "file": "/agents/skills/my-skill/new-file.txt", "content": "skill data", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1479,7 +1493,7 @@ func TestFileReplace_AgentWorkspace_Skills(t *testing.T) {
 	os.WriteFile(filepath.Join(skillsDir, "replace-skill", "config.txt"), []byte("foo bar foo"), 0644)
 
 	// Replace in skills path with enable_agent_workspace=true — skills are always RO
-	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "enable_agent_workspace": true}`
+	body := `{"agent_id": "a1", "session_id": "test_sw_replace", "file": "/agents/skills/replace-skill/config.txt", "old_str": "foo", "new_str": "baz", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/replace", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1541,7 +1555,7 @@ func TestFileUpload_AgentWorkspace_Skills(t *testing.T) {
 	writer := multipart.NewWriter(&buf)
 	writer.WriteField("agent_id", "a1")
 	writer.WriteField("session_id", "test_sw_upload")
-	writer.WriteField("path", "/skills/upload-skill/uploaded.txt")
+	writer.WriteField("path", "/agents/skills/upload-skill/uploaded.txt")
 	writer.WriteField("enable_agent_workspace", "true")
 	part, _ := writer.CreateFormFile("file", "test.txt")
 	part.Write([]byte("uploaded to skills"))
@@ -1564,7 +1578,7 @@ func TestFileWrite_AgentWorkspace_SkillsAndWorkspace(t *testing.T) {
 	r, _ := setupRouter()
 
 	// Write to skills path with enable_agent_workspace — skills are always RO
-	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/skills/both-skill/combined.txt", "content": "both flags", "enable_agent_workspace": true}`
+	body := `{"agent_id": "a1", "session_id": "test_both", "file": "/agents/skills/both-skill/combined.txt", "content": "both flags", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1630,7 +1644,7 @@ func TestFileWrite_SkillsReadOnly_Default(t *testing.T) {
 	os.MkdirAll(filepath.Join(skillsDir, "ro-skill"), 0755)
 
 	// Write to skills path WITHOUT enable_agent_workspace — should be blocked
-	body := `{"agent_id": "a1", "session_id": "test_ro", "file": "/skills/ro-skill/blocked.txt", "content": "nope"}`
+	body := `{"agent_id": "a1", "session_id": "test_ro", "file": "/agents/skills/ro-skill/blocked.txt", "content": "nope"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1641,18 +1655,17 @@ func TestFileWrite_SkillsReadOnly_Default(t *testing.T) {
 	}
 }
 
-func TestFileWrite_SkillsAliasReadOnly_Default(t *testing.T) {
+func TestFileWrite_LegacySkillsPathIsOrdinaryDirectory(t *testing.T) {
 	r, _ := setupRouter()
 
-	// Writing to /skills/... path is always blocked by the handler-level check
 	body := `{"agent_id": "a1", "session_id": "alias_ro", "file": "/skills/aliased-skill/blocked.txt", "content": "nope"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/file/write", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for skills write, got %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected /skills path write to behave like an ordinary directory, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1669,8 +1682,8 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	if len(sessionOpts.RWBinds) != 1 || sessionOpts.RWBinds[0].Src != mgr.SessionRoot("a1", "s1") {
 		t.Fatalf("session RWBinds = %v", sessionOpts.RWBinds)
 	}
-	if sessionOpts.RWBinds[0].Dest != SandboxHome {
-		t.Fatalf("session RWBind Dest = %v, want %s", sessionOpts.RWBinds[0].Dest, SandboxHome)
+	if sessionOpts.RWBinds[0].Dest != SandboxRoot {
+		t.Fatalf("session RWBind Dest = %v, want %s", sessionOpts.RWBinds[0].Dest, SandboxRoot)
 	}
 	if len(sessionOpts.ROBinds) != 1 || sessionOpts.ROBinds[0].Src != mgr.SkillsRoot("a1") {
 		t.Fatalf("session ROBinds = %v", sessionOpts.ROBinds)
@@ -1686,8 +1699,8 @@ func TestFileOpOpts_SkillsReadOnlyOutsideWorkspace(t *testing.T) {
 	if len(workspaceOpts.RWBinds) != 1 || workspaceOpts.RWBinds[0].Src != mgr.WorkspaceRoot("a1") {
 		t.Fatalf("workspace RWBinds = %v", workspaceOpts.RWBinds)
 	}
-	if workspaceOpts.RWBinds[0].Dest != SandboxHome {
-		t.Fatalf("workspace RWBind Dest = %v, want %s", workspaceOpts.RWBinds[0].Dest, SandboxHome)
+	if workspaceOpts.RWBinds[0].Dest != SandboxRoot {
+		t.Fatalf("workspace RWBind Dest = %v, want %s", workspaceOpts.RWBinds[0].Dest, SandboxRoot)
 	}
 	// Skills are always read-only, even in workspace mode
 	if len(workspaceOpts.ROBinds) != 1 || workspaceOpts.ROBinds[0].Src != mgr.SkillsRoot("a1") {
@@ -1715,20 +1728,17 @@ func TestResolveSandboxPath(t *testing.T) {
 		{"/home/existing", "/home/existing", false},
 		{"/home", "/home", false},
 
-		// /skills maps to /home/skills
-		{"/skills", "/home/skills", false},
-		{"/skills/my-skill/run.sh", "/home/skills/my-skill/run.sh", false},
-
-		// /userdata maps to /home/userdata
-		{"/userdata", "/home/userdata", false},
-		{"/userdata/file.txt", "/home/userdata/file.txt", false},
-
-		// /projectdata maps to /home/projectdata
-		{"/projectdata", "/home/projectdata", false},
-		{"/projectdata/docs/guide.md", "/home/projectdata/docs/guide.md", false},
+		// /agents/skills passes through
+		{"/agents/skills", "/agents/skills", false},
+		{"/agents/skills/my-skill/run.sh", "/agents/skills/my-skill/run.sh", false},
 
 		// Relative paths get prefixed with /
 		{"hello.txt", "/home/hello.txt", false},
+
+		// Non-canonical names behave like ordinary directories under /home.
+		{"/userdata/file.txt", "/home/userdata/file.txt", false},
+		{"/projectdata/file.txt", "/home/projectdata/file.txt", false},
+		{"/skills/foo", "/home/skills/foo", false},
 
 		// Path traversal blocked
 		{"/../../../etc/passwd", "", true},
@@ -1756,22 +1766,19 @@ func TestValidatePathRequirements(t *testing.T) {
 	tests := []struct {
 		name       string
 		reqPath    string
-		userID     string
-		projectID  string
 		wantErr    bool
 		errContain string
 	}{
-		{"normal path ok", "/hello.txt", "", "", false, ""},
-		{"skills path ok without ids", "/skills/foo", "", "", false, ""},
-		{"userdata without user_id", "/userdata/file.txt", "", "", true, "user_id is required"},
-		{"userdata with user_id", "/userdata/file.txt", "u1", "", false, ""},
-		{"projectdata without project_id", "/projectdata/file.txt", "", "", true, "project_id is required"},
-		{"projectdata with project_id", "/projectdata/file.txt", "", "p1", false, ""},
+		{"normal path ok", "/hello.txt", false, ""},
+		{"skills path ok without ids", "/agents/skills/foo", false, ""},
+		{"userdata is ordinary dir", "/userdata/file.txt", false, ""},
+		{"projectdata is ordinary dir", "/projectdata/file.txt", false, ""},
+		{"skills is ordinary dir", "/skills/foo", false, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validatePathRequirements(tt.reqPath, tt.userID, tt.projectID)
+			err := validatePathRequirements(tt.reqPath)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validatePathRequirements() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1793,11 +1800,11 @@ func TestValidateWritableSandboxPath(t *testing.T) {
 		{"home file writable", "/home/file.txt", nil},
 		{"home writable", "/home", nil},
 		{"deep path writable", "/home/deep/nested/dir/file.txt", nil},
-		{"skills dir readonly", "/home/skills", errSkillsReadOnly},
-		{"skills file readonly", "/home/skills/my-skill/run.sh", errSkillsReadOnly},
+		{"skills dir readonly", "/agents/skills", errSkillsReadOnly},
+		{"skills file readonly", "/agents/skills/my-skill/run.sh", errSkillsReadOnly},
 		{"outside home", "/tmp/file.txt", errPathOutsideWriteRoot},
-		{"userdata writable", "/home/userdata/file.txt", nil},
-		{"projectdata writable", "/home/projectdata/file.txt", nil},
+		{"user home writable", "/home/file.txt", nil},
+		{"projectdata writable", "/home/project/file.txt", nil},
 	}
 
 	for _, tt := range tests {

@@ -1254,17 +1254,6 @@ func (h *RegistryHandler) Commit(c *gin.Context) {
 		}
 		sourceDir = filepath.Join(h.udMgr.Root(req.UserID), "skills", req.Name)
 		sourceLabel = "user:" + req.UserID
-	case "project":
-		if err := validateRequiredID("project_id", req.ProjectID); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
-			return
-		}
-		if h.pdMgr == nil {
-			c.JSON(http.StatusBadRequest, model.ErrResponse("projectdata manager not available"))
-			return
-		}
-		sourceDir = filepath.Join(h.pdMgr.Root(req.ProjectID), "skills", req.Name)
-		sourceLabel = "project:" + req.ProjectID
 	case "agent", "":
 		if err := validateRequiredID("agent_id", req.AgentID); err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))

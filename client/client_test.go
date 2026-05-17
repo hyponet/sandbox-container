@@ -25,6 +25,16 @@ import (
 )
 
 // setupTestServer creates a full API server for integration testing.
+func newTestBwrapExecutorOrSkip(t *testing.T) *executor.BwrapExecutor {
+	t.Helper()
+
+	cmdExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
+	if err != nil {
+		t.Skipf("bwrap not available: %v", err)
+	}
+	return cmdExec
+}
+
 func setupTestServer(t *testing.T) (*Client, func()) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -43,10 +53,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
 	mgr.SetAuditWriter(auditW)
 	auditMW := middleware.AuditLogger(auditW)
-	cmdExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
-	if err != nil {
-		t.Fatalf("bwrap not available: %v", err)
-	}
+	cmdExec := newTestBwrapExecutorOrSkip(t)
 	mgr.SetSessionInit(cmdExec.InitSession)
 	userdataDir := filepath.Join(dir, "users")
 	os.MkdirAll(userdataDir, 0755)
@@ -102,7 +109,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	r.GET("/v1/code/info", codeH.Info)
 
 	// Registry (replaces old global skills routes)
-	registryH := handler.NewRegistryHandler(mgr, nil, nil)
+	registryH := handler.NewRegistryHandler(mgr, udMgr, pdMgr)
 	registryH.SetSSRFProtection(false) // disable for tests using httptest (loopback)
 	registry := r.Group("/v1/registry", auditMW)
 	{
@@ -132,7 +139,7 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 	}
 
 	// Agent skills
-	skillH := handler.NewSkillHandler(mgr, nil, nil)
+	skillH := handler.NewSkillHandler(mgr, udMgr, pdMgr)
 	agents := r.Group("/v1/skills/agents", auditMW)
 	{
 		agents.POST("/:agent_id/list", skillH.AgentList)
@@ -160,7 +167,6 @@ func setupTestServer(t *testing.T) (*Client, func()) {
 
 	return cli, cleanup
 }
-
 
 // =============================================
 // Sandbox tests
@@ -194,8 +200,8 @@ func TestGetFsInfo(t *testing.T) {
 	if result.WorkDir != "/home" {
 		t.Errorf("expected work_dir '/home', got %q", result.WorkDir)
 	}
-	if result.Directories["skills"] != "/home/skills" {
-		t.Errorf("expected skills '/home/skills', got %v", result.Directories["skills"])
+	if result.Directories["skills"] != "/agents/skills" {
+		t.Errorf("expected skills '/agents/skills', got %v", result.Directories["skills"])
 	}
 }
 
@@ -210,8 +216,8 @@ func TestGetFsInfoAgentWorkspace(t *testing.T) {
 	if result.WorkDir != "/home" {
 		t.Errorf("expected work_dir '/home', got %q", result.WorkDir)
 	}
-	if result.Directories["skills"] != "/home/skills" {
-		t.Errorf("expected skills '/home/skills', got %v", result.Directories["skills"])
+	if result.Directories["skills"] != "/agents/skills" {
+		t.Errorf("expected skills '/agents/skills', got %v", result.Directories["skills"])
 	}
 }
 
@@ -588,7 +594,7 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Write to skills path should fail
-	_, err = cli.FileWrite("a1", "s15", "/skills/test/new.txt", "hack")
+	_, err = cli.FileWrite("a1", "s15", "/agents/skills/test/new.txt", "hack")
 	if err == nil {
 		t.Error("expected write to skills to be blocked")
 	}
@@ -597,9 +603,27 @@ func TestSkillsPathReadOnly(t *testing.T) {
 	}
 
 	// Read from skills path should work
-	_, err = cli.FileRead("a1", "s15", "/skills/test/SKILLS.md")
+	_, err = cli.FileRead("a1", "s15", "/agents/skills/test/SKILLS.md")
 	if err != nil {
 		t.Errorf("expected read from skills to succeed, got %v", err)
+	}
+}
+
+func TestLegacySkillsPathActsAsOrdinaryDirectory(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.FileWrite("a1", "s15-alias", "/skills/test/new.txt", "hack")
+	if err != nil {
+		t.Fatalf("expected /skills path to behave like an ordinary directory: %v", err)
+	}
+
+	result, err := cli.FileRead("a1", "s15-alias", "/skills/test/new.txt")
+	if err != nil {
+		t.Fatalf("expected read back from ordinary /skills directory to succeed: %v", err)
+	}
+	if result.Content != "hack" {
+		t.Fatalf("expected content 'hack', got %q", result.Content)
 	}
 }
 
@@ -880,11 +904,45 @@ func TestSkillAgentList(t *testing.T) {
 	if s.Name != "list-test" {
 		t.Errorf("expected name 'list-test', got %s", s.Name)
 	}
-	if s.Path != "/skills/list-test" {
-		t.Errorf("expected path '/skills/list-test', got %s", s.Path)
+	if s.Path != "/agents/skills/list-test" {
+		t.Errorf("expected path '/agents/skills/list-test', got %s", s.Path)
 	}
 	if s.Frontmatter == "" {
 		t.Error("expected non-empty frontmatter")
+	}
+}
+
+func TestSkillAgentListUserLayerViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "user-skill-seed", "/home/skills/user-list/SKILLS.md",
+		"---\nname: user-list\ndescription: user layer\n---\nUser layer content",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("seed user skill failed: %v", err)
+	}
+
+	result, err := cli.SkillAgentList("a1", []string{"user-list"}, WithUserID("user-1"))
+	if err != nil {
+		t.Fatalf("SkillAgentList with user layer failed: %v", err)
+	}
+	if len(result.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	}
+
+	s := result.Skills[0]
+	if s.Name != "user-list" {
+		t.Fatalf("expected name 'user-list', got %s", s.Name)
+	}
+	if s.Source != "user" {
+		t.Fatalf("expected source 'user', got %s", s.Source)
+	}
+	if s.Path != "/home/skills/user-list" {
+		t.Fatalf("expected path '/home/skills/user-list', got %s", s.Path)
+	}
+	if !s.Writable {
+		t.Fatal("expected user-layer skill to be writable")
 	}
 }
 
@@ -1863,7 +1921,7 @@ func TestClient_FileWrite_AgentWorkspace_Skills(t *testing.T) {
 	}
 
 	// Write to skills path without AgentWorkspace — should fail with 403
-	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "blocked")
+	_, err = cli.FileWrite("a1", "sw-s1", "/agents/skills/sw-test/new.txt", "blocked")
 	if err == nil {
 		t.Error("expected write to skills without AgentWorkspace to be blocked")
 	}
@@ -1872,7 +1930,7 @@ func TestClient_FileWrite_AgentWorkspace_Skills(t *testing.T) {
 	}
 
 	// Write to skills path WITH AgentWorkspace — skills are always read-only
-	_, err = cli.FileWrite("a1", "sw-s1", "/skills/sw-test/new.txt", "allowed",
+	_, err = cli.FileWrite("a1", "sw-s1", "/agents/skills/sw-test/new.txt", "allowed",
 		WithFileWriteAgentWorkspace(),
 	)
 	if err == nil {
@@ -1986,9 +2044,9 @@ func TestGetFsInfoWithUserID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFsInfo with UserID failed: %v", err)
 	}
-	// In bwrap mode, userdata is at /home/userdata
-	if result.Directories["userdata"] != "/home/userdata" {
-		t.Errorf("expected userdata '/home/userdata', got %v", result.Directories["userdata"])
+	// In bwrap mode, userdata is at /home
+	if result.Directories["userdata"] != "/home" {
+		t.Errorf("expected userdata '/home', got %v", result.Directories["userdata"])
 	}
 }
 
@@ -2009,8 +2067,8 @@ func TestUserdataFileWriteAndRead(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Write to /userdata/ path with user_id
-	_, err := cli.FileWrite("a1", "ud-s1", "/userdata/config.json", `{"theme":"dark"}`,
+	// Write to the user's mounted home directory via the normal file API path contract.
+	_, err := cli.FileWrite("a1", "ud-s1", "/config.json", `{"theme":"dark"}`,
 		WithFileWriteUserID("user-1"),
 	)
 	if err != nil {
@@ -2018,7 +2076,7 @@ func TestUserdataFileWriteAndRead(t *testing.T) {
 	}
 
 	// Read back with same user_id
-	result, err := cli.FileRead("a1", "ud-s1", "/userdata/config.json",
+	result, err := cli.FileRead("a1", "ud-s1", "/config.json",
 		WithFileReadUserID("user-1"),
 	)
 	if err != nil {
@@ -2034,7 +2092,7 @@ func TestUserdataCrossAgentSharing(t *testing.T) {
 	defer cleanup()
 
 	// Write to userdata from agent-1
-	_, err := cli.FileWrite("a1", "ud-s1", "/userdata/shared.txt", "shared data",
+	_, err := cli.FileWrite("a1", "ud-s1", "/shared.txt", "shared data",
 		WithFileWriteUserID("user-1"),
 	)
 	if err != nil {
@@ -2042,7 +2100,7 @@ func TestUserdataCrossAgentSharing(t *testing.T) {
 	}
 
 	// Read from agent-2 with same user_id
-	result, err := cli.FileRead("a2", "ud-s2", "/userdata/shared.txt",
+	result, err := cli.FileRead("a2", "ud-s2", "/shared.txt",
 		WithFileReadUserID("user-1"),
 	)
 	if err != nil {
@@ -2053,32 +2111,62 @@ func TestUserdataCrossAgentSharing(t *testing.T) {
 	}
 }
 
-func TestUserdataWriteWithoutUserIDBlocked(t *testing.T) {
+func TestLegacyUserdataPathActsAsOrdinaryDirectory(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// Write to /userdata/ without user_id should fail
 	_, err := cli.FileWrite("a1", "ud-s3", "/userdata/test.txt", "no user")
-	if err == nil {
-		t.Error("expected error writing to /userdata/ without user_id")
+	if err != nil {
+		t.Fatalf("expected /userdata path to behave like an ordinary directory: %v", err)
+	}
+
+	result, err := cli.FileRead("a1", "ud-s3", "/userdata/test.txt")
+	if err != nil {
+		t.Fatalf("expected read back from ordinary /userdata directory to succeed: %v", err)
+	}
+	if result.Content != "no user" {
+		t.Fatalf("expected content 'no user', got %q", result.Content)
 	}
 }
 
-func TestUserdataReadWithoutUserIDBlocked(t *testing.T) {
+func TestLegacyProjectdataPathActsAsOrdinaryDirectory(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.FileWrite("a1", "pd-s0", "/projectdata/test.txt", "no project",
+		WithFileWriteProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("expected /projectdata path to behave like an ordinary directory: %v", err)
+	}
+
+	result, err := cli.FileRead("a1", "pd-s0", "/projectdata/test.txt",
+		WithFileReadProjectID("project-1"),
+	)
+	if err != nil {
+		t.Fatalf("expected read back from ordinary /projectdata directory to succeed: %v", err)
+	}
+	if result.Content != "no project" {
+		t.Fatalf("expected content 'no project', got %q", result.Content)
+	}
+}
+
+func TestUserdataReadWithoutUserIDFails(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
 	// First write with user_id
-	if _, err := cli.FileWrite("a1", "ud-s4", "/userdata/test.txt", "data",
+	if _, err := cli.FileWrite("a1", "ud-s4", "/test.txt", "data",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	// Read without user_id should fail
-	_, err := cli.FileRead("a1", "ud-s4", "/userdata/test.txt")
+	// Read without user_id - the file lives in the user's mounted /home and should
+	// not be visible from a session that does not mount that user.
+	_, err := cli.FileRead("a1", "ud-s4", "/test.txt")
 	if err == nil {
-		t.Error("expected error reading from /userdata/ without user_id")
+		t.Error("expected error reading from user home without user_id")
 	}
 }
 
@@ -2087,16 +2175,14 @@ func TestUserdataBashExec(t *testing.T) {
 	defer cleanup()
 
 	// Write a file via file API
-	if _, err := cli.FileWrite("a1", "ud-bash1", "/userdata/hello.txt", "hello from userdata",
+	if _, err := cli.FileWrite("a1", "ud-bash1", "/hello.txt", "hello from userdata",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	// Read it via bash with user_id.
-	// In direct mode, userdata is a symlink at <sessionDir>/userdata,
-	// so the path inside the working dir is "userdata/hello.txt".
-	result, err := cli.BashExec("a1", "ud-bash1", "cat userdata/hello.txt",
+	// Read it via bash with user_id from the mounted /home.
+	result, err := cli.BashExec("a1", "ud-bash1", "cat /home/hello.txt",
 		WithBashUserID("user-1"),
 	)
 	if err != nil {
@@ -2112,7 +2198,7 @@ func TestUserdataBashCreateSession(t *testing.T) {
 	defer cleanup()
 
 	// Write a file to userdata
-	if _, err := cli.FileWrite("a1", "ud-bash2", "/userdata/session-test.txt", "session data",
+	if _, err := cli.FileWrite("a1", "ud-bash2", "/session-test.txt", "session data",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
@@ -2127,9 +2213,8 @@ func TestUserdataBashCreateSession(t *testing.T) {
 		t.Fatalf("BashCreateSession with UserID failed: %v", err)
 	}
 
-	// Verify userdata is accessible via exec in the same agent.
-	// In direct mode, userdata symlink is at <workDir>/userdata.
-	result, err := cli.BashExec("a1", "ud-bash2", "cat userdata/session-test.txt",
+	// Verify the mounted /home is accessible in the same agent.
+	result, err := cli.BashExec("a1", "ud-bash2", "cat /home/session-test.txt",
 		WithBashUserID("user-1"),
 	)
 	if err != nil {
@@ -2145,16 +2230,15 @@ func TestUserdataCodeExecute(t *testing.T) {
 	defer cleanup()
 
 	// Write a file to userdata
-	if _, err := cli.FileWrite("a1", "ud-code1", "/userdata/data.txt", "42",
+	if _, err := cli.FileWrite("a1", "ud-code1", "/data.txt", "42",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	// Read it via python code with user_id.
-	// In direct mode, working dir is the session dir; userdata is a symlink at ./userdata.
+	// Read it via python code with user_id from the mounted /home.
 	result, err := cli.CodeExecute("a1", "ud-code1", "python",
-		`with open('userdata/data.txt') as f: print(f.read().strip())`,
+		`print(open('/home/data.txt').read().strip())`,
 		WithCodeUserID("user-1"),
 	)
 	if err != nil {
@@ -2170,7 +2254,7 @@ func TestUserdataFileUpload(t *testing.T) {
 	defer cleanup()
 
 	content := bytes.NewReader([]byte("uploaded to userdata"))
-	result, err := cli.FileUpload("a1", "ud-up1", "/userdata/uploaded.txt", content, "test.txt",
+	result, err := cli.FileUpload("a1", "ud-up1", "/uploaded.txt", content, "test.txt",
 		WithFileUploadUserID("user-1"),
 	)
 	if err != nil {
@@ -2181,7 +2265,7 @@ func TestUserdataFileUpload(t *testing.T) {
 	}
 
 	// Verify via read
-	readResult, err := cli.FileRead("a1", "ud-up1", "/userdata/uploaded.txt",
+	readResult, err := cli.FileRead("a1", "ud-up1", "/uploaded.txt",
 		WithFileReadUserID("user-1"),
 	)
 	if err != nil {
@@ -2196,13 +2280,13 @@ func TestUserdataFileDownload(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-dl1", "/userdata/download.txt", "download from userdata",
+	if _, err := cli.FileWrite("a1", "ud-dl1", "/download.txt", "download from userdata",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	data, err := cli.FileDownload("a1", "ud-dl1", "/userdata/download.txt",
+	data, err := cli.FileDownload("a1", "ud-dl1", "/download.txt",
 		WithFileDownloadUserID("user-1"),
 	)
 	if err != nil {
@@ -2217,13 +2301,13 @@ func TestUserdataFileReplace(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-rep1", "/userdata/replace.txt", "foo bar foo",
+	if _, err := cli.FileWrite("a1", "ud-rep1", "/replace.txt", "foo bar foo",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	rr, err := cli.FileReplace("a1", "ud-rep1", "/userdata/replace.txt", "foo", "baz",
+	rr, err := cli.FileReplace("a1", "ud-rep1", "/replace.txt", "foo", "baz",
 		WithFileReplaceUserID("user-1"),
 	)
 	if err != nil {
@@ -2233,7 +2317,7 @@ func TestUserdataFileReplace(t *testing.T) {
 		t.Errorf("expected 2 replacements, got %d", rr.ReplacedCount)
 	}
 
-	result, err := cli.FileRead("a1", "ud-rep1", "/userdata/replace.txt",
+	result, err := cli.FileRead("a1", "ud-rep1", "/replace.txt",
 		WithFileReadUserID("user-1"),
 	)
 	if err != nil {
@@ -2248,13 +2332,13 @@ func TestUserdataFileSearch(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-sea1", "/userdata/search.txt", "hello world\nfoo bar\nhello again",
+	if _, err := cli.FileWrite("a1", "ud-sea1", "/search.txt", "hello world\nfoo bar\nhello again",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	result, err := cli.FileSearch("a1", "ud-sea1", "/userdata/search.txt", "hello",
+	result, err := cli.FileSearch("a1", "ud-sea1", "/search.txt", "hello",
 		WithFileSearchUserID("user-1"),
 	)
 	if err != nil {
@@ -2269,13 +2353,13 @@ func TestUserdataFileFind(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-find1", "/userdata/docs/readme.md", "# Hello",
+	if _, err := cli.FileWrite("a1", "ud-find1", "/docs/readme.md", "# Hello",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	result, err := cli.FileFind("a1", "ud-find1", "/userdata", "*.md",
+	result, err := cli.FileFind("a1", "ud-find1", "/", "*.md",
 		WithFileFindUserID("user-1"),
 	)
 	if err != nil {
@@ -2290,13 +2374,13 @@ func TestUserdataFileGrep(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-grep1", "/userdata/grep_test.txt", "hello world\nfoo bar\nhello again",
+	if _, err := cli.FileWrite("a1", "ud-grep1", "/grep_test.txt", "hello world\nfoo bar\nhello again",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	result, err := cli.FileGrep("a1", "ud-grep1", "/userdata", "hello",
+	result, err := cli.FileGrep("a1", "ud-grep1", "/", "hello",
 		WithFileGrepUserID("user-1"),
 	)
 	if err != nil {
@@ -2311,18 +2395,18 @@ func TestUserdataFileGlob(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-glob1", "/userdata/test.py", "print('hi')",
+	if _, err := cli.FileWrite("a1", "ud-glob1", "/test.py", "print('hi')",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
-	if _, err := cli.FileWrite("a1", "ud-glob1", "/userdata/test.txt", "data",
+	if _, err := cli.FileWrite("a1", "ud-glob1", "/test.txt", "data",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	result, err := cli.FileGlob("a1", "ud-glob1", "/userdata", "*.py",
+	result, err := cli.FileGlob("a1", "ud-glob1", "/", "*.py",
 		WithFileGlobUserID("user-1"),
 	)
 	if err != nil {
@@ -2337,18 +2421,18 @@ func TestUserdataFileList(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "ud-list1", "/userdata/a.txt", "a",
+	if _, err := cli.FileWrite("a1", "ud-list1", "/a.txt", "a",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
-	if _, err := cli.FileWrite("a1", "ud-list1", "/userdata/b.txt", "b",
+	if _, err := cli.FileWrite("a1", "ud-list1", "/b.txt", "b",
 		WithFileWriteUserID("user-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	result, err := cli.FileList("a1", "ud-list1", "/userdata",
+	result, err := cli.FileList("a1", "ud-list1", "/",
 		WithFileListUserID("user-1"),
 	)
 	if err != nil {
@@ -2378,7 +2462,7 @@ func TestUserdataMaliciousUserIDPathTraversal(t *testing.T) {
 
 	for _, badID := range maliciousIDs {
 		t.Run("file_write_"+badID, func(t *testing.T) {
-			_, err := cli.FileWrite("a1", "ud-val1", "/userdata/test.txt", "data",
+			_, err := cli.FileWrite("a1", "ud-val1", "/test.txt", "data",
 				WithFileWriteUserID(badID),
 			)
 			if err == nil {
@@ -2387,7 +2471,7 @@ func TestUserdataMaliciousUserIDPathTraversal(t *testing.T) {
 		})
 
 		t.Run("file_read_"+badID, func(t *testing.T) {
-			_, err := cli.FileRead("a1", "ud-val1", "/userdata/test.txt",
+			_, err := cli.FileRead("a1", "ud-val1", "/test.txt",
 				WithFileReadUserID(badID),
 			)
 			if err == nil {
@@ -2436,8 +2520,8 @@ func TestProjectdataFsInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFsInfo with project_id failed: %v", err)
 	}
-	if result.Directories["projectdata"] == "" {
-		t.Fatalf("expected projectdata directory, got %v", result.Directories)
+	if result.Directories["projectdata"] != "/home/project" {
+		t.Fatalf("expected projectdata '/home/project', got %v", result.Directories["projectdata"])
 	}
 }
 
@@ -2445,13 +2529,13 @@ func TestProjectdataFileAPIsAndAuth(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "pd-s1", "/projectdata/docs/readme.md", "project docs",
+	if _, err := cli.FileWrite("a1", "pd-s1", "/home/project/docs/readme.md", "project docs",
 		WithFileWriteProjectID("project-1"),
 	); err != nil {
 		t.Fatalf("FileWrite to projectdata failed: %v", err)
 	}
 
-	readResult, err := cli.FileRead("a2", "pd-s2", "/projectdata/docs/readme.md",
+	readResult, err := cli.FileRead("a2", "pd-s2", "/home/project/docs/readme.md",
 		WithFileReadProjectID("project-1"),
 	)
 	if err != nil {
@@ -2461,7 +2545,7 @@ func TestProjectdataFileAPIsAndAuth(t *testing.T) {
 		t.Fatalf("expected shared content, got %q", readResult.Content)
 	}
 
-	listResult, err := cli.FileList("a1", "pd-s1", "/projectdata",
+	listResult, err := cli.FileList("a1", "pd-s1", "/home/project",
 		WithFileListProjectID("project-1"),
 		WithRecursive(true),
 	)
@@ -2472,11 +2556,11 @@ func TestProjectdataFileAPIsAndAuth(t *testing.T) {
 	for _, file := range listResult.Files {
 		paths[file.Path] = true
 	}
-	if !paths["/projectdata/docs"] || !paths["/projectdata/docs/readme.md"] {
+	if !paths["/home/project/docs"] || !paths["/home/project/docs/readme.md"] {
 		t.Fatalf("unexpected projectdata list paths: %v", paths)
 	}
 
-	data, err := cli.FileDownload("a1", "pd-s1", "/projectdata/docs/readme.md",
+	data, err := cli.FileDownload("a1", "pd-s1", "/home/project/docs/readme.md",
 		WithFileDownloadProjectID("project-1"),
 	)
 	if err != nil {
@@ -2487,18 +2571,17 @@ func TestProjectdataFileAPIsAndAuth(t *testing.T) {
 	}
 }
 
-
 func TestProjectdataBashAndCode(t *testing.T) {
 	cli, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	if _, err := cli.FileWrite("a1", "pd-runtime", "/projectdata/value.txt", "42",
+	if _, err := cli.FileWrite("a1", "pd-runtime", "/home/project/value.txt", "42",
 		WithFileWriteProjectID("project-1"),
 	); err != nil {
 		t.Fatalf("setup FileWrite failed: %v", err)
 	}
 
-	bashResult, err := cli.BashExec("a1", "pd-runtime", "cat projectdata/value.txt",
+	bashResult, err := cli.BashExec("a1", "pd-runtime", "cat /home/project/value.txt",
 		WithBashProjectID("project-1"),
 	)
 	if err != nil {
@@ -2508,7 +2591,7 @@ func TestProjectdataBashAndCode(t *testing.T) {
 		t.Fatalf("expected bash stdout 42, got %v", bashResult.Stdout)
 	}
 
-	codeResult, err := cli.CodeExecute("a1", "pd-runtime", "python", `print(open('projectdata/value.txt').read().strip())`,
+	codeResult, err := cli.CodeExecute("a1", "pd-runtime", "python", `print(open('/home/project/value.txt').read().strip())`,
 		WithCodeProjectID("project-1"),
 	)
 	if err != nil {
@@ -2519,665 +2602,702 @@ func TestProjectdataBashAndCode(t *testing.T) {
 	}
 }
 
-	// =============================================
-	// Bash missing tests
-	// =============================================
+// =============================================
+// Bash missing tests
+// =============================================
 
-	func TestBashCloseSession(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+func TestBashCloseSession(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		_, err := cli.BashCreateSession("a1", "bcs1", WithBashSID("to-close"))
+	_, err := cli.BashCreateSession("a1", "bcs1", WithBashSID("to-close"))
+	if err != nil {
+		t.Fatalf("BashCreateSession failed: %v", err)
+	}
+
+	sessions, err := cli.BashListSessions("bcs1")
+	if err != nil {
+		t.Fatalf("BashListSessions failed: %v", err)
+	}
+	found := false
+	for _, s := range sessions {
+		if s.SessionID == "to-close" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected to find 'to-close' session before closing")
+	}
+
+	err = cli.BashCloseSession("a1", "bcs1", "to-close")
+	if err != nil {
+		t.Fatalf("BashCloseSession failed: %v", err)
+	}
+
+	sessions2, _ := cli.BashListSessions("bcs1")
+	for _, s := range sessions2 {
+		if s.SessionID == "to-close" {
+			t.Error("expected 'to-close' session to be gone after close")
+		}
+	}
+}
+
+func TestBashExecWithExecDir(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	cli.FileWrite("a1", "ed1", "/subdir/placeholder.txt", "x")
+
+	result, err := cli.BashExec("a1", "ed1", "basename $(pwd)", WithExecDir("/subdir"))
+	if err != nil {
+		t.Fatalf("BashExec with ExecDir failed: %v", err)
+	}
+	if result.Stdout == nil || strings.TrimSpace(*result.Stdout) != "subdir" {
+		t.Errorf("expected stdout 'subdir', got %v", result.Stdout)
+	}
+}
+
+func TestBashExecWithTimeout(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.BashExec("a1", "to1", "echo fast", WithTimeout(5))
+	if err != nil {
+		t.Fatalf("BashExec with Timeout failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "fast\n" {
+		t.Errorf("expected stdout 'fast\\n', got %v", result.Stdout)
+	}
+}
+
+func TestBashOutputWithWait(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	result, err := cli.BashExec("a1", "w1", "sleep 0.1 && echo waited", WithAsyncMode(true))
+	if err != nil {
+		t.Fatalf("BashExec async failed: %v", err)
+	}
+	if result.Status != StatusRunning {
+		t.Fatalf("expected status running, got %s", result.Status)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var out *BashOutputResult
+	for time.Now().Before(deadline) {
+		out, err = cli.BashOutput("a1", "w1", result.CommandID, 0, 0, WithWait(1))
 		if err != nil {
-			t.Fatalf("BashCreateSession failed: %v", err)
+			t.Fatalf("BashOutput failed: %v", err)
 		}
+		if out.Command != nil && out.Command.Status == StatusCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if out == nil {
+		t.Fatal("never got output")
+	}
+	if out.Stdout != "waited\n" {
+		t.Errorf("expected stdout 'waited\\n', got %q", out.Stdout)
+	}
+}
 
-		sessions, err := cli.BashListSessions("bcs1")
-		if err != nil {
-			t.Fatalf("BashListSessions failed: %v", err)
-		}
-		found := false
-		for _, s := range sessions {
-			if s.SessionID == "to-close" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatal("expected to find 'to-close' session before closing")
-		}
+// =============================================
+// File option tests
+// =============================================
 
-		err = cli.BashCloseSession("a1", "bcs1", "to-close")
-		if err != nil {
-			t.Fatalf("BashCloseSession failed: %v", err)
-		}
+func TestFileGrepOptions(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		sessions2, _ := cli.BashListSessions("bcs1")
-		for _, s := range sessions2 {
-			if s.SessionID == "to-close" {
-				t.Error("expected 'to-close' session to be gone after close")
-			}
+	cli.FileWrite("a1", "go1", "/Hello.txt", "Hello World\nhello again\nGOODBYE")
+	cli.FileWrite("a1", "go1", "/test.py", "hello from python\nHello from python")
+
+	// Case insensitive
+	result, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true))
+	if err != nil {
+		t.Fatalf("FileGrep case insensitive failed: %v", err)
+	}
+	if len(result.Matches) < 4 {
+		t.Errorf("expected at least 4 matches with case insensitive, got %d", len(result.Matches))
+	}
+
+	// With context
+	cli.FileWrite("a1", "go1", "/ctx.txt", "line1\nline2 hello\nline3\nline4")
+	result2, err := cli.FileGrep("a1", "go1", "/", "hello", WithInclude([]string{"ctx.txt"}), WithContextBefore(1), WithContextAfter(1))
+	if err != nil {
+		t.Fatalf("FileGrep with context failed: %v", err)
+	}
+	if len(result2.Matches) == 0 {
+		t.Fatal("expected at least 1 match")
+	}
+	if len(result2.Matches[0].ContextBefore) != 1 || result2.Matches[0].ContextBefore[0] != "line1" {
+		t.Errorf("expected context_before ['line1'], got %v", result2.Matches[0].ContextBefore)
+	}
+	if len(result2.Matches[0].ContextAfter) != 1 || result2.Matches[0].ContextAfter[0] != "line3" {
+		t.Errorf("expected context_after ['line3'], got %v", result2.Matches[0].ContextAfter)
+	}
+
+	// MaxResults
+	result3, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true), WithGrepMaxResults(1))
+	if err != nil {
+		t.Fatalf("FileGrep with max results failed: %v", err)
+	}
+	if len(result3.Matches) != 1 {
+		t.Errorf("expected 1 match with MaxResults, got %d", len(result3.Matches))
+	}
+
+	// Exclude
+	result4, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true), WithGrepExclude([]string{"*.py"}))
+	if err != nil {
+		t.Fatalf("FileGrep with exclude failed: %v", err)
+	}
+	for _, m := range result4.Matches {
+		if strings.HasSuffix(m.File, ".py") {
+			t.Errorf("expected .py files to be excluded, got %s", m.File)
 		}
 	}
 
-	func TestBashExecWithExecDir(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	// Recursive
+	cli.FileWrite("a1", "go1", "/sub/deep.txt", "hello deep")
+	result5, err := cli.FileGrep("a1", "go1", "/", "deep", WithGrepRecursive(true))
+	if err != nil {
+		t.Fatalf("FileGrep recursive failed: %v", err)
+	}
+	if len(result5.Matches) == 0 {
+		t.Error("expected at least 1 match in recursive grep")
+	}
+}
 
-		cli.FileWrite("a1", "ed1", "/subdir/placeholder.txt", "x")
+func TestFileGlobOptions(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		result, err := cli.BashExec("a1", "ed1", "basename $(pwd)", WithExecDir("/subdir"))
-		if err != nil {
-			t.Fatalf("BashExec with ExecDir failed: %v", err)
-		}
-		if result.Stdout == nil || strings.TrimSpace(*result.Stdout) != "subdir" {
-			t.Errorf("expected stdout 'subdir', got %v", result.Stdout)
+	cli.FileWrite("a1", "glo1", "/visible.txt", "data")
+	cli.FileWrite("a1", "glo1", "/.hidden.txt", "hidden")
+	cli.FileWrite("a1", "glo1", "/sub/nested.txt", "nested")
+
+	// IncludeHidden
+	result, err := cli.FileGlob("a1", "glo1", "/", ".*", WithGlobIncludeHidden(true))
+	if err != nil {
+		t.Fatalf("FileGlob with hidden failed: %v", err)
+	}
+	if len(result.Files) == 0 {
+		t.Error("expected hidden files to be found")
+	}
+
+	// FilesOnly
+	result2, err := cli.FileGlob("a1", "glo1", "/", "*", WithFilesOnly(true))
+	if err != nil {
+		t.Fatalf("FileGlob files only failed: %v", err)
+	}
+	for _, f := range result2.Files {
+		if f.IsDirectory {
+			t.Errorf("expected only files, got directory: %s", f.Path)
 		}
 	}
 
-	func TestBashExecWithTimeout(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		result, err := cli.BashExec("a1", "to1", "echo fast", WithTimeout(5))
-		if err != nil {
-			t.Fatalf("BashExec with Timeout failed: %v", err)
-		}
-		if result.Stdout == nil || *result.Stdout != "fast\n" {
-			t.Errorf("expected stdout 'fast\\n', got %v", result.Stdout)
+	// IncludeMetadata
+	result3, err := cli.FileGlob("a1", "glo1", "/", "*.txt", WithIncludeMetadata(true))
+	if err != nil {
+		t.Fatalf("FileGlob with metadata failed: %v", err)
+	}
+	for _, f := range result3.Files {
+		if f.ModifiedTime == nil || *f.ModifiedTime == "" {
+			t.Errorf("expected metadata for %s", f.Path)
 		}
 	}
 
-	func TestBashOutputWithWait(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	// MaxResults
+	result4, err := cli.FileGlob("a1", "glo1", "/", "*", WithGlobMaxResults(1))
+	if err != nil {
+		t.Fatalf("FileGlob max results failed: %v", err)
+	}
+	if len(result4.Files) != 1 {
+		t.Errorf("expected 1 result with MaxResults, got %d", len(result4.Files))
+	}
 
-		result, err := cli.BashExec("a1", "w1", "sleep 0.1 && echo waited", WithAsyncMode(true))
-		if err != nil {
-			t.Fatalf("BashExec async failed: %v", err)
-		}
-		if result.Status != StatusRunning {
-			t.Fatalf("expected status running, got %s", result.Status)
-		}
+	// Exclude — verify the option is sent without error (server-side filtering not yet implemented)
+	cli.FileWrite("a1", "glo1-ex", "/keep.txt", "keep")
+	cli.FileWrite("a1", "glo1-ex", "/skip.go", "skip")
+	result5, err := cli.FileGlob("a1", "glo1-ex", "/", "*", WithGlobExclude([]string{"*.go"}))
+	if err != nil {
+		t.Fatalf("FileGlob exclude failed: %v", err)
+	}
+	if len(result5.Files) == 0 {
+		t.Error("expected some files with Exclude filter")
+	}
+}
 
-		deadline := time.Now().Add(5 * time.Second)
-		var out *BashOutputResult
-		for time.Now().Before(deadline) {
-			out, err = cli.BashOutput("a1", "w1", result.CommandID, 0, 0, WithWait(1))
-			if err != nil {
-				t.Fatalf("BashOutput failed: %v", err)
-			}
-			if out.Command != nil && out.Command.Status == StatusCompleted {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
+func TestFileListOptions(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	cli.FileWrite("a1", "lo1", "/a.txt", "a")
+	cli.FileWrite("a1", "lo1", "/b.py", "b")
+	cli.FileWrite("a1", "lo1", "/sub/c.txt", "c")
+	cli.FileWrite("a1", "lo1", "/.dotfile", "dot")
+
+	// ShowHidden
+	result, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithShowHidden(true))
+	if err != nil {
+		t.Fatalf("FileList with ShowHidden failed: %v", err)
+	}
+	foundDot := false
+	for _, f := range result.Files {
+		if f.Name == ".dotfile" {
+			foundDot = true
 		}
-		if out == nil {
-			t.Fatal("never got output")
+	}
+	if !foundDot {
+		t.Error("expected .dotfile to be listed with ShowHidden")
+	}
+
+	// FileTypes
+	result2, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithFileTypes([]string{".py"}))
+	if err != nil {
+		t.Fatalf("FileList with FileTypes failed: %v", err)
+	}
+	for _, f := range result2.Files {
+		if f.IsDirectory {
+			continue
 		}
-		if out.Stdout != "waited\n" {
-			t.Errorf("expected stdout 'waited\\n', got %q", out.Stdout)
+		if f.Extension == nil || *f.Extension != ".py" {
+			t.Errorf("expected only .py files, got %s (ext=%v)", f.Name, f.Extension)
 		}
 	}
 
-	// =============================================
-	// File option tests
-	// =============================================
+	// MaxDepth — test that the option is sent without error
+	result3, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithMaxDepth(1))
+	if err != nil {
+		t.Fatalf("FileList with MaxDepth failed: %v", err)
+	}
+	if len(result3.Files) == 0 {
+		t.Error("expected some files with MaxDepth=1")
+	}
 
-	func TestFileGrepOptions(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		cli.FileWrite("a1", "go1", "/Hello.txt", "Hello World\nhello again\nGOODBYE")
-		cli.FileWrite("a1", "go1", "/test.py", "hello from python\nHello from python")
-
-		// Case insensitive
-		result, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true))
-		if err != nil {
-			t.Fatalf("FileGrep case insensitive failed: %v", err)
-		}
-		if len(result.Matches) < 4 {
-			t.Errorf("expected at least 4 matches with case insensitive, got %d", len(result.Matches))
-		}
-
-		// With context
-		cli.FileWrite("a1", "go1", "/ctx.txt", "line1\nline2 hello\nline3\nline4")
-		result2, err := cli.FileGrep("a1", "go1", "/", "hello", WithInclude([]string{"ctx.txt"}), WithContextBefore(1), WithContextAfter(1))
-		if err != nil {
-			t.Fatalf("FileGrep with context failed: %v", err)
-		}
-		if len(result2.Matches) == 0 {
-			t.Fatal("expected at least 1 match")
-		}
-		if len(result2.Matches[0].ContextBefore) != 1 || result2.Matches[0].ContextBefore[0] != "line1" {
-			t.Errorf("expected context_before ['line1'], got %v", result2.Matches[0].ContextBefore)
-		}
-		if len(result2.Matches[0].ContextAfter) != 1 || result2.Matches[0].ContextAfter[0] != "line3" {
-			t.Errorf("expected context_after ['line3'], got %v", result2.Matches[0].ContextAfter)
-		}
-
-		// MaxResults
-		result3, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true), WithGrepMaxResults(1))
-		if err != nil {
-			t.Fatalf("FileGrep with max results failed: %v", err)
-		}
-		if len(result3.Matches) != 1 {
-			t.Errorf("expected 1 match with MaxResults, got %d", len(result3.Matches))
-		}
-
-		// Exclude
-		result4, err := cli.FileGrep("a1", "go1", "/", "hello", WithCaseInsensitive(true), WithGrepExclude([]string{"*.py"}))
-		if err != nil {
-			t.Fatalf("FileGrep with exclude failed: %v", err)
-		}
-		for _, m := range result4.Matches {
-			if strings.HasSuffix(m.File, ".py") {
-				t.Errorf("expected .py files to be excluded, got %s", m.File)
-			}
-		}
-
-		// Recursive
-		cli.FileWrite("a1", "go1", "/sub/deep.txt", "hello deep")
-		result5, err := cli.FileGrep("a1", "go1", "/", "deep", WithGrepRecursive(true))
-		if err != nil {
-			t.Fatalf("FileGrep recursive failed: %v", err)
-		}
-		if len(result5.Matches) == 0 {
-			t.Error("expected at least 1 match in recursive grep")
+	// IncludeSize
+	result4, err := cli.FileList("a1", "lo1", "/", WithIncludeSize(true))
+	if err != nil {
+		t.Fatalf("FileList with IncludeSize failed: %v", err)
+	}
+	for _, f := range result4.Files {
+		if !f.IsDirectory && f.Size == nil {
+			t.Errorf("expected size for file %s", f.Name)
 		}
 	}
 
-	func TestFileGlobOptions(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		cli.FileWrite("a1", "glo1", "/visible.txt", "data")
-		cli.FileWrite("a1", "glo1", "/.hidden.txt", "hidden")
-		cli.FileWrite("a1", "glo1", "/sub/nested.txt", "nested")
-
-		// IncludeHidden
-		result, err := cli.FileGlob("a1", "glo1", "/", ".*", WithGlobIncludeHidden(true))
-		if err != nil {
-			t.Fatalf("FileGlob with hidden failed: %v", err)
-		}
-		if len(result.Files) == 0 {
-			t.Error("expected hidden files to be found")
-		}
-
-		// FilesOnly
-		result2, err := cli.FileGlob("a1", "glo1", "/", "*", WithFilesOnly(true))
-		if err != nil {
-			t.Fatalf("FileGlob files only failed: %v", err)
-		}
-		for _, f := range result2.Files {
-			if f.IsDirectory {
-				t.Errorf("expected only files, got directory: %s", f.Path)
-			}
-		}
-
-		// IncludeMetadata
-		result3, err := cli.FileGlob("a1", "glo1", "/", "*.txt", WithIncludeMetadata(true))
-		if err != nil {
-			t.Fatalf("FileGlob with metadata failed: %v", err)
-		}
-		for _, f := range result3.Files {
-			if f.ModifiedTime == nil || *f.ModifiedTime == "" {
-				t.Errorf("expected metadata for %s", f.Path)
-			}
-		}
-
-		// MaxResults
-		result4, err := cli.FileGlob("a1", "glo1", "/", "*", WithGlobMaxResults(1))
-		if err != nil {
-			t.Fatalf("FileGlob max results failed: %v", err)
-		}
-		if len(result4.Files) != 1 {
-			t.Errorf("expected 1 result with MaxResults, got %d", len(result4.Files))
-		}
-
-		// Exclude — verify the option is sent without error (server-side filtering not yet implemented)
-		cli.FileWrite("a1", "glo1-ex", "/keep.txt", "keep")
-		cli.FileWrite("a1", "glo1-ex", "/skip.go", "skip")
-		result5, err := cli.FileGlob("a1", "glo1-ex", "/", "*", WithGlobExclude([]string{"*.go"}))
-		if err != nil {
-			t.Fatalf("FileGlob exclude failed: %v", err)
-		}
-		if len(result5.Files) == 0 {
-			t.Error("expected some files with Exclude filter")
+	// IncludePermissions
+	result5, err := cli.FileList("a1", "lo1", "/", WithIncludePermissions(true))
+	if err != nil {
+		t.Fatalf("FileList with IncludePermissions failed: %v", err)
+	}
+	for _, f := range result5.Files {
+		if f.Permissions == nil || *f.Permissions == "" {
+			t.Errorf("expected permissions for %s", f.Name)
 		}
 	}
+}
 
-	func TestFileListOptions(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+// =============================================
+// Registry missing tests
+// =============================================
 
-		cli.FileWrite("a1", "lo1", "/a.txt", "a")
-		cli.FileWrite("a1", "lo1", "/b.py", "b")
-		cli.FileWrite("a1", "lo1", "/sub/c.txt", "c")
-		cli.FileWrite("a1", "lo1", "/.dotfile", "dot")
+func TestRegistrySkillDeleteViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		// ShowHidden
-		result, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithShowHidden(true))
-		if err != nil {
-			t.Fatalf("FileList with ShowHidden failed: %v", err)
-		}
-		foundDot := false
-		for _, f := range result.Files {
-			if f.Name == ".dotfile" {
-				foundDot = true
-			}
-		}
-		if !foundDot {
-			t.Error("expected .dotfile to be listed with ShowHidden")
-		}
-
-		// FileTypes
-		result2, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithFileTypes([]string{".py"}))
-		if err != nil {
-			t.Fatalf("FileList with FileTypes failed: %v", err)
-		}
-		for _, f := range result2.Files {
-			if f.IsDirectory {
-				continue
-			}
-			if f.Extension == nil || *f.Extension != ".py" {
-				t.Errorf("expected only .py files, got %s (ext=%v)", f.Name, f.Extension)
-			}
-		}
-
-		// MaxDepth — test that the option is sent without error
-		result3, err := cli.FileList("a1", "lo1", "/", WithRecursive(true), WithMaxDepth(1))
-		if err != nil {
-			t.Fatalf("FileList with MaxDepth failed: %v", err)
-		}
-		if len(result3.Files) == 0 {
-			t.Error("expected some files with MaxDepth=1")
-		}
-
-		// IncludeSize
-		result4, err := cli.FileList("a1", "lo1", "/", WithIncludeSize(true))
-		if err != nil {
-			t.Fatalf("FileList with IncludeSize failed: %v", err)
-		}
-		for _, f := range result4.Files {
-			if !f.IsDirectory && f.Size == nil {
-				t.Errorf("expected size for file %s", f.Name)
-			}
-		}
-
-		// IncludePermissions
-		result5, err := cli.FileList("a1", "lo1", "/", WithIncludePermissions(true))
-		if err != nil {
-			t.Fatalf("FileList with IncludePermissions failed: %v", err)
-		}
-		for _, f := range result5.Files {
-			if f.Permissions == nil || *f.Permissions == "" {
-				t.Errorf("expected permissions for %s", f.Name)
-			}
-		}
+	_, err := cli.RegistrySkillCreate("del-test", "to be deleted")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	// =============================================
-	// Registry missing tests
-	// =============================================
-
-	func TestRegistrySkillDeleteViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		_, err := cli.RegistrySkillCreate("del-test", "to be deleted")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
-
-		err = cli.RegistrySkillDelete("del-test")
-		if err != nil {
-			t.Fatalf("RegistrySkillDelete failed: %v", err)
-		}
-
-		_, err = cli.RegistrySkillGet("del-test")
-		if err == nil {
-			t.Error("expected error getting deleted skill")
-		}
-		if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404, got %v", err)
-		}
+	err = cli.RegistrySkillDelete("del-test")
+	if err != nil {
+		t.Fatalf("RegistrySkillDelete failed: %v", err)
 	}
 
-	func TestRegistryVersionGetViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	_, err = cli.RegistrySkillGet("del-test")
+	if err == nil {
+		t.Error("expected error getting deleted skill")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %v", err)
+	}
+}
 
-		_, err := cli.RegistrySkillCreate("vget-test", "version get test")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
+func TestRegistryVersionGetViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		vcResult, err := cli.RegistryVersionCreate("vget-test", "test version", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate failed: %v", err)
-		}
-		version := vcResult.Version.Version
-
-		_, err = cli.RegistryVersionFileWrite("vget-test", version, "SKILLS.md", "---\nname: vget-test\n---\nContent.")
-		if err != nil {
-			t.Fatalf("RegistryVersionFileWrite failed: %v", err)
-		}
-
-		result, err := cli.RegistryVersionGet("vget-test", version)
-		if err != nil {
-			t.Fatalf("RegistryVersionGet failed: %v", err)
-		}
-		if result.Version.Version != version {
-			t.Errorf("expected version %s, got %s", version, result.Version.Version)
-		}
-		if result.Body == "" {
-			t.Error("expected non-empty body")
-		}
+	_, err := cli.RegistrySkillCreate("vget-test", "version get test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	func TestRegistryVersionListViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	vcResult, err := cli.RegistryVersionCreate("vget-test", "test version", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+	version := vcResult.Version.Version
 
-		_, err := cli.RegistrySkillCreate("vlist-test", "version list test")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
-
-		_, err = cli.RegistryVersionCreate("vlist-test", "v1", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate v1 failed: %v", err)
-		}
-		_, err = cli.RegistryVersionCreate("vlist-test", "v2", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate v2 failed: %v", err)
-		}
-
-		result, err := cli.RegistryVersionList("vlist-test")
-		if err != nil {
-			t.Fatalf("RegistryVersionList failed: %v", err)
-		}
-		if len(result.Versions) != 2 {
-			t.Errorf("expected 2 versions, got %d", len(result.Versions))
-		}
+	_, err = cli.RegistryVersionFileWrite("vget-test", version, "SKILLS.md", "---\nname: vget-test\n---\nContent.")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
 	}
 
-	func TestRegistryVersionDeleteViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	result, err := cli.RegistryVersionGet("vget-test", version)
+	if err != nil {
+		t.Fatalf("RegistryVersionGet failed: %v", err)
+	}
+	if result.Version.Version != version {
+		t.Errorf("expected version %s, got %s", version, result.Version.Version)
+	}
+	if result.Body == "" {
+		t.Error("expected non-empty body")
+	}
+}
 
-		_, err := cli.RegistrySkillCreate("vdel-test", "version delete test")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
+func TestRegistryVersionListViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		vcResult, err := cli.RegistryVersionCreate("vdel-test", "to delete", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate failed: %v", err)
-		}
-
-		_, err = cli.RegistryVersionCreate("vdel-test", "to keep", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate keep failed: %v", err)
-		}
-
-		err = cli.RegistryVersionDelete("vdel-test", vcResult.Version.Version)
-		if err != nil {
-			t.Fatalf("RegistryVersionDelete failed: %v", err)
-		}
-
-		listResult, _ := cli.RegistryVersionList("vdel-test")
-		if len(listResult.Versions) != 1 {
-			t.Errorf("expected 1 version after delete, got %d", len(listResult.Versions))
-		}
+	_, err := cli.RegistrySkillCreate("vlist-test", "version list test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	func TestRegistryVersionFileDeleteViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		_, err := cli.RegistrySkillCreate("vfdel-test", "version file delete test")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
-
-		vcResult, err := cli.RegistryVersionCreate("vfdel-test", "", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate failed: %v", err)
-		}
-		version := vcResult.Version.Version
-
-		_, err = cli.RegistryVersionFileWrite("vfdel-test", version, "to-delete.txt", "delete me")
-		if err != nil {
-			t.Fatalf("RegistryVersionFileWrite failed: %v", err)
-		}
-
-		delResult, err := cli.RegistryVersionFileDelete("vfdel-test", version, "to-delete.txt")
-		if err != nil {
-			t.Fatalf("RegistryVersionFileDelete failed: %v", err)
-		}
-		if delResult.Path != "to-delete.txt" {
-			t.Errorf("expected path 'to-delete.txt', got %q", delResult.Path)
-		}
-
-		_, err = cli.RegistryVersionFileRead("vfdel-test", version, "to-delete.txt")
-		if err == nil {
-			t.Error("expected error reading deleted file")
-		}
+	_, err = cli.RegistryVersionCreate("vlist-test", "v1", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate v1 failed: %v", err)
+	}
+	_, err = cli.RegistryVersionCreate("vlist-test", "v2", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate v2 failed: %v", err)
 	}
 
-	func TestRegistryCommitViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
+	result, err := cli.RegistryVersionList("vlist-test")
+	if err != nil {
+		t.Fatalf("RegistryVersionList failed: %v", err)
+	}
+	if len(result.Versions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(result.Versions))
+	}
+}
 
-		createAndDeploySkill(t, cli, "commit-test", "commit test")
+func TestRegistryVersionDeleteViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		_, err := cli.SkillAgentLoad("a1", []string{"commit-test"})
-		if err != nil {
-			t.Fatalf("SkillAgentLoad failed: %v", err)
-		}
-
-		result, err := cli.RegistryCommit("commit-test", "a1", "committed version", true)
-		if err != nil {
-			t.Fatalf("RegistryCommit failed: %v", err)
-		}
-		if result.Version.Version == "" {
-			t.Error("expected non-empty version")
-		}
-		if !strings.HasPrefix(result.Version.Source, "agent") {
-			t.Errorf("expected source to start with 'agent', got %s", result.Version.Source)
-		}
+	_, err := cli.RegistrySkillCreate("vdel-test", "version delete test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
 	}
 
-	func TestRegistryExportWithVersionViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		_, err := cli.RegistrySkillCreate("expver-test", "export version test")
-		if err != nil {
-			t.Fatalf("RegistrySkillCreate failed: %v", err)
-		}
-
-		vcResult, err := cli.RegistryVersionCreate("expver-test", "v1", false)
-		if err != nil {
-			t.Fatalf("RegistryVersionCreate failed: %v", err)
-		}
-
-		_, err = cli.RegistryVersionFileWrite("expver-test", vcResult.Version.Version, "data.txt", "versioned data")
-		if err != nil {
-			t.Fatalf("RegistryVersionFileWrite failed: %v", err)
-		}
-
-		body, err := cli.RegistryExport("expver-test", vcResult.Version.Version)
-		if err != nil {
-			t.Fatalf("RegistryExport with version failed: %v", err)
-		}
-		defer body.Close()
-
-		data, err := io.ReadAll(body)
-		if err != nil {
-			t.Fatalf("read export body failed: %v", err)
-		}
-
-		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			t.Fatalf("invalid ZIP: %v", err)
-		}
-
-		found := false
-		for _, f := range zr.File {
-			if f.Name == "data.txt" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("ZIP should contain data.txt")
-		}
+	vcResult, err := cli.RegistryVersionCreate("vdel-test", "to delete", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
 	}
 
-	func TestRegistryImportUploadViaClient(t *testing.T) {
-		cli, cleanup := setupTestServer(t)
-		defer cleanup()
-
-		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("import-upload-%d", time.Now().UnixNano()))
-		os.MkdirAll(tmpDir, 0755)
-		defer os.RemoveAll(tmpDir)
-
-		zipPath := filepath.Join(tmpDir, "skill.zip")
-		createTestZIPFile(t, zipPath, map[string]string{
-			"SKILLS.MD": "---\nname: upload-test\ndescription: uploaded skill\n---\nUploaded content.",
-		})
-
-		result, err := cli.RegistryImportUpload([]SkillUploadEntry{
-			{Name: "upload-test", ZipPath: zipPath},
-		})
-		if err != nil {
-			t.Fatalf("RegistryImportUpload failed: %v", err)
-		}
-		if len(result.Skills) != 1 {
-			t.Fatalf("expected 1 skill, got %d", len(result.Skills))
-		}
-		if result.Skills[0].Skill.Name != "upload-test" {
-			t.Errorf("expected name 'upload-test', got %s", result.Skills[0].Skill.Name)
-		}
-
-		getResult, err := cli.RegistrySkillGet("upload-test")
-		if err != nil {
-			t.Fatalf("RegistrySkillGet after upload failed: %v", err)
-		}
-		if getResult.Skill.Name != "upload-test" {
-			t.Errorf("expected 'upload-test', got %s", getResult.Skill.Name)
-		}
+	_, err = cli.RegistryVersionCreate("vdel-test", "to keep", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate keep failed: %v", err)
 	}
 
-	// =============================================
-	// Client core tests
-	// =============================================
+	err = cli.RegistryVersionDelete("vdel-test", vcResult.Version.Version)
+	if err != nil {
+		t.Fatalf("RegistryVersionDelete failed: %v", err)
+	}
 
-	func TestClientWithAPIKey(t *testing.T) {
-		gin.SetMode(gin.TestMode)
+	listResult, _ := cli.RegistryVersionList("vdel-test")
+	if len(listResult.Versions) != 1 {
+		t.Errorf("expected 1 version after delete, got %d", len(listResult.Versions))
+	}
+}
 
-		dir := filepath.Join(os.TempDir(), "client-auth-test-"+fmt.Sprintf("%d", time.Now().UnixNano()))
-		os.MkdirAll(dir, 0755)
-		globalSkillsDir := filepath.Join(dir, "global-skills")
-		os.MkdirAll(globalSkillsDir, 0755)
-		registryDir := filepath.Join(dir, "registry")
-		os.MkdirAll(registryDir, 0755)
-		fallbackDir := filepath.Join(dir, "fallback-logs")
-		mgr := session.NewManager(dir, 24*time.Hour)
-		mgr.SetGlobalSkillsRoot(globalSkillsDir)
-		mgr.SetRegistryRoot(registryDir)
+func TestRegistryVersionFileDeleteViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
 
-		auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
-		mgr.SetAuditWriter(auditW)
-		cmdExec, berr := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
-		if berr != nil {
-			t.Fatalf("bwrap not available: %v", berr)
+	_, err := cli.RegistrySkillCreate("vfdel-test", "version file delete test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
+	}
+
+	vcResult, err := cli.RegistryVersionCreate("vfdel-test", "", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+	version := vcResult.Version.Version
+
+	_, err = cli.RegistryVersionFileWrite("vfdel-test", version, "to-delete.txt", "delete me")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
+	}
+
+	delResult, err := cli.RegistryVersionFileDelete("vfdel-test", version, "to-delete.txt")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileDelete failed: %v", err)
+	}
+	if delResult.Path != "to-delete.txt" {
+		t.Errorf("expected path 'to-delete.txt', got %q", delResult.Path)
+	}
+
+	_, err = cli.RegistryVersionFileRead("vfdel-test", version, "to-delete.txt")
+	if err == nil {
+		t.Error("expected error reading deleted file")
+	}
+}
+
+func TestRegistryCommitViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	createAndDeploySkill(t, cli, "commit-test", "commit test")
+
+	_, err := cli.SkillAgentLoad("a1", []string{"commit-test"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad failed: %v", err)
+	}
+
+	result, err := cli.RegistryCommit("commit-test", "a1", "committed version", true)
+	if err != nil {
+		t.Fatalf("RegistryCommit failed: %v", err)
+	}
+	if result.Version.Version == "" {
+		t.Error("expected non-empty version")
+	}
+	if !strings.HasPrefix(result.Version.Source, "agent") {
+		t.Errorf("expected source to start with 'agent', got %s", result.Version.Source)
+	}
+}
+
+func TestRegistryCommitUserLayerViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	if _, err := cli.FileWrite("a1", "commit-user-seed", "/home/skills/commit-user/SKILLS.md",
+		"---\nname: commit-user\ndescription: user commit\n---\n## Instructions\nUse the user layer.",
+		WithFileWriteUserID("user-1"),
+	); err != nil {
+		t.Fatalf("seed user skill failed: %v", err)
+	}
+
+	result, err := cli.RegistryCommit("commit-user", "", "committed from user", true,
+		WithCommitSource("user"),
+		WithCommitUserID("user-1"),
+	)
+	if err != nil {
+		t.Fatalf("RegistryCommit from user layer failed: %v", err)
+	}
+	if result.Version.Version == "" {
+		t.Fatal("expected non-empty version")
+	}
+	if result.Version.Source != "user:user-1" {
+		t.Fatalf("expected source 'user:user-1', got %s", result.Version.Source)
+	}
+
+	loadResult, err := cli.SkillAgentLoad("a1", []string{"commit-user"})
+	if err != nil {
+		t.Fatalf("SkillAgentLoad after commit failed: %v", err)
+	}
+	if len(loadResult.Skills) != 1 {
+		t.Fatalf("expected 1 loaded skill, got %d", len(loadResult.Skills))
+	}
+	if loadResult.Skills[0].Source != "agent" {
+		t.Fatalf("expected committed skill to load from agent cache, got %s", loadResult.Skills[0].Source)
+	}
+	if !strings.Contains(loadResult.Skills[0].Content, "Use the user layer.") {
+		t.Fatalf("unexpected loaded content: %q", loadResult.Skills[0].Content)
+	}
+}
+
+func TestRegistryExportWithVersionViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := cli.RegistrySkillCreate("expver-test", "export version test")
+	if err != nil {
+		t.Fatalf("RegistrySkillCreate failed: %v", err)
+	}
+
+	vcResult, err := cli.RegistryVersionCreate("expver-test", "v1", false)
+	if err != nil {
+		t.Fatalf("RegistryVersionCreate failed: %v", err)
+	}
+
+	_, err = cli.RegistryVersionFileWrite("expver-test", vcResult.Version.Version, "data.txt", "versioned data")
+	if err != nil {
+		t.Fatalf("RegistryVersionFileWrite failed: %v", err)
+	}
+
+	body, err := cli.RegistryExport("expver-test", vcResult.Version.Version)
+	if err != nil {
+		t.Fatalf("RegistryExport with version failed: %v", err)
+	}
+	defer body.Close()
+
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read export body failed: %v", err)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("invalid ZIP: %v", err)
+	}
+
+	found := false
+	for _, f := range zr.File {
+		if f.Name == "data.txt" {
+			found = true
+			break
 		}
-		mgr.SetSessionInit(cmdExec.InitSession)
-		userdataDir := filepath.Join(dir, "users")
-		os.MkdirAll(userdataDir, 0755)
-		udMgr := userdata.NewManager(userdataDir)
-		udMgr.SetInitFn(cmdExec.InitUserdata)
-		projectdataDir := filepath.Join(dir, "projects")
-		os.MkdirAll(projectdataDir, 0755)
-		pdMgr := projectdata.NewManager(projectdataDir)
-		pdMgr.SetInitFn(cmdExec.InitProjectdata)
+	}
+	if !found {
+		t.Error("ZIP should contain data.txt")
+	}
+}
 
-		apiKey := "test-secret-key"
-		t.Setenv("SANDBOX_API_KEY", apiKey)
+func TestRegistryImportUploadViaClient(t *testing.T) {
+	cli, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("import-upload-%d", time.Now().UnixNano()))
+	os.MkdirAll(tmpDir, 0755)
+	defer os.RemoveAll(tmpDir)
+
+	zipPath := filepath.Join(tmpDir, "skill.zip")
+	createTestZIPFile(t, zipPath, map[string]string{
+		"SKILLS.MD": "---\nname: upload-test\ndescription: uploaded skill\n---\nUploaded content.",
+	})
+
+	result, err := cli.RegistryImportUpload([]SkillUploadEntry{
+		{Name: "upload-test", ZipPath: zipPath},
+	})
+	if err != nil {
+		t.Fatalf("RegistryImportUpload failed: %v", err)
+	}
+	if len(result.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	}
+	if result.Skills[0].Skill.Name != "upload-test" {
+		t.Errorf("expected name 'upload-test', got %s", result.Skills[0].Skill.Name)
+	}
+
+	getResult, err := cli.RegistrySkillGet("upload-test")
+	if err != nil {
+		t.Fatalf("RegistrySkillGet after upload failed: %v", err)
+	}
+	if getResult.Skill.Name != "upload-test" {
+		t.Errorf("expected 'upload-test', got %s", getResult.Skill.Name)
+	}
+}
+
+// =============================================
+// Client core tests
+// =============================================
+
+func TestClientWithAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dir := filepath.Join(os.TempDir(), "client-auth-test-"+fmt.Sprintf("%d", time.Now().UnixNano()))
+	os.MkdirAll(dir, 0755)
+	globalSkillsDir := filepath.Join(dir, "global-skills")
+	os.MkdirAll(globalSkillsDir, 0755)
+	registryDir := filepath.Join(dir, "registry")
+	os.MkdirAll(registryDir, 0755)
+	fallbackDir := filepath.Join(dir, "fallback-logs")
+	mgr := session.NewManager(dir, 24*time.Hour)
+	mgr.SetGlobalSkillsRoot(globalSkillsDir)
+	mgr.SetRegistryRoot(registryDir)
+
+	auditW := audit.NewWriterWithFallback(dir, 5*time.Minute, fallbackDir)
+	mgr.SetAuditWriter(auditW)
+	cmdExec := newTestBwrapExecutorOrSkip(t)
+	mgr.SetSessionInit(cmdExec.InitSession)
+	userdataDir := filepath.Join(dir, "users")
+	os.MkdirAll(userdataDir, 0755)
+	udMgr := userdata.NewManager(userdataDir)
+	udMgr.SetInitFn(cmdExec.InitUserdata)
+	projectdataDir := filepath.Join(dir, "projects")
+	os.MkdirAll(projectdataDir, 0755)
+	pdMgr := projectdata.NewManager(projectdataDir)
+	pdMgr.SetInitFn(cmdExec.InitProjectdata)
+
+	apiKey := "test-secret-key"
+	t.Setenv("SANDBOX_API_KEY", apiKey)
+	middleware.LoadAPIKeysFromEnv()
+	t.Cleanup(func() {
+		t.Setenv("SANDBOX_API_KEY", "")
 		middleware.LoadAPIKeysFromEnv()
-		t.Cleanup(func() {
-			t.Setenv("SANDBOX_API_KEY", "")
-			middleware.LoadAPIKeysFromEnv()
-		})
+	})
 
-		r := gin.New()
-		r.Use(gin.Recovery())
-		auth := middleware.AuthRequired()
+	r := gin.New()
+	r.Use(gin.Recovery())
+	auth := middleware.AuthRequired()
 
-		sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr)
-		r.GET("/v1/sandbox", sandboxH.GetContext)
+	sandboxH := handler.NewSandboxHandler(mgr, udMgr, pdMgr)
+	r.GET("/v1/sandbox", sandboxH.GetContext)
 
-		bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
-		r.POST("/v1/bash/exec", auth, bashH.Exec)
+	bashH := handler.NewBashHandler(mgr, udMgr, pdMgr, cmdExec)
+	r.POST("/v1/bash/exec", auth, bashH.Exec)
 
-		server := httptest.NewServer(r)
-		defer func() {
-			auditW.Close()
-			server.Close()
-			os.RemoveAll(dir)
-		}()
+	server := httptest.NewServer(r)
+	defer func() {
+		auditW.Close()
+		server.Close()
+		os.RemoveAll(dir)
+	}()
 
-		// Without API key — should fail
-		noKeyCli := NewClient(server.URL)
-		_, err := noKeyCli.BashExec("a1", "s1", "echo hello")
-		if err == nil {
-			t.Error("expected error without API key")
-		}
-		if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusUnauthorized {
-			t.Errorf("expected 401, got %v", err)
-		}
-
-		// Sandbox (no auth) should work without key
-		_, err = noKeyCli.GetSandboxContext()
-		if err != nil {
-			t.Fatalf("GetSandboxContext without key failed: %v", err)
-		}
-
-		// With API key — should succeed
-		keyCli := NewClient(server.URL).WithAPIKey(apiKey)
-		result, err := keyCli.BashExec("a1", "s1", "echo auth")
-		if err != nil {
-			t.Fatalf("BashExec with API key failed: %v", err)
-		}
-		if result.Stdout == nil || *result.Stdout != "auth\n" {
-			t.Errorf("expected stdout 'auth\\n', got %v", result.Stdout)
-		}
+	// Without API key — should fail
+	noKeyCli := NewClient(server.URL)
+	_, err := noKeyCli.BashExec("a1", "s1", "echo hello")
+	if err == nil {
+		t.Error("expected error without API key")
+	}
+	if apiErr, ok := err.(*Error); !ok || apiErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %v", err)
 	}
 
-	// =============================================
-	// Additional helpers
-	// =============================================
+	// Sandbox (no auth) should work without key
+	_, err = noKeyCli.GetSandboxContext()
+	if err != nil {
+		t.Fatalf("GetSandboxContext without key failed: %v", err)
+	}
 
-	func createTestZIPFile(t *testing.T, zipPath string, files map[string]string) {
-		t.Helper()
+	// With API key — should succeed
+	keyCli := NewClient(server.URL).WithAPIKey(apiKey)
+	result, err := keyCli.BashExec("a1", "s1", "echo auth")
+	if err != nil {
+		t.Fatalf("BashExec with API key failed: %v", err)
+	}
+	if result.Stdout == nil || *result.Stdout != "auth\n" {
+		t.Errorf("expected stdout 'auth\\n', got %v", result.Stdout)
+	}
+}
 
-		f, err := os.Create(zipPath)
+// =============================================
+// Additional helpers
+// =============================================
+
+func createTestZIPFile(t *testing.T, zipPath string, files map[string]string) {
+	t.Helper()
+
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	w := zip.NewWriter(f)
+	for name, content := range files {
+		entry, err := w.Create(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
-
-		w := zip.NewWriter(f)
-		for name, content := range files {
-			entry, err := w.Create(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			io.WriteString(entry, content)
-		}
-		w.Close()
+		io.WriteString(entry, content)
 	}
+	w.Close()
+}

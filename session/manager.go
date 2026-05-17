@@ -135,7 +135,7 @@ func IsSkillsPath(reqPath string) bool {
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = "/" + cleanPath
 	}
-	return cleanPath == "/skills" || strings.HasPrefix(cleanPath, "/skills/")
+	return cleanPath == "/agents/skills" || strings.HasPrefix(cleanPath, "/agents/skills/")
 }
 
 // RejectDotDot rejects paths containing ".." components.
@@ -167,14 +167,14 @@ func resolveUnder(rootDir, reqPath string) (string, error) {
 	return realPath, nil
 }
 
-// resolveSkillsPath resolves a /skills/... request path to the agent's skills directory.
+// resolveSkillsPath resolves an /agents/skills/... request path to the agent's skills directory.
 func (m *Manager) resolveSkillsPath(agentID, reqPath string) (string, error) {
 	skillsRoot := filepath.Clean(m.SkillsRoot(agentID))
 	cleanPath := filepath.Clean(reqPath)
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = "/" + cleanPath
 	}
-	relPath := strings.TrimPrefix(cleanPath, "/skills")
+	relPath := strings.TrimPrefix(cleanPath, "/agents/skills")
 	relPath = strings.TrimPrefix(relPath, "/")
 	return resolveUnder(skillsRoot, relPath)
 }
@@ -189,7 +189,7 @@ func cleanRequestPath(reqPath string) string {
 }
 
 // ResolvePath rewrites an absolute path to be within the session directory.
-// Paths starting with /skills/ are mapped to the agent's skills directory (read-only).
+// Paths starting with /agents/skills/ are mapped to the agent's skills directory (read-only).
 // The given path must be absolute. Returns the real path and an error if path escapes.
 func (m *Manager) ResolvePath(agentID, sessionID, reqPath string) (string, error) {
 	m.Touch(agentID, sessionID)

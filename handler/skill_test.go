@@ -286,8 +286,8 @@ func TestAgentSkillList(t *testing.T) {
 	if skill["name"] != "list-skill" {
 		t.Errorf("expected name 'list-skill', got %v", skill["name"])
 	}
-	if skill["path"] != "/skills/list-skill" {
-		t.Errorf("expected path '/skills/list-skill', got %v", skill["path"])
+	if skill["path"] != "/agents/skills/list-skill" {
+		t.Errorf("expected path '/agents/skills/list-skill', got %v", skill["path"])
 	}
 	fm := skill["frontmatter"].(string)
 	if !strings.Contains(fm, "name: list-skill") {
@@ -299,16 +299,14 @@ func TestAgentSkillList(t *testing.T) {
 }
 
 func TestAgentSkillListLoad_LayerPriorityAndFullUserProjectDiscovery(t *testing.T) {
-	r, mgr, udMgr, pdMgr := setupSkillRouterWithLayers()
+	r, mgr, udMgr, _ := setupSkillRouterWithLayers()
 
 	writeLayerSkill(t, udMgr.Root("u1"), "shared", "---\nname: shared\n---\nuser shared")
 	writeLayerSkill(t, udMgr.Root("u1"), "user-only", "---\nname: user-only\n---\nuser only")
-	writeLayerSkill(t, pdMgr.Root("p1"), "shared", "---\nname: shared\n---\nproject shared")
-	writeLayerSkill(t, pdMgr.Root("p1"), "project-only", "---\nname: project-only\n---\nproject only")
 	writeGlobalSkill(t, mgr, "shared", "---\nname: shared\n---\nagent shared")
 	writeGlobalSkill(t, mgr, "agent-only", "---\nname: agent-only\n---\nagent only")
 
-	body := `{"skill_ids":["shared","agent-only"],"user_id":"u1","project_id":"p1"}`
+	body := `{"skill_ids":["shared","agent-only"],"user_id":"u1"}`
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
@@ -321,8 +319,8 @@ func TestAgentSkillListLoad_LayerPriorityAndFullUserProjectDiscovery(t *testing.
 	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("unmarshal list response: %v", err)
 	}
-	if got := len(listResp.Data.Skills); got != 4 {
-		t.Fatalf("expected 4 skills, got %d: %+v", got, listResp.Data.Skills)
+	if got := len(listResp.Data.Skills); got != 3 {
+		t.Fatalf("expected 3 skills, got %d: %+v", got, listResp.Data.Skills)
 	}
 
 	byName := make(map[string]model.SkillSummary)
@@ -339,10 +337,9 @@ func TestAgentSkillListLoad_LayerPriorityAndFullUserProjectDiscovery(t *testing.
 			t.Fatalf("skill %s = source:%s path:%s writable:%v", name, skill.Source, skill.Path, skill.Writable)
 		}
 	}
-	assertSkillSummary("shared", "user", "/userdata/skills/shared", true)
-	assertSkillSummary("user-only", "user", "/userdata/skills/user-only", true)
-	assertSkillSummary("project-only", "project", "/projectdata/skills/project-only", true)
-	assertSkillSummary("agent-only", "agent", "/skills/agent-only", false)
+	assertSkillSummary("shared", "user", "/home/skills/shared", true)
+	assertSkillSummary("user-only", "user", "/home/skills/user-only", true)
+	assertSkillSummary("agent-only", "agent", "/agents/skills/agent-only", false)
 
 	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/load", body)
 	if w.Code != http.StatusOK {
@@ -362,7 +359,7 @@ func TestAgentSkillListLoad_LayerPriorityAndFullUserProjectDiscovery(t *testing.
 	if loaded["shared"].Source != "user" || loaded["shared"].Content != "user shared" {
 		t.Fatalf("expected shared to load from user layer, got %+v", loaded["shared"])
 	}
-	if loaded["user-only"].Content != "user only" || loaded["project-only"].Content != "project only" || loaded["agent-only"].Content != "agent only" {
+	if loaded["user-only"].Content != "user only" || loaded["agent-only"].Content != "agent only" {
 		t.Fatalf("unexpected loaded skills: %+v", loaded)
 	}
 }
@@ -374,11 +371,6 @@ func TestAgentSkillListLoad_RejectInvalidLayerIDs(t *testing.T) {
 		w := doRequest(t, r, http.MethodPost, path, `{"skill_ids":["s"],"user_id":"../evil"}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: expected 400 for invalid user_id, got %d %s", path, w.Code, w.Body.String())
-		}
-
-		w = doRequest(t, r, http.MethodPost, path, `{"skill_ids":["s"],"project_id":"../evil"}`)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("%s: expected 400 for invalid project_id, got %d %s", path, w.Code, w.Body.String())
 		}
 	}
 }
@@ -1138,7 +1130,7 @@ func TestAgentSkillList_UserOnlyNoProjectNoAgent(t *testing.T) {
 		t.Fatalf("expected 2 skills, got %d", got)
 	}
 	for _, s := range listResp.Data.Skills {
-		if s.Source != "user" || !s.Writable || !strings.HasPrefix(s.Path, "/userdata/skills/") {
+		if s.Source != "user" || !s.Writable || !strings.HasPrefix(s.Path, "/home/skills/") {
 			t.Errorf("skill %s: source=%s writable=%v path=%s", s.Name, s.Source, s.Writable, s.Path)
 		}
 		if strings.Contains(s.Frontmatter, "---") {
@@ -1173,34 +1165,6 @@ func TestAgentSkillList_UserOnlyNoProjectNoAgent(t *testing.T) {
 	}
 }
 
-func TestAgentSkillList_ProjectOnlyNoUserNoAgent(t *testing.T) {
-	r, _, _, pdMgr := setupSkillRouterWithLayers()
-
-	writeLayerSkill(t, pdMgr.Root("p1"), "p-alpha", "---\nname: p-alpha\n---\nproject alpha body")
-	writeLayerSkill(t, pdMgr.Root("p1"), "p-beta", "---\nname: p-beta\n---\nproject beta body")
-
-	body := `{"skill_ids":[],"project_id":"p1"}`
-	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
-	}
-	var listResp struct {
-		Success bool                       `json:"success"`
-		Data    model.AgentSkillListResult `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := len(listResp.Data.Skills); got != 2 {
-		t.Fatalf("expected 2 skills, got %d", got)
-	}
-	for _, s := range listResp.Data.Skills {
-		if s.Source != "project" || !s.Writable || !strings.HasPrefix(s.Path, "/projectdata/skills/") {
-			t.Errorf("skill %s: source=%s writable=%v path=%s", s.Name, s.Source, s.Writable, s.Path)
-		}
-	}
-}
-
 func TestAgentSkillList_AgentOnlyViaLayersRouter(t *testing.T) {
 	r, mgr, _, _ := setupSkillRouterWithLayers()
 
@@ -1223,80 +1187,23 @@ func TestAgentSkillList_AgentOnlyViaLayersRouter(t *testing.T) {
 		t.Fatalf("expected 2 skills, got %d", got)
 	}
 	for _, s := range listResp.Data.Skills {
-		if s.Source != "agent" || s.Writable || !strings.HasPrefix(s.Path, "/skills/") {
+		if s.Source != "agent" || s.Writable || !strings.HasPrefix(s.Path, "/agents/skills/") {
 			t.Errorf("skill %s: source=%s writable=%v path=%s", s.Name, s.Source, s.Writable, s.Path)
 		}
 	}
 }
 
-// =============================================
-// Skills Load — Two-Layer Overlap Tests
-// =============================================
-
-func TestAgentSkillList_UserProjectOverlapNoAgent(t *testing.T) {
-	r, _, udMgr, pdMgr := setupSkillRouterWithLayers()
-
-	writeLayerSkill(t, udMgr.Root("u1"), "overlap", "---\nname: overlap\n---\nuser overlap body")
-	writeLayerSkill(t, pdMgr.Root("p1"), "overlap", "---\nname: overlap\n---\nproject overlap body")
-	writeLayerSkill(t, pdMgr.Root("p1"), "proj-extra", "---\nname: proj-extra\n---\nproject extra body")
-
-	body := `{"skill_ids":[],"user_id":"u1","project_id":"p1"}`
-
-	// List
-	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
-	}
-	var listResp struct {
-		Success bool                       `json:"success"`
-		Data    model.AgentSkillListResult `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := len(listResp.Data.Skills); got != 2 {
-		t.Fatalf("expected 2 skills, got %d: %+v", got, listResp.Data.Skills)
-	}
-	byName := make(map[string]model.SkillSummary)
-	for _, s := range listResp.Data.Skills {
-		byName[s.Name] = s
-	}
-	if byName["overlap"].Source != "user" {
-		t.Errorf("overlap should come from user layer, got source=%s", byName["overlap"].Source)
-	}
-	if byName["proj-extra"].Source != "project" {
-		t.Errorf("proj-extra should come from project layer, got source=%s", byName["proj-extra"].Source)
-	}
-
-	// Load — verify overlap content comes from user layer
-	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/load", body)
-	var loadResp struct {
-		Success bool                       `json:"success"`
-		Data    model.AgentSkillLoadResult `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &loadResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	loaded := make(map[string]model.SkillContent)
-	for _, s := range loadResp.Data.Skills {
-		loaded[s.Name] = s
-	}
-	if loaded["overlap"].Content != "user overlap body" {
-		t.Errorf("overlap body should come from user layer, got %q", loaded["overlap"].Content)
-	}
-}
 
 // =============================================
 // Skills Load — Empty skill_ids with Layer Skills
 // =============================================
 
-func TestAgentSkillList_EmptySkillIDsWithUserProjectSkills(t *testing.T) {
-	r, _, udMgr, pdMgr := setupSkillRouterWithLayers()
+func TestAgentSkillList_EmptySkillIDsWithUserSkills(t *testing.T) {
+	r, _, udMgr, _ := setupSkillRouterWithLayers()
 
 	writeLayerSkill(t, udMgr.Root("u1"), "us", "---\nname: us\n---\nuser skill")
-	writeLayerSkill(t, pdMgr.Root("p1"), "ps", "---\nname: ps\n---\nproject skill")
 
-	body := `{"skill_ids":[],"user_id":"u1","project_id":"p1"}`
+	body := `{"skill_ids":[],"user_id":"u1"}`
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
@@ -1308,15 +1215,15 @@ func TestAgentSkillList_EmptySkillIDsWithUserProjectSkills(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got := len(listResp.Data.Skills); got != 2 {
-		t.Fatalf("expected 2 skills discovered by scanning, got %d", got)
+	if got := len(listResp.Data.Skills); got != 1 {
+		t.Fatalf("expected 1 skill discovered by scanning, got %d", got)
 	}
 	sources := make(map[string]bool)
 	for _, s := range listResp.Data.Skills {
 		sources[s.Source] = true
 	}
-	if !sources["user"] || !sources["project"] {
-		t.Errorf("expected both user and project sources, got %+v", listResp.Data.Skills)
+	if !sources["user"] {
+		t.Errorf("expected user source, got %+v", listResp.Data.Skills)
 	}
 }
 
@@ -1325,10 +1232,9 @@ func TestAgentSkillList_EmptySkillIDsWithUserProjectSkills(t *testing.T) {
 // =============================================
 
 func TestAgentSkillList_OnlyUserIDProvided(t *testing.T) {
-	r, _, udMgr, pdMgr := setupSkillRouterWithLayers()
+	r, _, udMgr, _ := setupSkillRouterWithLayers()
 
 	writeLayerSkill(t, udMgr.Root("u1"), "user-s", "---\nname: user-s\n---\nuser content")
-	writeLayerSkill(t, pdMgr.Root("p1"), "proj-s", "---\nname: proj-s\n---\nproject content")
 
 	body := `{"skill_ids":[],"user_id":"u1"}`
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
@@ -1350,45 +1256,18 @@ func TestAgentSkillList_OnlyUserIDProvided(t *testing.T) {
 	}
 }
 
-func TestAgentSkillList_OnlyProjectIDProvided(t *testing.T) {
-	r, _, udMgr, pdMgr := setupSkillRouterWithLayers()
-
-	writeLayerSkill(t, udMgr.Root("u1"), "user-s", "---\nname: user-s\n---\nuser content")
-	writeLayerSkill(t, pdMgr.Root("p1"), "proj-s", "---\nname: proj-s\n---\nproject content")
-
-	body := `{"skill_ids":[],"project_id":"p1"}`
-	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
-	}
-	var listResp struct {
-		Success bool                       `json:"success"`
-		Data    model.AgentSkillListResult `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := len(listResp.Data.Skills); got != 1 {
-		t.Fatalf("expected 1 project skill only, got %d", got)
-	}
-	if listResp.Data.Skills[0].Name != "proj-s" {
-		t.Errorf("expected proj-s, got %s", listResp.Data.Skills[0].Name)
-	}
-}
 
 // =============================================
 // Skills Load — Frontmatter Handling for Layer Skills
 // =============================================
 
-func TestAgentSkillList_UserProjectFrontmatterExtraction(t *testing.T) {
-	r, _, udMgr, pdMgr := setupSkillRouterWithLayers()
+func TestAgentSkillList_UserFrontmatterExtraction(t *testing.T) {
+	r, _, udMgr, _ := setupSkillRouterWithLayers()
 
 	writeLayerSkill(t, udMgr.Root("u1"), "fm-skill",
 		"---\nname: fm-skill\ndescription: \"A skill\"\ntags: [x, y]\n---\n## Body\nContent here.")
-	writeLayerSkill(t, pdMgr.Root("p1"), "pf-skill",
-		"---\nname: pf-skill\nversion: \"1.0\"\n---\n## Project Body\nMore content.")
 
-	body := `{"skill_ids":[],"user_id":"u1","project_id":"p1"}`
+	body := `{"skill_ids":[],"user_id":"u1"}`
 
 	// List — frontmatter fields without --- delimiters
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
@@ -1416,11 +1295,6 @@ func TestAgentSkillList_UserProjectFrontmatterExtraction(t *testing.T) {
 	if strings.Contains(byName["fm-skill"].Frontmatter, "---") {
 		t.Error("frontmatter should not contain --- delimiters")
 	}
-	// Project skill frontmatter
-	if !strings.Contains(byName["pf-skill"].Frontmatter, "version:") {
-		t.Errorf("expected frontmatter to contain 'version:', got %q", byName["pf-skill"].Frontmatter)
-	}
-
 	// Load — body only, no frontmatter
 	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/load", body)
 	var loadResp struct {
@@ -1516,7 +1390,7 @@ func TestAgentSkillList_SkillDirWithoutSkillsMD(t *testing.T) {
 // TestAgentSkillList_SkillMDVariants verifies that scanLayerSkills discovers
 // skills using any accepted filename variant (SKILLS.md, SKILLS.MD, SKILL.md).
 func TestAgentSkillList_SkillMDVariants(t *testing.T) {
-	r, _, _, pdMgr := setupSkillRouterWithLayers()
+	r, _, udMgr, _ := setupSkillRouterWithLayers()
 
 	// Create skills with different filename variants
 	for _, tc := range []struct {
@@ -1527,7 +1401,7 @@ func TestAgentSkillList_SkillMDVariants(t *testing.T) {
 		{"skill-allupper", "SKILLS.MD"},
 		{"skill-singular", "SKILL.md"},
 	} {
-		dir := filepath.Join(pdMgr.Root("p1"), "skills", tc.name)
+		dir := filepath.Join(udMgr.Root("u1"), "skills", tc.name)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatalf("mkdir %s: %v", tc.name, err)
 		}
@@ -1537,7 +1411,7 @@ func TestAgentSkillList_SkillMDVariants(t *testing.T) {
 		}
 	}
 
-	body := `{"skill_ids":[],"project_id":"p1"}`
+	body := `{"skill_ids":[],"user_id":"u1"}`
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/list", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list failed: %d %s", w.Code, w.Body.String())
@@ -1555,8 +1429,8 @@ func TestAgentSkillList_SkillMDVariants(t *testing.T) {
 	found := map[string]bool{}
 	for _, s := range listResp.Data.Skills {
 		found[s.Name] = true
-		if s.Source != "project" {
-			t.Errorf("skill %s: expected source=project, got %s", s.Name, s.Source)
+		if s.Source != "user" {
+			t.Errorf("skill %s: expected source=user, got %s", s.Name, s.Source)
 		}
 	}
 	for _, name := range []string{"skill-upper", "skill-allupper", "skill-singular"} {
@@ -1626,16 +1500,15 @@ func TestAgentSkillList_AgentCacheNotPopulatedForOverriddenSkill(t *testing.T) {
 // Skills Load — Cleanup with Layer Skills Present
 // =============================================
 
-func TestAgentSkillCleanup_WithUserProjectSkillsPresent(t *testing.T) {
-	r, mgr, udMgr, pdMgr := setupSkillRouterWithLayers()
+func TestAgentSkillCleanup_WithUserSkillsPresent(t *testing.T) {
+	r, mgr, udMgr, _ := setupSkillRouterWithLayers()
 
 	writeLayerSkill(t, udMgr.Root("u1"), "user-s", "---\nname: user-s\n---\nuser body")
-	writeLayerSkill(t, pdMgr.Root("p1"), "proj-s", "---\nname: proj-s\n---\nproject body")
 	writeGlobalSkill(t, mgr, "agent-keep", "---\nname: agent-keep\n---\nkeep body")
 	writeGlobalSkill(t, mgr, "agent-remove", "---\nname: agent-remove\n---\nremove body")
 
-	// Load all four
-	body := `{"skill_ids":["agent-keep","agent-remove"],"user_id":"u1","project_id":"p1"}`
+	// Load all three
+	body := `{"skill_ids":["agent-keep","agent-remove"],"user_id":"u1"}`
 	w := doRequest(t, r, http.MethodPost, "/v1/skills/agents/cleanup-a/load", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("load failed: %d %s", w.Code, w.Body.String())
@@ -1649,7 +1522,7 @@ func TestAgentSkillCleanup_WithUserProjectSkillsPresent(t *testing.T) {
 	}
 
 	// Load with cleanup, keeping only agent-keep
-	cleanupBody := `{"skill_ids":["agent-keep"],"user_id":"u1","project_id":"p1","cleanup":true}`
+	cleanupBody := `{"skill_ids":["agent-keep"],"user_id":"u1","cleanup":true}`
 	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/cleanup-a/load", cleanupBody)
 	if w.Code != http.StatusOK {
 		t.Fatalf("cleanup load failed: %d %s", w.Code, w.Body.String())
@@ -1663,15 +1536,12 @@ func TestAgentSkillCleanup_WithUserProjectSkillsPresent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(mgr.SkillsRoot("cleanup-a"), "agent-keep")); err != nil {
 		t.Errorf("agent-keep should still be cached: %v", err)
 	}
-	// User and project skill dirs should be untouched
+	// User skill dirs should be untouched
 	if _, err := os.Stat(filepath.Join(udMgr.Root("u1"), "skills", "user-s", "SKILLS.md")); err != nil {
 		t.Errorf("user skill should be untouched: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(pdMgr.Root("p1"), "skills", "proj-s", "SKILLS.md")); err != nil {
-		t.Errorf("project skill should be untouched: %v", err)
-	}
 
-	// Response should have 3 skills (user + project + kept agent)
+	// Response should have 2 skills (user + kept agent)
 	var loadResp struct {
 		Success bool                       `json:"success"`
 		Data    model.AgentSkillLoadResult `json:"data"`
@@ -1679,8 +1549,8 @@ func TestAgentSkillCleanup_WithUserProjectSkillsPresent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &loadResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got := len(loadResp.Data.Skills); got != 3 {
-		t.Fatalf("expected 3 skills after cleanup, got %d: %+v", got, loadResp.Data.Skills)
+	if got := len(loadResp.Data.Skills); got != 2 {
+		t.Fatalf("expected 2 skills after cleanup, got %d: %+v", got, loadResp.Data.Skills)
 	}
 }
 

@@ -19,20 +19,15 @@ import (
 const defaultExecPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 const (
+	SandboxRoot           = "/"
 	SandboxHome           = "/home"
-	SandboxSkillsDir      = "/home/skills"
-	SandboxUserdataDir    = "/home/userdata"
-	SandboxProjectdataDir = "/home/projectdata"
+	SandboxSkillsDir      = "/agents/skills"
+	SandboxProjectdataDir = "/home/project"
 )
 
-func validateOptionalUserProjectIDs(userID, projectID string) error {
+func validateOptionalUserID(userID string) error {
 	if userID != "" {
 		if err := validateRequiredID("user_id", userID); err != nil {
-			return err
-		}
-	}
-	if projectID != "" {
-		if err := validateRequiredID("project_id", projectID); err != nil {
 			return err
 		}
 	}
@@ -99,12 +94,21 @@ func resolveRoots(mgr *session.Manager, udMgr *userdata.Manager, pdMgr *projectd
 	return roots, nil
 }
 
-// sandboxPathMapping holds the host-to-sandbox path mapping configuration.
+// sandboxPathMapping holds the host-side roots corresponding to sandbox-visible mount points.
 type sandboxPathMapping struct {
 	HostRoot        string
 	SkillsRoot      string
 	UserdataRoot    string // empty means no userdata mapping
 	ProjectdataRoot string // empty means no projectdata mapping
+}
+
+func sandboxPathMappingFromRoots(roots resolvedRoots) sandboxPathMapping {
+	return sandboxPathMapping{
+		HostRoot:        roots.HostRoot,
+		SkillsRoot:      roots.SkillsRoot,
+		UserdataRoot:    roots.UserdataRoot,
+		ProjectdataRoot: roots.ProjectdataRoot,
+	}
 }
 
 var sensitiveExecEnvKeys = map[string]struct{}{
@@ -219,59 +223,83 @@ func buildIsolatedEnv(baseEnv []string, workingDir string, userEnv map[string]st
 	return env
 }
 
-// hostToSandboxPath translates a host path to the sandbox-internal path.
-func hostToSandboxPath(mapping sandboxPathMapping, hostPath string) string {
-	cleanPath := filepath.Clean(hostPath)
-	cleanRoot := filepath.Clean(mapping.HostRoot)
-	cleanSkills := filepath.Clean(mapping.SkillsRoot)
-
-	if cleanPath == cleanRoot || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanRoot+string(os.PathSeparator)) {
-		rel, err := filepath.Rel(cleanRoot, cleanPath)
-		if err != nil {
-			return hostPath
-		}
-		return filepath.Join(SandboxHome, rel)
+func hasSandboxPathPrefix(path, prefix string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanPrefix := filepath.Clean(prefix)
+	if cleanPath == cleanPrefix {
+		return true
 	}
-
-	if cleanPath == cleanSkills || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanSkills+string(os.PathSeparator)) {
-		rel, err := filepath.Rel(cleanSkills, cleanPath)
-		if err != nil {
-			return hostPath
-		}
-		return filepath.Join(SandboxSkillsDir, rel)
-	}
-
-	if mapping.UserdataRoot != "" {
-		cleanUserdata := filepath.Clean(mapping.UserdataRoot)
-		if cleanPath == cleanUserdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanUserdata+string(os.PathSeparator)) {
-			rel, err := filepath.Rel(cleanUserdata, cleanPath)
-			if err != nil {
-				return hostPath
-			}
-			return filepath.Join(SandboxUserdataDir, rel)
-		}
-	}
-
-	if mapping.ProjectdataRoot != "" {
-		cleanProjectdata := filepath.Clean(mapping.ProjectdataRoot)
-		if cleanPath == cleanProjectdata || strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanProjectdata+string(os.PathSeparator)) {
-			rel, err := filepath.Rel(cleanProjectdata, cleanPath)
-			if err != nil {
-				return hostPath
-			}
-			return filepath.Join(SandboxProjectdataDir, rel)
-		}
-	}
-
-	return hostPath
+	return strings.HasPrefix(cleanPath+string(os.PathSeparator), cleanPrefix+string(os.PathSeparator))
 }
 
-func commandExecBinds(roots resolvedRoots, agentWorkspace bool) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
-	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxHome})
-	// Agent skills are always read-only; user/project skills are writable via their own mounts.
+// hostPathForSandboxPath resolves a sandbox-internal path to the corresponding host path.
+func hostPathForSandboxPath(mapping sandboxPathMapping, sandboxPath string) string {
+	cleanPath := filepath.Clean(sandboxPath)
+
+	if hasSandboxPathPrefix(cleanPath, SandboxSkillsDir) {
+		rel, err := filepath.Rel(SandboxSkillsDir, cleanPath)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(mapping.SkillsRoot, rel)
+	}
+
+	if mapping.ProjectdataRoot != "" && hasSandboxPathPrefix(cleanPath, SandboxProjectdataDir) {
+		rel, err := filepath.Rel(SandboxProjectdataDir, cleanPath)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(mapping.ProjectdataRoot, rel)
+	}
+
+	if mapping.UserdataRoot != "" && hasSandboxPathPrefix(cleanPath, SandboxHome) {
+		rel, err := filepath.Rel(SandboxHome, cleanPath)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(mapping.UserdataRoot, rel)
+	}
+
+	rel, err := filepath.Rel(SandboxRoot, cleanPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(mapping.HostRoot, rel)
+}
+
+func ensureSandboxWorkingDir(roots resolvedRoots, reqPath string) (string, error) {
+	if err := validatePathRequirements(reqPath); err != nil {
+		return "", err
+	}
+
+	sandboxPath, err := resolveSandboxPath(reqPath)
+	if err != nil {
+		return "", err
+	}
+
+	hostPath := hostPathForSandboxPath(sandboxPathMappingFromRoots(roots), sandboxPath)
+	if hostPath == "" {
+		return "", fmt.Errorf("failed to resolve working directory: %s", reqPath)
+	}
+
+	if hasSandboxPathPrefix(sandboxPath, SandboxSkillsDir) {
+		if _, err := os.Stat(hostPath); err != nil {
+			return "", err
+		}
+		return sandboxPath, nil
+	}
+
+	if err := os.MkdirAll(hostPath, 0755); err != nil {
+		return "", err
+	}
+	return sandboxPath, nil
+}
+
+func commandExecBinds(roots resolvedRoots) (rwBinds []executor.BindMount, roBinds []executor.BindMount) {
+	rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.HostRoot, Dest: SandboxRoot})
 	roBinds = appendUniqueBindMount(roBinds, executor.BindMount{Src: roots.SkillsRoot, Dest: SandboxSkillsDir})
 	if roots.UserdataRoot != "" {
-		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxUserdataDir})
+		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.UserdataRoot, Dest: SandboxHome})
 	}
 	if roots.ProjectdataRoot != "" {
 		rwBinds = appendUniqueBindMount(rwBinds, executor.BindMount{Src: roots.ProjectdataRoot, Dest: SandboxProjectdataDir})

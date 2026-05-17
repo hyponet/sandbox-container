@@ -39,7 +39,7 @@ main.go → gin router with middleware chain
   ├── handler/     - Gin handlers: bash, file, code, skill, sandbox (each receives *session.Manager + executor.CommandExecutor)
   ├── executor/    - Command execution & file operation abstraction
   │     ├── executor.go         - CommandExecutor interface + BindMount type (Src/Dest)
-  │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox for commands, InitSession no-op)
+  │     ├── bwrap.go            - BwrapExecutor (bubblewrap sandbox, InitSession creates home/agents dirs)
   │     ├── file_ops.go         - FileOperator interface + NewFileOperator constructor
   │     └── file_ops_bwrap.go   - BwrapFileOperator (file ops inside bwrap sandbox)
   ├── model/       - Shared request/response structs
@@ -48,22 +48,25 @@ main.go → gin router with middleware chain
 
 **Request flow:** Request → AuditLogger → AuthRequired (if route uses auth) → Handler → SessionManager resolves paths → BwrapExecutor → Response
 
-**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. Skills are accessed via read-only bind mount at `/home/skills`.
+**Session isolation:** `session.Manager` resolves all file/command paths relative to `/data/agents/<agent_id>/sessions/<session_id>/`. Path traversal (`..`) is blocked. Skills are accessed via read-only bind mount at `/agents/skills`.
 
-**Userdata:** When a request includes `user_id`, the user's persistent directory `/data/users/<user_id>/` is bind-mounted to `/home/userdata` (read-write). This enables data sharing across agents for the same user.
+**Userdata:** When a request includes `user_id`, the user's persistent directory `/data/users/<user_id>/` is bind-mounted to `/home` (read-write). This enables data sharing across agents for the same user. When no `user_id` is provided, `/home` is an empty directory inside the session.
 
-**Projectdata:** When a request includes `project_id`, the project's persistent directory `/data/projects/<project_id>/` is bind-mounted to `/home/projectdata` (read-write). This enables data sharing across agents for the same project.
+**Projectdata:** When a request includes `project_id`, the project's persistent directory `/data/projects/<project_id>/` is bind-mounted to `/home/project` (read-write). This enables data sharing across agents for the same project.
 
-**Bwrap isolation:** All command execution and file operations run inside bubblewrap sandboxes. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks. File Handler maps request paths directly to sandbox paths via `resolveSandboxPath` (e.g., `/file.txt` → `/home/file.txt`, `/skills/...` → `/home/skills/...`).
+**Bwrap isolation:** All command execution and file operations run inside bubblewrap sandboxes. BwrapFileOperator uses base64-encoded stdin/stdout to pass file data through bwrap boundaries, preventing symlink escape attacks. File Handler maps request paths to sandbox paths via `resolveSandboxPath` (e.g., `/file.txt` → `/home/file.txt`, `/agents/skills/...` → `/agents/skills/...`, `/home/...` passes through directly). Names like `/skills/...`, `/userdata/...`, and `/projectdata/...` are not reserved aliases and behave like ordinary directories unless they use a canonical special root.
 
 **Bwrap security features:**
 - Namespace isolation: PID (`--unshare-pid`), UTS (`--unshare-uts`), IPC (`--unshare-ipc`), optional network (`--unshare-net`)
-- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/home` (read-write); skills dirs mapped to `/home/skills` (read-only); userdata dirs mapped to `/home/userdata` (read-write when `user_id` provided); projectdata dirs mapped to `/home/projectdata` (read-write when `project_id` provided)
-- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory, `/home/skills` for skills access, `/home/userdata` for user data, and `/home/projectdata` for project data
+- Filesystem: system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) mounted read-only; `/tmp` as tmpfs; session/workspace dirs mapped to `/` (read-write); skills dirs mapped to `/agents/skills` (read-only); userdata dirs mapped to `/home` (read-write when `user_id` provided); projectdata dirs mapped to `/home/project` (read-write when `project_id` provided)
+- Mount order: parent-first — `/` mounted first, then system paths, then `/home`, `/home/project`, `/agents/skills`
+- Path remapping: host session paths are hidden; sandbox sees `/home` as working directory and HOME, bare file API paths resolve under `/home`, `/agents/skills` is the agent skill path, `/home` is overlaid by user data when `user_id` is present, and `/home/project` is the project mount when `project_id` is present
 - Process: `--die-with-parent`, `--new-session`
 - Runtime path resolution: auto-mounts `/usr/local`, `/opt`, `/run/current-system`, `/nix/store` as needed
 
-**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `BwrapExecutor.InitSession` is a no-op because skills access is handled via bind mounts. Similarly, `InitUserdata(sessionDir, userdataDir)` is called when a `user_id` is present: `BwrapExecutor.InitUserdata` is a no-op (handled via bind mounts at runtime).
+**InitSession mechanism:** `session.Manager` calls `CommandExecutor.InitSession(sessionDir, skillsDir)` after creating session/workspace directories. `BwrapExecutor.InitSession` creates `<session>/home` and `<session>/agents` subdirectories to serve as mount points. Similarly, `InitUserdata(sessionDir, userdataDir)` is called when a `user_id` is present: `BwrapExecutor.InitUserdata` is a no-op (handled via bind mounts at runtime).
+
+**Skill resolution:** Skills are resolved across two layers with priority: user > agent. User skills are discovered by scanning `/data/users/<user_id>/skills/` directories. Agent skills are synced from the global store based on `skill_ids`. Project-level skills are not supported.
 
 **Async bash:** Commands run in async mode write output to thread-safe buffers; output is read incrementally via offset.
 

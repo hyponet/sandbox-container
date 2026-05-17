@@ -89,7 +89,7 @@ func TestResolvePathEx_WorkspaceMode(t *testing.T) {
 			name:      "skills path resolves to agent skills dir",
 			agentID:   "a1",
 			sessionID: "sess1",
-			reqPath:   "/skills/my/skill.txt",
+				reqPath:   "/agents/skills/my/skill.txt",
 			want:      filepath.Join(dir, "a1", "skills", "my", "skill.txt"),
 			wantErr:   false,
 		},
@@ -97,7 +97,7 @@ func TestResolvePathEx_WorkspaceMode(t *testing.T) {
 			name:      "skills root resolves to agent skills dir",
 			agentID:   "a1",
 			sessionID: "sess1",
-			reqPath:   "/skills",
+				reqPath:   "/agents/skills",
 			want:      filepath.Join(dir, "a1", "skills"),
 			wantErr:   false,
 		},
@@ -105,7 +105,7 @@ func TestResolvePathEx_WorkspaceMode(t *testing.T) {
 			name:      "skills path with trailing slash",
 			agentID:   "a1",
 			sessionID: "sess1",
-			reqPath:   "/skills/",
+				reqPath:   "/agents/skills/",
 			want:      filepath.Join(dir, "a1", "skills"),
 			wantErr:   false,
 		},
@@ -164,8 +164,8 @@ func TestResolvePathEx_BackwardCompat(t *testing.T) {
 		"/foo/bar.txt",
 		"/",
 		"/deep/nested/path",
-		"/skills/my/skill.txt",
-		"/skills",
+		"/agents/skills/my/skill.txt",
+		"/agents/skills",
 	}
 
 	for _, reqPath := range reqPaths {

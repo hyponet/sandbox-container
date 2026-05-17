@@ -123,21 +123,15 @@ func (h *BashHandler) CreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	workingDir := roots.HostRoot
+	sandboxWorkingDir := SandboxHome
 	if req.ExecDir != nil && *req.ExecDir != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
+		resolved, err := ensureSandboxWorkingDir(roots, *req.ExecDir)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
 		}
-		workingDir = resolved
+		sandboxWorkingDir = resolved
 	}
-	if err := os.MkdirAll(workingDir, 0755); err != nil {
-		log.Printf("[ERROR] CreateSession: mkdir %s: %v", workingDir, err)
-	}
-
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	bs := &bashSession{
 		sandboxSID: req.SessionID,
@@ -176,21 +170,15 @@ func (h *BashHandler) Exec(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	workingDir := roots.HostRoot
+	sandboxWorkingDir := SandboxHome
 	if req.ExecDir != nil && *req.ExecDir != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.ExecDir, req.EnableAgentWorkspace)
+		resolved, err := ensureSandboxWorkingDir(roots, *req.ExecDir)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
 		}
-		workingDir = resolved
+		sandboxWorkingDir = resolved
 	}
-	if err := os.MkdirAll(workingDir, 0755); err != nil {
-		log.Printf("[ERROR] Exec: mkdir %s: %v", workingDir, err)
-	}
-
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	cmdID := uuid.New().String()[:8]
 	timeout := 30.0
@@ -205,7 +193,7 @@ func (h *BashHandler) Exec(c *gin.Context) {
 
 	// Build command
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
-	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace)
+	rwBinds, roBinds := commandExecBinds(roots)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,

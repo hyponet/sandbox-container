@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -57,8 +58,11 @@ func (b *BwrapExecutor) Prepare(opts ExecOptions, name string, args ...string) *
 	return cmd
 }
 
-// InitSession is a no-op for bwrap mode (skills access is handled via bind mounts).
-func (b *BwrapExecutor) InitSession(sessionDir, skillsDir string) {}
+// InitSession creates required subdirectories inside the session/workspace directory.
+func (b *BwrapExecutor) InitSession(sessionDir, skillsDir string) {
+	os.MkdirAll(filepath.Join(sessionDir, "home"), 0755)
+	os.MkdirAll(filepath.Join(sessionDir, "agents"), 0755)
+}
 
 // InitUserdata is a no-op for bwrap mode (userdata access is handled via bind mounts).
 func (b *BwrapExecutor) InitUserdata(sessionDir, userdataDir string) error { return nil }
@@ -67,6 +71,7 @@ func (b *BwrapExecutor) InitUserdata(sessionDir, userdataDir string) error { ret
 func (b *BwrapExecutor) InitProjectdata(sessionDir, projectdataDir string) error { return nil }
 
 // buildArgs constructs the bwrap argument list (everything before "--").
+// Mount order is parent-first: / → system paths → /home → /home/project → /agents/skills.
 func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []string {
 	args := []string{
 		"--die-with-parent",
@@ -79,16 +84,24 @@ func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []s
 		args = append(args, "--share-net")
 	}
 
-	// System paths: read-only
-	systemPaths := []string{"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"}
 	seen := map[string]struct{}{}
+
+	// 1. Root RW bind (session/workspace at /) — must be first.
+	for _, rw := range opts.RWBinds {
+		if filepath.Clean(rw.Dest) == "/" {
+			args = appendBind(args, seen, "--bind", rw.Src, rw.Dest)
+		}
+	}
+
+	// 2. System paths: read-only
+	systemPaths := []string{"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"}
 	for _, p := range systemPaths {
 		if _, err := os.Stat(p); err == nil {
 			args = appendBind(args, seen, "--ro-bind", p, p)
 		}
 	}
 
-	// /dev and /proc
+	// 3. /dev and /proc
 	args = append(args, "--dev", "/dev")
 	if b.cfg.ProcBindFallback {
 		args = append(args, "--bind", "/proc", "/proc")
@@ -96,25 +109,34 @@ func (b *BwrapExecutor) buildArgs(opts ExecOptions, runtimeROBinds []string) []s
 		args = append(args, "--proc", "/proc")
 	}
 
-	// Per-execution tmpfs for /tmp
+	// 4. Per-execution tmpfs for /tmp
 	args = append(args, "--tmpfs", "/tmp")
 
-	// Read-write binds from opts (session/workspace dir)
+	// 5. Remaining RW binds sorted by dest path depth (parent first: /home before /home/project)
+	remainingRW := make([]BindMount, 0, len(opts.RWBinds))
 	for _, rw := range opts.RWBinds {
+		if filepath.Clean(rw.Dest) != "/" {
+			remainingRW = append(remainingRW, rw)
+		}
+	}
+	sort.Slice(remainingRW, func(i, j int) bool {
+		return len(filepath.Clean(remainingRW[i].Dest)) < len(filepath.Clean(remainingRW[j].Dest))
+	})
+	for _, rw := range remainingRW {
 		args = appendBind(args, seen, "--bind", rw.Src, rw.Dest)
 	}
 
-	// Read-only binds required by resolved runtime paths.
-	for _, ro := range runtimeROBinds {
-		args = appendBind(args, seen, "--ro-bind", ro, ro)
-	}
-
-	// Read-only binds from opts (skills dir).
+	// 6. Read-only binds from opts (skills dir).
 	for _, ro := range opts.ROBinds {
 		args = appendBind(args, seen, "--ro-bind", ro.Src, ro.Dest)
 	}
 
-	// Extra read-only binds from config
+	// 7. Read-only binds required by resolved runtime paths.
+	for _, ro := range runtimeROBinds {
+		args = appendBind(args, seen, "--ro-bind", ro, ro)
+	}
+
+	// 8. Extra read-only binds from config
 	for _, ro := range b.cfg.ExtraROBinds {
 		if _, err := os.Stat(ro); err == nil {
 			args = appendBind(args, seen, "--ro-bind", ro, ro)

@@ -612,7 +612,6 @@ type AgentSkillRequest struct {
 	Cleanup              bool     `json:"cleanup"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 	UserID               string   `json:"user_id"`
-	ProjectID            string   `json:"project_id"`
 }
 
 // SkillSummary is returned by the agent list endpoint with frontmatter metadata.
@@ -827,7 +826,6 @@ type RegistryCommitRequest struct {
 	AgentID     string `json:"agent_id"`
 	Source      string `json:"source"`
 	UserID      string `json:"user_id"`
-	ProjectID   string `json:"project_id"`
 	Description string `json:"description"`
 	Activate    bool   `json:"activate"`
 }

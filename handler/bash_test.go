@@ -20,12 +20,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func setupBashRouter() (*gin.Engine, *session.Manager) {
-	bwrapExec, err := executor.NewBwrapExecutor(executor.BwrapConfig{NetworkMode: "host"})
-	if err != nil {
-		panic("bwrap not available: " + err.Error())
-	}
-	return setupBashRouterWithExecutor(bwrapExec)
+func setupBashRouter(t *testing.T) (*gin.Engine, *session.Manager) {
+	t.Helper()
+	return setupBashRouterWithExecutor(newTestBwrapExecutorOrSkip(t))
 }
 
 func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine, *session.Manager) {
@@ -53,7 +50,7 @@ func setupBashRouterWithExecutor(cmdExec executor.CommandExecutor) (*gin.Engine,
 }
 
 func TestBashExecSimple(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash1", "command": "echo hello"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -75,7 +72,7 @@ func TestBashExecSimple(t *testing.T) {
 }
 
 func TestBashExecMultiLine(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash2", "command": "echo line1 && echo line2"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -93,7 +90,7 @@ func TestBashExecMultiLine(t *testing.T) {
 }
 
 func TestBashExecWorkdir(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash3", "command": "pwd"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -111,7 +108,7 @@ func TestBashExecWorkdir(t *testing.T) {
 }
 
 func TestBashExecEnv(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash4", "command": "echo $MY_VAR", "env": {"MY_VAR": "test_value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -131,7 +128,7 @@ func TestBashExecEnv(t *testing.T) {
 func TestBashExecDoesNotExposeSandboxAPIKey(t *testing.T) {
 	t.Setenv("SANDBOX_API_KEY", "super-secret")
 
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash_env_hidden", "command": "printf %s \"$SANDBOX_API_KEY\""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -153,7 +150,7 @@ func TestBashExecDoesNotExposeSandboxAPIKey(t *testing.T) {
 }
 
 func TestBashExecPWDMatchesWorkingDir(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash_pwd", "command": "if [ \"$PWD\" = \"$(pwd)\" ]; then echo match; else echo mismatch; fi", "exec_dir": "/subdir"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -175,7 +172,7 @@ func TestBashExecPWDMatchesWorkingDir(t *testing.T) {
 }
 
 func TestBashExecAsync(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash5", "command": "sleep 0.1 && echo done", "async_mode": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -193,7 +190,7 @@ func TestBashExecAsync(t *testing.T) {
 }
 
 func TestBashCreateSession(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash6"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/sessions/create", bytes.NewBufferString(body))
@@ -207,7 +204,7 @@ func TestBashCreateSession(t *testing.T) {
 }
 
 func TestBashExecExitCode(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash7", "command": "exit 42"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -225,7 +222,7 @@ func TestBashExecExitCode(t *testing.T) {
 }
 
 func TestBashExecNoSessionID(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"command": "echo hello"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -239,15 +236,15 @@ func TestBashExecNoSessionID(t *testing.T) {
 }
 
 func TestBashAccessSkillsDir(t *testing.T) {
-	r, mgr := setupBashRouter()
+	r, mgr := setupBashRouter(t)
 
 	// Create a skill file
 	skillsDir := mgr.SkillsRoot("a1")
 	os.MkdirAll(filepath.Join(skillsDir, "test-skill"), 0755)
 	os.WriteFile(filepath.Join(skillsDir, "test-skill", "hello.sh"), []byte("echo from-skill"), 0755)
 
-	// Bash should be able to access skills via symlink
-	body := `{"agent_id": "a1", "session_id": "bash8", "command": "ls skills/test-skill/hello.sh"}`
+	// Bash should be able to access skills via the new mount path
+	body := `{"agent_id": "a1", "session_id": "bash8", "command": "ls /agents/skills/test-skill/hello.sh"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -263,7 +260,7 @@ func TestBashAccessSkillsDir(t *testing.T) {
 }
 
 func TestBashOutput(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	// Start an async command
 	body := `{"agent_id": "a1", "session_id": "bash9", "command": "echo output_data", "async_mode": true}`
@@ -301,7 +298,7 @@ func TestBashOutput(t *testing.T) {
 }
 
 func TestBashOutputSessionNotFound(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "nonexistent", "command_id": "x"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/output", bytes.NewBufferString(body))
@@ -315,7 +312,7 @@ func TestBashOutputSessionNotFound(t *testing.T) {
 }
 
 func TestBashKill(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	// Start a long-running async command
 	body := `{"agent_id": "a1", "session_id": "bash10", "command": "sleep 30", "async_mode": true}`
@@ -349,7 +346,7 @@ func TestBashKill(t *testing.T) {
 }
 
 func TestBashKillNonexistentSession(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "nope", "signal": "SIGKILL"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/kill", bytes.NewBufferString(body))
@@ -363,7 +360,7 @@ func TestBashKillNonexistentSession(t *testing.T) {
 }
 
 func TestBashListSessions(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	// Create a session
 	createBody := `{"agent_id": "a1", "session_id": "bash11"}`
@@ -394,7 +391,7 @@ func TestBashListSessions(t *testing.T) {
 }
 
 func TestBashExec_AgentWorkspace(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	body := `{"agent_id": "a1", "session_id": "bash_dsi", "command": "pwd", "enable_agent_workspace": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/bash/exec", bytes.NewBufferString(body))
@@ -421,7 +418,7 @@ func TestBashExec_AgentWorkspace(t *testing.T) {
 }
 
 func TestBashExec_AgentWorkspace_Persistence(t *testing.T) {
-	r, _ := setupBashRouter()
+	r, _ := setupBashRouter(t)
 
 	// Create a file with session1 in workspace mode
 	body := `{"agent_id": "a1", "session_id": "ws_sess1", "command": "echo persistent-data > ws-persist.txt", "enable_agent_workspace": true}`

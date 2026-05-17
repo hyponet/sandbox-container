@@ -9,8 +9,8 @@ A sandbox container service built with Go + Gin, providing isolated command exec
 - **Code Execution** — Run Python and JavaScript code with timeout control and pre-installed scientific computing and web development libraries
 - **Skills Management** — Global skills store with CRUD operations, ZIP import, file management, and agent-level caching with version control
 - **Session Isolation** — Directory isolation based on `agent_id` + `session_id` with TTL-based auto-cleanup and path traversal protection
-- **Userdata** — Per-user persistent directory (`/data/users/<user_id>/`) mounted to `/home/userdata`, enabling data sharing across agents for the same user
-- **Projectdata** — Per-project persistent directory (`/data/projects/<project_id>/`) mounted to `/home/projectdata`
+- **Userdata** — Per-user persistent directory (`/data/users/<user_id>/`) mounted to `/home`, enabling data sharing across agents for the same user
+- **Projectdata** — Per-project persistent directory (`/data/projects/<project_id>/`) mounted to `/home/project`
 - **Bwrap Sandbox** — Bubblewrap-based isolation by default, with namespace separation (PID/UTS/IPC/network), read-only system mounts, and sandboxed file operations to prevent symlink escape attacks
 - **Audit Logging** — Full request/response logging
 
@@ -68,7 +68,7 @@ Response:
   "data": {
     "work_dir": "/home",
     "directories": {
-      "skills": "/home/skills"
+      "skills": "/agents/skills"
     }
   }
 }
@@ -92,15 +92,14 @@ Response:
   "data": {
     "work_dir": "/home",
     "directories": {
-      "skills": "/home/skills",
-      "userdata": "/home/userdata"
+      "skills": "/agents/skills",
+      "userdata": "/home"
     }
   }
 }
 ```
 
-> Note: The `skills` directory is always present. The `userdata` directory only appears when `user_id` is provided.
-> The `projectdata` directory appears when `project_id` is provided and authorized.
+> Note: The `skills` directory is always present at `/agents/skills`. The `userdata` directory only appears when `user_id` is provided and points to `/home`. The `projectdata` directory appears when `project_id` is provided and points to `/home/project`.
 
 ### Bash Execution
 
@@ -139,8 +138,8 @@ POST /v1/bash/exec
 | `max_output_length` | int | No | Maximum output length |
 | `env` | map | No | Environment variables for the runtime process |
 | `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
-| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home/userdata` (default: empty) |
-| `project_id` | string | No | Project identifier for projectdata mount; mounts `/data/projects/<project_id>/` to `/home/projectdata` when authorized (default: empty) |
+| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home` (default: empty) |
+| `project_id` | string | No | Project identifier for projectdata mount; mounts `/data/projects/<project_id>/` to `/home/project` when authorized (default: empty) |
 
 ### File Operations
 
@@ -173,11 +172,10 @@ POST /v1/file/write
 |-----------|------|----------|-------------|
 | `agent_id` | string | Yes | Agent identifier |
 | `session_id` | string | Yes | Session identifier |
-| `file` | string | Yes | File path |
-| `disable_session_isolation` | bool | No | Use workspace directory instead of session directory (default: false) |
-| `skills_writable` | bool | No | Allow writing to skills directories (default: false, applies to write/replace/upload) |
-| `user_id` | string | No | User identifier for userdata access; resolves `/userdata/...` paths to `/data/users/<user_id>/` (default: empty) |
-| `project_id` | string | No | Project identifier for projectdata access; resolves `/projectdata/...` paths to `/data/projects/<project_id>/` when authorized (default: empty) |
+| `file` | string | Yes | Logical file path. Bare paths resolve under `/home`; `/agents/skills/...` is read-only; `/home/project/...` accesses project data when `project_id` is provided |
+| `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
+| `user_id` | string | No | User identifier for userdata access. When provided, `/home` is backed by `/data/users/<user_id>/` |
+| `project_id` | string | No | Project identifier for projectdata access. When provided, `/home/project` is backed by `/data/projects/<project_id>/` |
 
 ### Code Execution
 
@@ -209,7 +207,8 @@ POST /v1/code/execute
 | `cwd` | string | No | Working directory for execution |
 | `env` | map | No | Environment variables for the runtime process |
 | `enable_agent_workspace` | bool | No | Use the agent workspace directory instead of the session directory (default: false) |
-| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home/userdata` (default: empty) |
+| `user_id` | string | No | User identifier for userdata mount; mounts `/data/users/<user_id>/` to `/home` (default: empty) |
+| `project_id` | string | No | Project identifier for projectdata mount; mounts `/data/projects/<project_id>/` to `/home/project` when authorized (default: empty) |
 
 ### Skills Management
 
@@ -276,13 +275,13 @@ POST /v1/skills/agents/agent-1/load
 }
 ```
 
-**Example — Load skills with writable mode (skips version sync, uses local copy):**
+**Example — Load skills from the current agent workspace cache (skips version sync):**
 
 ```json
 POST /v1/skills/agents/agent-1/load
 {
   "skill_ids": ["my-skill"],
-  "skills_writable": true
+  "enable_agent_workspace": true
 }
 ```
 
@@ -290,9 +289,10 @@ POST /v1/skills/agents/agent-1/load
 |-----------|------|----------|-------------|
 | `skill_ids` | []string | Yes | List of skill IDs to list/load |
 | `cleanup` | bool | No | Clean up stale skills (default: false) |
-| `skills_writable` | bool | No | Skip version sync, use agent's local copy as-is (default: false) |
+| `enable_agent_workspace` | bool | No | Skip version sync and use the agent's local cached copy as-is (default: false) |
+| `user_id` | string | No | Enable the user skill layer at `/home/skills` with higher priority than agent-cached skills |
 
-Skills are cached per-agent. When loaded, the system compares the version timestamp (`_meta.json`) — if the agent's cached copy is outdated, it's automatically updated from the global store. When `skills_writable` is true, this version sync is skipped.
+Skills are cached per-agent. In normal mode, the system compares the version timestamp (`_meta.json`) and refreshes outdated cached copies from the global store. When `enable_agent_workspace` is true, list/load use the existing local cache as-is and skip that sync step.
 
 ### Session Management
 
@@ -364,30 +364,30 @@ c.SkillAgentCacheDelete("agent-1", "my-skill")
 // Filesystem info
 fsInfo, _ := c.GetFsInfo("agent-1", "session-1")
 // fsInfo.WorkDir = "/home"
-// fsInfo.Directories["skills"] = "/home/skills"
+// fsInfo.Directories["skills"] = "/agents/skills"
 
 // Filesystem info with userdata
 fsInfo, _ := c.GetFsInfo("agent-1", "session-1", client.WithFsInfoUserID("user-123"))
-// fsInfo.Directories["userdata"] = "/home/userdata"
+// fsInfo.Directories["userdata"] = "/home"
 
 // Filesystem info with authorized projectdata
 fsInfo, _ = c.GetFsInfo("agent-1", "session-1", client.WithFsInfoProjectID("project-a"))
-// fsInfo.Directories["projectdata"] = "/home/projectdata"
+// fsInfo.Directories["projectdata"] = "/home/project"
 
 // Bash/command execution with userdata mount
-result, _ := c.BashExec("agent-1", "session-1", "cat /home/userdata/config.json",
+result, _ := c.BashExec("agent-1", "session-1", "cat /home/config.json",
     client.WithBashUserID("user-123"))
 
 // Bash/command execution with authorized projectdata mount
-result, _ = c.BashExec("agent-1", "session-1", "cat /home/projectdata/shared/config.json",
+result, _ = c.BashExec("agent-1", "session-1", "cat /home/project/shared/config.json",
     client.WithBashProjectID("project-a"))
 
 // File read from userdata
-content, _ := c.FileRead("agent-1", "session-1", "/userdata/config.json",
+content, _ := c.FileRead("agent-1", "session-1", "/config.json",
     client.WithFileReadUserID("user-123"))
 
 // File read from authorized projectdata
-projectContent, _ := c.FileRead("agent-1", "session-1", "/projectdata/shared/config.json",
+projectContent, _ := c.FileRead("agent-1", "session-1", "/home/project/shared/config.json",
     client.WithFileReadProjectID("project-a"))
 
 // Session management
@@ -417,7 +417,7 @@ Each `agent_id` + `session_id` pair maps to an independent directory:
     <agent_id>/
       skills/                     # Agent-level skill cache (copied from global)
         <skill-id>/
-      workspace/                  # Persistent workspace (used when disable_session_isolation=true)
+      workspace/                  # Persistent workspace (used when enable_agent_workspace=true)
       sessions/
         <session_id>/             # Session working directory
 ```
@@ -436,12 +436,13 @@ In bwrap mode, the host filesystem paths are remapped inside the sandbox to hide
 
 | Host Path | Sandbox Path | Access |
 |-----------|--------------|--------|
-| Session or workspace directory | `/home` | Read-write |
-| Agent skills cache | `/home/skills` | Read-only |
-| User persistent data (`/data/users/<user_id>/`) | `/home/userdata` | Read-write (only when `user_id` provided) |
-| Project persistent data (`/data/projects/<project_id>/`) | `/home/projectdata` | Read-write (only when authorized `project_id` provided) |
+| Session or workspace root | `/` | Read-write |
+| Session or workspace `home/` subtree | `/home` | Read-write |
+| Agent skills cache | `/agents/skills` | Read-only |
+| User persistent data (`/data/users/<user_id>/`) | `/home` | Read-write (overlays the session/workspace `home/` subtree when `user_id` is provided) |
+| Project persistent data (`/data/projects/<project_id>/`) | `/home/project` | Read-write (only when authorized `project_id` is provided) |
 
-This means code and commands inside the sandbox see `/home` as their working directory and `/home/skills` for skills access, regardless of the actual host paths. When `user_id` is provided, user data is accessible at `/home/userdata`. When an authorized `project_id` is provided, project data is accessible at `/home/projectdata`. Access is provided entirely through bind mounts.
+This means code and commands inside the sandbox start in `/home`, bare file API paths resolve under `/home`, and agent skills are always exposed at `/agents/skills`. When `user_id` is provided, `/home` is backed by the user's persistent directory. When an authorized `project_id` is provided, project data is available at `/home/project`. Access is provided entirely through bind mounts.
 
 ### Security Features
 
@@ -449,7 +450,7 @@ This means code and commands inside the sandbox see `/home` as their working dir
 - **Read-only system mounts** — `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc` are mounted read-only
 - **Sandboxed file operations** — File reads/writes go through `BwrapFileOperator`, which executes all file I/O inside bwrap using base64-encoded stdin/stdout, preventing symlink escape attacks
 - **Ephemeral `/tmp`** — Each command gets a fresh tmpfs `/tmp`
-- **Skills read-only** — Skills directories are mounted read-only inside the sandbox at `/home/skills`
+- **Skills read-only** — Agent skill directories are mounted read-only inside the sandbox at `/agents/skills`
 - **Process safety** — `--die-with-parent` and `--new-session` prevent orphaned processes
 
 ### Environment Variables
@@ -480,7 +481,7 @@ Bwrap mode automatically detects and mounts runtime paths needed by commands. Pa
 
 By default, all file and command operations are scoped to a session-specific directory under `/data/agents/<agent_id>/sessions/<session_id>/`. Each session gets a fresh, isolated filesystem that is automatically cleaned up after the TTL expires.
 
-When `disable_session_isolation` is set to `true`, the request resolves paths against a **persistent workspace directory** instead of the session directory:
+When `enable_agent_workspace` is set to `true`, the request resolves paths against the agent's **persistent workspace directory** instead of the session directory:
 
 ```
 /data/agents/<agent_id>/workspace/
@@ -490,13 +491,13 @@ Files in the workspace persist across sessions and are **not** subject to TTL-ba
 
 ### How It Works
 
-- When `disable_session_isolation` is `false` (default), paths resolve under the session directory as usual.
-- When `disable_session_isolation` is `true`, non-skills paths resolve under `/data/agents/<agent_id>/workspace/`. Skills paths (`/skills/...`) continue to resolve to the agent's skills cache directory.
-- Skills are exposed inside the sandbox at `/home/skills` via bind mount.
+- When `enable_agent_workspace` is `false` (default), paths resolve under the session directory as usual.
+- When `enable_agent_workspace` is `true`, bare file API paths resolve under the agent workspace's `/home` subtree and commands/code run against the workspace-backed sandbox.
+- Agent skill paths remain `/agents/skills/...` and stay read-only.
 
 ### Supported Endpoints
 
-The `disable_session_isolation` parameter is available on the following endpoints:
+The `enable_agent_workspace` parameter is available on the following endpoints:
 
 | Endpoint Group | Endpoints |
 |----------------|-----------|
@@ -513,19 +514,19 @@ POST /v1/file/write
   "session_id": "session-1",
   "file": "/project/src/main.py",
   "content": "print('persistent')",
-  "disable_session_isolation": true
+  "enable_agent_workspace": true
 }
 ```
 
-The file is written to `/data/agents/agent-1/workspace/project/src/main.py` and can be read back from any session with `disable_session_isolation: true`.
+The file is written into the agent workspace and can be read back from any session that uses `enable_agent_workspace: true`.
 
 ```json
 POST /v1/bash/exec
 {
   "agent_id": "agent-1",
   "session_id": "session-1",
-  "command": "ls /project/src/",
-  "disable_session_isolation": true
+  "command": "ls /home/project/src/",
+  "enable_agent_workspace": true
 }
 ```
 
@@ -533,12 +534,13 @@ The command runs with the workspace directory as the root for path resolution.
 
 ## Userdata
 
-Userdata provides a per-user persistent directory that is shared across all agents. When a request includes a `user_id`, the directory `/data/users/<user_id>/` is mounted to `/home/userdata` (read-write) inside the sandbox.
+Userdata provides a per-user persistent directory that is shared across all agents. When a request includes a `user_id`, the directory `/data/users/<user_id>/` is mounted to `/home` (read-write) inside the sandbox.
 
 ### How It Works
 
-- The userdata directory is bind-mounted at `/home/userdata` at runtime.
-- File API paths starting with `/userdata/...` resolve to the user's persistent directory.
+- The userdata directory is bind-mounted at `/home` at runtime.
+- Bare file API paths such as `/config.json` resolve to the user's persistent directory.
+- Names like `/userdata/...` are not reserved; unless a canonical special root is used, they behave like ordinary directories under `/home`.
 
 ### Supported Endpoints
 
@@ -558,7 +560,7 @@ POST /v1/file/write
 {
   "agent_id": "agent-1",
   "session_id": "session-1",
-  "file": "/userdata/config.json",
+  "file": "/config.json",
   "content": "{\"theme\": \"dark\"}",
   "user_id": "user-123"
 }
@@ -573,16 +575,16 @@ POST /v1/bash/exec
 {
   "agent_id": "agent-2",
   "session_id": "session-1",
-  "command": "cat /home/userdata/config.json",
+  "command": "cat /home/config.json",
   "user_id": "user-123"
 }
 ```
 
-The command runs with the user's persistent directory mounted at `/home/userdata`, allowing cross-agent data sharing.
+The command runs with the user's persistent directory mounted at `/home`, allowing cross-agent data sharing.
 
 ## Projectdata
 
-Projectdata provides a per-project persistent directory shared across authorized requests. When a request includes an authorized `project_id`, `/data/projects/<project_id>/` is mounted read-write at `/home/projectdata` inside the sandbox. File API paths beginning with `/projectdata/...` resolve to the same host directory.
+Projectdata provides a per-project persistent directory shared across authorized requests. When a request includes an authorized `project_id`, `/data/projects/<project_id>/` is mounted read-write at `/home/project` inside the sandbox.
 
 ### Supported Endpoints
 
@@ -602,7 +604,7 @@ POST /v1/file/write
 {
   "agent_id": "agent-1",
   "session_id": "session-1",
-  "file": "/projectdata/shared/config.json",
+  "file": "/home/project/shared/config.json",
   "content": "{\"mode\": \"team\"}",
   "project_id": "project-a"
 }
@@ -617,52 +619,39 @@ POST /v1/bash/exec
 {
   "agent_id": "agent-2",
   "session_id": "session-1",
-  "command": "cat /home/projectdata/shared/config.json",
+  "command": "cat /home/project/shared/config.json",
   "project_id": "project-a"
 }
 ```
 
-## Skills Writable Mode
+Names like `/projectdata/...` are not reserved; unless a canonical special root is used, they behave like ordinary directories under `/home`.
 
-By default, the skills directory (`/skills/...`) is read-only for file API endpoints. Write operations to paths under `/skills/` are rejected with a `403 Forbidden` error. This protects the agent's skill cache from accidental modification.
+## Agent Skill Cache
 
-When `skills_writable` is set to `true`, the file APIs allow writing to skills directories, and the agent skill list/load endpoints skip version sync checking.
+Agent skill files under `/agents/skills/...` are read-only for file APIs. Write, replace, and upload operations to that path return `403 Forbidden`. A path like `/skills/...` is not treated as a skills alias; it is just a regular directory path under `/home`.
 
 ### How It Works
 
-- **File APIs (`write`, `replace`, `upload`):** When `skills_writable` is `true`, paths targeting `/skills/...` are accepted. Without it, such requests return `403`.
-- **Agent skill list/load:** When `skills_writable` is `true`, the system skips the version comparison against the global skills store and uses the agent's local copy as-is. This allows the agent to modify its cached skills without the changes being overwritten by the global sync.
+- **File APIs:** `/agents/skills/...` is always read-only.
+- **Agent skill list/load:** When `enable_agent_workspace` is `true`, the system skips version comparison against the global skills store and uses the agent's local cached copy as-is.
 
 ### Supported Endpoints
 
 | Endpoint | Parameter | Behavior |
 |----------|-----------|----------|
-| `POST /v1/file/write` | `skills_writable` | Allow writing to `/skills/...` paths |
-| `POST /v1/file/replace` | `skills_writable` | Allow string replacement in `/skills/...` paths |
-| `POST /v1/file/upload` | `skills_writable` | Allow file uploads to `/skills/...` paths |
-| `POST /v1/skills/agents/:agent_id/list` | `skills_writable` | Skip version sync, use local copy |
-| `POST /v1/skills/agents/:agent_id/load` | `skills_writable` | Skip version sync, use local copy |
+| `POST /v1/file/write` | — | Writing `/agents/skills/...` is rejected with `403` |
+| `POST /v1/file/replace` | — | Replacing `/agents/skills/...` is rejected with `403` |
+| `POST /v1/file/upload` | — | Uploading into `/agents/skills/...` is rejected with `403` |
+| `POST /v1/skills/agents/:agent_id/list` | `enable_agent_workspace` | Skip version sync, use the current local cache |
+| `POST /v1/skills/agents/:agent_id/load` | `enable_agent_workspace` | Skip version sync, use the current local cache |
 
-### Example — Write to a skills file
-
-```json
-POST /v1/file/write
-{
-  "agent_id": "agent-1",
-  "session_id": "session-1",
-  "file": "/skills/my-skill/config.json",
-  "content": "{\"enabled\": true}",
-  "skills_writable": true
-}
-```
-
-### Example — Load skills with writable mode
+### Example — Load skills from the current local cache
 
 ```json
 POST /v1/skills/agents/agent-1/load
 {
   "skill_ids": ["my-skill"],
-  "skills_writable": true
+  "enable_agent_workspace": true
 }
 ```
 

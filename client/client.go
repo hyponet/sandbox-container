@@ -79,9 +79,6 @@ func agentListCacheKey(agentID string, req *agentSkillRequest) string {
 	if req.UserID != "" {
 		writeCacheKeyPart(&b, "user", req.UserID)
 	}
-	if req.ProjectID != "" {
-		writeCacheKeyPart(&b, "project", req.ProjectID)
-	}
 	return b.String()
 }
 

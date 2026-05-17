@@ -23,7 +23,6 @@ type agentSkillRequest struct {
 	Cleanup              bool     `json:"cleanup"`
 	EnableAgentWorkspace bool     `json:"enable_agent_workspace"`
 	UserID               string   `json:"user_id,omitempty"`
-	ProjectID            string   `json:"project_id,omitempty"`
 }
 
 // WithCleanup enables cleanup of skills not in the requested list.
@@ -39,11 +38,6 @@ func WithAgentSkillWorkspace() AgentSkillOption {
 // WithUserID sets the user ID for multi-layer skill resolution.
 func WithUserID(userID string) AgentSkillOption {
 	return func(r *agentSkillRequest) { r.UserID = userID }
-}
-
-// WithProjectID sets the project ID for multi-layer skill resolution.
-func WithProjectID(projectID string) AgentSkillOption {
-	return func(r *agentSkillRequest) { r.ProjectID = projectID }
 }
 
 // SkillAgentList syncs skills to agent cache and returns frontmatter summaries.

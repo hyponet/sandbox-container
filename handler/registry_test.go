@@ -920,56 +920,7 @@ func TestRegistryCommit_AutoCreateSkill(t *testing.T) {
 	}
 }
 
-func TestRegistryCommit_FromUserAndProjectSources(t *testing.T) {
-	r, mgr, udMgr, pdMgr := setupRegistryRouterWithLayers()
 
-	writeRegistryLayerSkill(t, udMgr.Root("u1"), "user-skill", "---\nname: user-skill\n---\nuser commit")
-	writeRegistryLayerSkill(t, pdMgr.Root("p1"), "project-skill", "---\nname: project-skill\n---\nproject commit")
-
-	w := doRequest(t, r, "POST", "/v1/registry/commit",
-		`{"name":"user-skill","source":"user","user_id":"u1","description":"from user"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("user commit failed: %d %s", w.Code, w.Body.String())
-	}
-	resp := parseResponse(t, w)
-	data, _ := json.Marshal(resp.Data)
-	var userResult model.RegistryCommitResult
-	if err := json.Unmarshal(data, &userResult); err != nil {
-		t.Fatalf("unmarshal user commit result: %v", err)
-	}
-	if userResult.Version.Source != "user:u1" {
-		t.Fatalf("expected user source, got %s", userResult.Version.Source)
-	}
-	userContent, err := os.ReadFile(filepath.Join(mgr.RegistrySkillPath("user-skill"), userResult.Version.Version, "SKILLS.md"))
-	if err != nil {
-		t.Fatalf("read committed user skill: %v", err)
-	}
-	if !strings.Contains(string(userContent), "user commit") {
-		t.Fatalf("expected user skill content, got %q", string(userContent))
-	}
-
-	w = doRequest(t, r, "POST", "/v1/registry/commit",
-		`{"name":"project-skill","source":"project","project_id":"p1","description":"from project"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("project commit failed: %d %s", w.Code, w.Body.String())
-	}
-	resp = parseResponse(t, w)
-	data, _ = json.Marshal(resp.Data)
-	var projectResult model.RegistryCommitResult
-	if err := json.Unmarshal(data, &projectResult); err != nil {
-		t.Fatalf("unmarshal project commit result: %v", err)
-	}
-	if projectResult.Version.Source != "project:p1" {
-		t.Fatalf("expected project source, got %s", projectResult.Version.Source)
-	}
-	projectContent, err := os.ReadFile(filepath.Join(mgr.RegistrySkillPath("project-skill"), projectResult.Version.Version, "SKILLS.md"))
-	if err != nil {
-		t.Fatalf("read committed project skill: %v", err)
-	}
-	if !strings.Contains(string(projectContent), "project commit") {
-		t.Fatalf("expected project skill content, got %q", string(projectContent))
-	}
-}
 
 func TestRegistryCommit_RejectInvalidSourceAndIDs(t *testing.T) {
 	r, _, _, _ := setupRegistryRouterWithLayers()
@@ -981,7 +932,7 @@ func TestRegistryCommit_RejectInvalidSourceAndIDs(t *testing.T) {
 		{name: "invalid source", body: `{"name":"s","source":"typo","agent_id":"a1"}`},
 		{name: "missing agent id", body: `{"name":"s","source":"agent"}`},
 		{name: "invalid user id", body: `{"name":"s","source":"user","user_id":"../evil"}`},
-		{name: "invalid project id", body: `{"name":"s","source":"project","project_id":"../evil"}`},
+		{name: "project source rejected", body: `{"name":"s","source":"project","project_id":"p1"}`},
 	}
 
 	for _, tt := range tests {
@@ -1415,61 +1366,7 @@ func TestRegistryCommit_MultipleVersionsFromSameSource(t *testing.T) {
 	}
 }
 
-func TestRegistryCommit_UserThenProjectSameSkillName(t *testing.T) {
-	r, mgr, udMgr, pdMgr := setupFullRouterWithLayers()
 
-	writeRegistryLayerSkill(t, udMgr.Root("u1"), "shared-sp", "---\nname: shared-sp\n---\nuser content A")
-	writeRegistryLayerSkill(t, pdMgr.Root("p1"), "shared-sp", "---\nname: shared-sp\n---\nproject content B")
-
-	// Commit from user source
-	w := doRequest(t, r, "POST", "/v1/registry/commit",
-		`{"name":"shared-sp","source":"user","user_id":"u1","description":"from user"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("user commit failed: %d %s", w.Code, w.Body.String())
-	}
-	resp := parseResponse(t, w)
-	data, _ := json.Marshal(resp.Data)
-	var userResult model.RegistryCommitResult
-	if err := json.Unmarshal(data, &userResult); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if userResult.Version.Source != "user:u1" {
-		t.Fatalf("expected source user:u1, got %s", userResult.Version.Source)
-	}
-
-	// Commit from project source
-	w = doRequest(t, r, "POST", "/v1/registry/commit",
-		`{"name":"shared-sp","source":"project","project_id":"p1","description":"from project"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("project commit failed: %d %s", w.Code, w.Body.String())
-	}
-	resp = parseResponse(t, w)
-	data, _ = json.Marshal(resp.Data)
-	var projResult model.RegistryCommitResult
-	if err := json.Unmarshal(data, &projResult); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if projResult.Version.Source != "project:p1" {
-		t.Fatalf("expected source project:p1, got %s", projResult.Version.Source)
-	}
-
-	// Registry should have 2 versions
-	if len(projResult.Skill.Versions) != 2 {
-		t.Fatalf("expected 2 versions, got %d", len(projResult.Skill.Versions))
-	}
-
-	// Verify each version has correct content
-	v1Dir := filepath.Join(mgr.RegistrySkillPath("shared-sp"), userResult.Version.Version)
-	v2Dir := filepath.Join(mgr.RegistrySkillPath("shared-sp"), projResult.Version.Version)
-	b1, _ := os.ReadFile(filepath.Join(v1Dir, "SKILLS.md"))
-	b2, _ := os.ReadFile(filepath.Join(v2Dir, "SKILLS.md"))
-	if !strings.Contains(string(b1), "user content A") {
-		t.Errorf("user version should contain 'user content A', got %q", string(b1))
-	}
-	if !strings.Contains(string(b2), "project content B") {
-		t.Errorf("project version should contain 'project content B', got %q", string(b2))
-	}
-}
 
 // =============================================
 // Commit — Description Auto-Extraction
@@ -1560,42 +1457,7 @@ func TestRegistryCommit_UserSourceActivateThenAgentLoad(t *testing.T) {
 	}
 }
 
-func TestRegistryCommit_ProjectSourceActivateThenAgentLoad(t *testing.T) {
-	r, _, _, pdMgr := setupFullRouterWithLayers()
 
-	writeRegistryLayerSkill(t, pdMgr.Root("p1"), "e2e-proj",
-		"---\nname: e2e-proj\n---\n## Project Content\nProject body.")
-
-	// Commit from project with activate=true
-	w := doRequest(t, r, "POST", "/v1/registry/commit",
-		`{"name":"e2e-proj","source":"project","project_id":"p1","description":"from project","activate":true}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("commit failed: %d %s", w.Code, w.Body.String())
-	}
-
-	// Agent load (no project_id)
-	w = doRequest(t, r, http.MethodPost, "/v1/skills/agents/a1/load",
-		`{"skill_ids":["e2e-proj"]}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("agent load failed: %d %s", w.Code, w.Body.String())
-	}
-	var loadResp struct {
-		Success bool                       `json:"success"`
-		Data    model.AgentSkillLoadResult `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &loadResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := len(loadResp.Data.Skills); got != 1 {
-		t.Fatalf("expected 1 skill, got %d", got)
-	}
-	if loadResp.Data.Skills[0].Source != "agent" {
-		t.Errorf("expected source=agent, got %s", loadResp.Data.Skills[0].Source)
-	}
-	if !strings.Contains(loadResp.Data.Skills[0].Content, "## Project Content") {
-		t.Errorf("expected body content, got %q", loadResp.Data.Skills[0].Content)
-	}
-}
 
 func TestRegistryCommit_EndToEnd_UserSkillToRegistryToAgent(t *testing.T) {
 	r, _, udMgr, _ := setupFullRouterWithLayers()

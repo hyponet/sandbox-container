@@ -350,10 +350,9 @@ type registryCommitRequest struct {
 	Activate    bool   `json:"activate"`
 	Source      string `json:"source,omitempty"`
 	UserID      string `json:"user_id,omitempty"`
-	ProjectID   string `json:"project_id,omitempty"`
 }
 
-// WithCommitSource sets the source layer for the commit ("user", "project", or "agent").
+// WithCommitSource sets the source layer for the commit ("user" or "agent").
 func WithCommitSource(source string) RegistryCommitOption {
 	return func(r *registryCommitRequest) { r.Source = source }
 }
@@ -363,14 +362,9 @@ func WithCommitUserID(userID string) RegistryCommitOption {
 	return func(r *registryCommitRequest) { r.UserID = userID }
 }
 
-// WithCommitProjectID sets the project ID for committing from the project layer.
-func WithCommitProjectID(projectID string) RegistryCommitOption {
-	return func(r *registryCommitRequest) { r.ProjectID = projectID }
-}
-
 // RegistryCommit captures a skill as a new version in the registry.
 // By default, commits from the agent skills directory. Use WithCommitSource("user")
-// or WithCommitSource("project") to commit from user/project layers.
+// to commit from the user layer.
 func (c *Client) RegistryCommit(name, agentID, description string, activate bool, opts ...RegistryCommitOption) (*RegistryCommitResult, error) {
 	req := registryCommitRequest{
 		Name:        name,

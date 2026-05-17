@@ -41,21 +41,15 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 		return
 	}
-	workingDir := roots.HostRoot
+	sandboxWorkingDir := SandboxHome
 	if req.Cwd != nil && *req.Cwd != "" {
-		resolved, err := h.mgr.ResolvePathEx(req.AgentID, req.SessionID, *req.Cwd, req.EnableAgentWorkspace)
+		resolved, err := ensureSandboxWorkingDir(roots, *req.Cwd)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, model.ErrResponse(err.Error()))
 			return
 		}
-		workingDir = resolved
+		sandboxWorkingDir = resolved
 	}
-	if err := os.MkdirAll(workingDir, 0755); err != nil {
-		log.Printf("[ERROR] Execute: mkdir %s: %v", workingDir, err)
-	}
-
-	mapping := sandboxPathMapping{HostRoot: roots.HostRoot, SkillsRoot: roots.SkillsRoot, UserdataRoot: roots.UserdataRoot, ProjectdataRoot: roots.ProjectdataRoot}
-	sandboxWorkingDir := hostToSandboxPath(mapping, workingDir)
 
 	timeout := 30
 	if req.Timeout != nil && *req.Timeout > 0 {
@@ -80,7 +74,7 @@ func (h *CodeHandler) Execute(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	rwBinds, roBinds := commandExecBinds(roots, req.EnableAgentWorkspace)
+	rwBinds, roBinds := commandExecBinds(roots)
 	cmd := h.exec.Prepare(executor.ExecOptions{
 		Ctx:        ctx,
 		WorkingDir: sandboxWorkingDir,
